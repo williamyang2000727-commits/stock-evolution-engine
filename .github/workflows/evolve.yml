@@ -1,0 +1,33 @@
+name: 🦞 Strategy Evolution
+
+on:
+  schedule:
+    - cron: '*/10 * * * *'  # 每 10 分鐘跑一次
+  workflow_dispatch:  # 也可以手動觸發
+
+jobs:
+  evolve:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        job_id: [0, 1, 2, 3]  # 4 台機器並行
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: 🚀 Run Evolution (Job ${{ matrix.job_id }})
+        env:
+          JOB_ID: ${{ matrix.job_id }}
+          N_TESTS: "5000"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+          BEST_SCORE: ${{ secrets.BEST_SCORE }}
+        run: python cloud_evolve.py
+        timeout-minutes: 8
