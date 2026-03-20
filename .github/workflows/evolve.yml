@@ -10,8 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        job_id: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]  # 20 台並行（GitHub 免費上限）
-      fail-fast: false  # 一台掛了其他繼續跑
+        job_id: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19]
+      fail-fast: false
 
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +26,7 @@ jobs:
       - name: 🚀 Run Evolution (Job ${{ matrix.job_id }})
         env:
           JOB_ID: ${{ matrix.job_id }}
-          N_TESTS: "10000"
+          N_TESTS: "50000"
           SEED_OFFSET: "1000000"
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
