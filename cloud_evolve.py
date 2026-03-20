@@ -339,7 +339,7 @@ def backtest_one(args):
     rets = np.array([t["ret"] for t in trades])
     bds = np.array([t["bd"] for t in trades])
     avg_r = np.mean(rets)
-    if avg_r < 4 or np.sum(rets > 0)/len(rets)*100 < 40: return None
+    if avg_r < 6 or np.sum(rets > 0)/len(rets)*100 < 50: return None
     avg_hd = np.mean([t["dh"] for t in trades])
     if avg_hd > 15 or avg_hd < 1: return None
 
@@ -352,13 +352,14 @@ def backtest_one(args):
     consistency = min(np.mean(first), np.mean(second)) / max(np.mean(first), np.mean(second))
 
     w = rets[rets > 0]; l = rets[rets <= 0]
-    wasted = np.sum(rets < 3) / len(rets) * 100
+    wasted = np.sum(rets < 5) / len(rets) * 100
+    if wasted > 60: return None  # 白做工超過 60% 淘汰
     pf = abs(np.sum(w) / np.sum(l)) if len(l) > 0 and np.sum(l) != 0 else 999
     win_rate = np.sum(rets > 0) / len(rets) * 100
 
-    score = (np.sum(rets)*0.20 + avg_r*0.20 + win_rate*0.10 +
+    score = (np.sum(rets)*0.15 + avg_r*0.30 + win_rate*0.10 +
              min(pf,5)*3*0.05 + consistency*20*0.10 +
-             len(trades)*1.0*0.25 - wasted*0.10)  # 交易筆數 25% 權重
+             len(trades)*0.5*0.10 - wasted*0.20)  # 平均報酬最重要，白做工重罰
 
     return {"score": float(score), "params": p, "trades": trades,
             "avg_return": float(avg_r), "total_return": float(np.sum(rets)),
