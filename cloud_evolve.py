@@ -140,7 +140,6 @@ def filter_top_volume(data, top_n=50):
 def precompute(data):
     tickers = list(data.keys())
     min_len = min(len(data[t]) for t in tickers)
-    min_len = min(min_len, 120)
     n = len(tickers)
 
     close = np.zeros((n, min_len))
