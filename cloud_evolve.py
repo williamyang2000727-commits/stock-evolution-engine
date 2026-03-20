@@ -399,12 +399,63 @@ def main():
         )
         telegram_push(msg)
 
-        # 輸出結果給 GitHub Actions 收集
-        with open(f"result_{job_id}.json", "w") as f:
-            json.dump({"score": best_score, "job_id": job_id, "result": best}, f)
+        # 同步到 GitHub Gist（中央資料庫）
+        gist_id = os.environ.get("GIST_ID", "")
+        gh_token = os.environ.get("GH_TOKEN", "")
+        if gist_id and gh_token:
+            try:
+                # 先讀目前 Gist 的分數
+                r = requests.get(f"https://api.github.com/gists/{gist_id}",
+                    headers={"Authorization": f"token {gh_token}"}, timeout=10)
+                gist_data = r.json()
+                current_content = json.loads(list(gist_data["files"].values())[0]["content"])
+                current_gist_score = current_content.get("score", 0)
 
-    print(f"::set-output name=score::{best_score}")
-    print(f"::set-output name=improved::{improved}")
+                # 只有比 Gist 裡的更高才更新
+                if best_score > current_gist_score:
+                    # 組裝完整策略
+                    trade_details = []
+                    for t in sorted(best["trades"], key=lambda x: x["bd"]):
+                        si = t["si"]
+                        tk = tickers[si]
+                        trade_details.append({
+                            "ticker": tk, "name": get_name(tk),
+                            "buy_date": str(dates[t["bd"]].date()),
+                            "sell_date": str(dates[t["sd"]].date()),
+                            "buy_price": round(t["bp"], 2),
+                            "sell_price": round(t["sp"], 2),
+                            "return": round(t["ret"], 2),
+                            "days": t["dh"], "reason": t["reason"],
+                        })
+
+                    gist_content = json.dumps({
+                        "score": round(best_score, 4),
+                        "source": f"cloud_job_{job_id}",
+                        "updated_at": datetime.now().isoformat(),
+                        "params": best["params"],
+                        "backtest": {
+                            "avg_return": round(best["avg_return"], 2),
+                            "total_return": round(best["total_return"], 2),
+                            "win_rate": round(best["win_rate"], 2),
+                            "max_return": round(best["max_return"], 2),
+                            "avg_hold_days": round(best["avg_hold"], 2),
+                            "total_trades": best["n_trades"],
+                            "profit_factor": round(best["pf"], 2),
+                        },
+                        "trade_details": trade_details,
+                    }, ensure_ascii=False, indent=2)
+
+                    requests.patch(
+                        f"https://api.github.com/gists/{gist_id}",
+                        headers={"Authorization": f"token {gh_token}"},
+                        json={"files": {"best_strategy.json": {"content": gist_content}}},
+                        timeout=10
+                    )
+                    print(f"[Job {job_id}] ✅ 已同步到 Gist（分數 {best_score:.2f} > {current_gist_score:.2f}）")
+                else:
+                    print(f"[Job {job_id}] Gist 分數 {current_gist_score:.2f} 更高，不更新")
+            except Exception as e:
+                print(f"[Job {job_id}] Gist 同步失敗: {e}")
 
 if __name__ == "__main__":
     main()
