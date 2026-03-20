@@ -347,7 +347,9 @@ def main():
     print(f"[Job {job_id}] 歷史最佳：{best_score:.2f}")
 
     # 隨機測試
-    np.random.seed(int(time.time() * 1000 + int(job_id)) % 2**31)
+    # 每台機器用不同 seed，且跟本地 Mac 的 seed 完全不重疊
+    seed_offset = int(os.environ.get("SEED_OFFSET", "1000000"))
+    np.random.seed((int(time.time()) + int(job_id) * 99991 + seed_offset) % 2**31)
     param_sets = []
     for _ in range(n_tests):
         p = {k: np.random.choice(v) for k, v in PARAMS.items()}
