@@ -1,0 +1,37 @@
+name: 🦞 Strategy Evolution Wave 2
+
+on:
+  schedule:
+    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'  # 跟 Wave 1 錯開 2 分鐘
+  workflow_dispatch:
+
+jobs:
+  evolve:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        job_id: [20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39]  # 另外 20 台
+      fail-fast: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: 🚀 Run Evolution Wave 2 (Job ${{ matrix.job_id }})
+        env:
+          JOB_ID: ${{ matrix.job_id }}
+          N_TESTS: "50000"
+          SEED_OFFSET: "9999999"
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+          BEST_SCORE: ${{ secrets.BEST_SCORE }}
+          GIST_ID: ${{ secrets.GIST_ID }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: python cloud_evolve.py
+        timeout-minutes: 8

@@ -284,18 +284,30 @@ def backtest_one(args):
         if best_si >= 0 and day + 1 < nd:
             holding = {"si": best_si, "bp": float(ind["close"][best_si, day+1]), "bd": day+1, "pk": float(ind["close"][best_si, day+1])}
 
-    if len(trades) < 3: return None
+    if len(trades) < 5: return None
     rets = np.array([t["ret"] for t in trades])
+    bds = np.array([t["bd"] for t in trades])
     avg_r = np.mean(rets)
     if avg_r < 4 or np.sum(rets > 0)/len(rets)*100 < 40: return None
     avg_hd = np.mean([t["dh"] for t in trades])
     if avg_hd > 15 or avg_hd < 1: return None
 
+    # 雙段驗證
+    nd = pre["n_days"]
+    mid = nd // 2
+    first = rets[bds < mid]; second = rets[bds >= mid]
+    if len(first) < 2 or len(second) < 2: return None
+    if np.mean(first) < 0 or np.mean(second) < 0: return None
+    consistency = min(np.mean(first), np.mean(second)) / max(np.mean(first), np.mean(second))
+
     w = rets[rets > 0]; l = rets[rets <= 0]
     wasted = np.sum(rets < 3) / len(rets) * 100
     pf = abs(np.sum(w) / np.sum(l)) if len(l) > 0 and np.sum(l) != 0 else 999
+    win_rate = np.sum(rets > 0) / len(rets) * 100
 
-    score = np.sum(rets) * 0.25 + avg_r * 0.30 + (np.sum(rets>0)/len(rets)*100) * 0.15 + min(pf,5)*3*0.10 + np.max(rets)*0.10 - wasted*0.10
+    score = (np.sum(rets)*0.15 + avg_r*0.25 + win_rate*0.15 +
+             min(pf,5)*3*0.10 + np.max(rets)*0.05 +
+             consistency*20*0.15 + len(trades)*0.5*0.05 - wasted*0.10)
 
     return {"score": float(score), "params": p, "trades": trades,
             "avg_return": float(avg_r), "total_return": float(np.sum(rets)),
