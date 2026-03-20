@@ -96,13 +96,22 @@ def download_data():
         except:
             continue
 
-    # 方法 2：yfinance 失敗就從 Gist 下載資料快取
+    # 方法 2：yfinance 失敗就從 Gist raw URL 下載資料快取
     if len(data) < 10:
         print("[yfinance 失敗] 從 Gist 下載資料快取...")
         try:
-            r = requests.get(f"https://api.github.com/gists/{DATA_GIST_ID}", timeout=30)
-            b64 = list(r.json()["files"].values())[0]["content"]
-            raw = base64.b64decode(b64)
+            gh_token = os.environ.get("GH_TOKEN", "")
+            headers = {"Authorization": f"token {gh_token}"} if gh_token else {}
+            # 先拿 raw_url（大檔案會 truncated，必須用 raw_url）
+            r = requests.get(f"https://api.github.com/gists/{DATA_GIST_ID}",
+                headers=headers, timeout=30)
+            finfo = list(r.json()["files"].values())[0]
+            raw_url = finfo.get("raw_url", "")
+            if raw_url:
+                r2 = requests.get(raw_url, headers=headers, timeout=60)
+                raw = base64.b64decode(r2.text)
+            else:
+                raw = base64.b64decode(finfo["content"])
             data = pickle.loads(raw)
             print(f"[Gist 快取] 成功讀取 {len(data)} 檔")
         except Exception as e:
