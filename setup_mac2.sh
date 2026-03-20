@@ -50,7 +50,8 @@ export TELEGRAM_BOT_TOKEN="8551169875:AAF48gHaISTcKgAAZ_CXCOFoG0ZT21aN0RI"
 export TELEGRAM_CHAT_IDS="5785839733,8236911077"
 export GIST_ID="c1bef892d33589baef2142ce250d18c2"
 export GH_TOKEN="${GH_TOKEN_VAL}"
-export N_TESTS="20000"
+export N_TESTS="30000"
+export MAX_MINUTES="999999"
 export JOB_ID="mac2"
 export SEED_OFFSET="88888888"
 ENVEOF
@@ -63,9 +64,9 @@ source .env.sh
 PY=$(which python3)
 
 echo "🦞 第二台 Mac 進化引擎啟動！"
-echo "每輪 20,000 組 x 5 並行"
+echo "M1 16GB 火力全開：每輪 30,000 組 x 8 並行"
 
-for i in 1 2 3 4 5; do
+for i in 1 2 3 4 5 6 7 8; do
     while true; do
         $PY cloud_evolve.py 2>/dev/null
         sleep 1

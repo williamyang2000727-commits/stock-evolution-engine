@@ -339,8 +339,8 @@ PARAMS = {
 # === 主程式 ===
 def main():
     job_id = os.environ.get("JOB_ID", "0")
-    max_minutes = 7  # 跑滿 7 分鐘（timeout 是 8 分鐘，留 1 分鐘緩衝）
-    batch_size = 10000  # 每批 10000 組
+    max_minutes = int(os.environ.get("MAX_MINUTES", "7"))  # 本地可設更長
+    batch_size = int(os.environ.get("N_TESTS", "10000"))  # 每批組數
 
     print(f"[Job {job_id}] 🚀 雲端進化引擎啟動 | 跑滿 {max_minutes} 分鐘")
     start_time = time.time()
