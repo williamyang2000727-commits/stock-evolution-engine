@@ -70,7 +70,7 @@ def download_data():
     data = {}
     for ticker in TW_TICKERS:
         try:
-            h = yf.Ticker(ticker).history(period="6mo")
+            h = yf.Ticker(ticker).history(period="2y")
             if len(h) >= 40:
                 data[ticker] = h
         except:
