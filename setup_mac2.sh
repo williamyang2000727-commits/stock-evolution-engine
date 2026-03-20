@@ -1,36 +1,61 @@
 #!/bin/bash
 # === 第二台 Mac 一鍵部署進化引擎 ===
 # 用法：在另一台 MacBook 打開終端機，貼上：
-#   curl -sL 或直接 bash setup_mac2.sh
+#   bash <(curl -sL https://raw.githubusercontent.com/williamyang2000727-commits/stock-evolution-engine/main/setup_mac2.sh)
 
 set -e
 echo "🦞 進化引擎部署開始..."
 
-# 1. 建立工作目錄
+# 1. 取得 GitHub Token（寫 Gist 用）
+echo ""
+echo "📌 需要 GitHub Token 才能同步策略到 Gist"
+GH_TOKEN_VAL=""
+
+# 嘗試用 gh CLI 自動取得
+if command -v gh &>/dev/null; then
+    GH_TOKEN_VAL=$(gh auth token 2>/dev/null || true)
+fi
+
+if [ -z "$GH_TOKEN_VAL" ]; then
+    echo "⚠️  找不到 gh CLI 或未登入"
+    echo ""
+    echo "請先安裝並登入 GitHub CLI："
+    echo "  brew install gh"
+    echo "  gh auth login"
+    echo ""
+    echo "或者直接貼上你的 Personal Access Token（需要 gist 權限）："
+    read -p "GitHub Token: " GH_TOKEN_VAL
+fi
+
+if [ -z "$GH_TOKEN_VAL" ]; then
+    echo "⚠️  沒有 Token，將以唯讀模式運行（突破只推 Telegram，不寫 Gist）"
+fi
+
+# 2. 建立工作目錄
 mkdir -p ~/stock-evolution
 cd ~/stock-evolution
 
-# 2. 下載 cloud_evolve.py（從你的 GitHub repo）
+# 3. 下載 cloud_evolve.py
 echo "📥 下載進化引擎..."
 curl -sL "https://raw.githubusercontent.com/williamyang2000727-commits/stock-evolution-engine/main/cloud_evolve.py" -o cloud_evolve.py
 curl -sL "https://raw.githubusercontent.com/williamyang2000727-commits/stock-evolution-engine/main/requirements.txt" -o requirements.txt
 
-# 3. 安裝 Python 依賴
+# 4. 安裝 Python 依賴
 echo "📦 安裝依賴..."
 pip3 install --user numpy yfinance requests 2>/dev/null || python3 -m pip install --user numpy yfinance requests
 
-# 4. 設定環境變數
-cat > .env.sh << 'ENVEOF'
+# 5. 設定環境變數
+cat > .env.sh << ENVEOF
 export TELEGRAM_BOT_TOKEN="8551169875:AAF48gHaISTcKgAAZ_CXCOFoG0ZT21aN0RI"
 export TELEGRAM_CHAT_IDS="5785839733,8236911077"
 export GIST_ID="c1bef892d33589baef2142ce250d18c2"
-export GH_TOKEN=""
+export GH_TOKEN="${GH_TOKEN_VAL}"
 export N_TESTS="20000"
 export JOB_ID="mac2"
 export SEED_OFFSET="88888888"
 ENVEOF
 
-# 5. 建立永久執行腳本
+# 6. 建立永久執行腳本
 cat > run_forever.sh << 'RUNEOF'
 #!/bin/bash
 cd ~/stock-evolution
@@ -50,7 +75,7 @@ wait
 RUNEOF
 chmod +x run_forever.sh
 
-# 6. 建立 LaunchAgent（開機自動啟動）
+# 7. 建立 LaunchAgent（開機自動啟動）
 PLIST=~/Library/LaunchAgents/com.lobster.evolve.plist
 mkdir -p ~/Library/LaunchAgents
 cat > "$PLIST" << PEOF
@@ -77,7 +102,7 @@ cat > "$PLIST" << PEOF
 </plist>
 PEOF
 
-# 7. 啟動！
+# 8. 啟動！
 launchctl load "$PLIST" 2>/dev/null
 launchctl start com.lobster.evolve 2>/dev/null
 
@@ -89,6 +114,11 @@ echo "✅ 部署完成！進化引擎已啟動"
 echo "📂 工作目錄：~/stock-evolution/"
 echo "📊 Log 檔案：~/stock-evolution/evolve.log"
 echo "🔄 開機會自動啟動"
+if [ -n "$GH_TOKEN_VAL" ]; then
+    echo "🔗 Gist 同步：已啟用（突破會自動寫入 Gist）"
+else
+    echo "⚠️  Gist 同步：未啟用（突破只推 Telegram）"
+fi
 echo ""
 echo "管理指令："
 echo "  查看狀態：ps aux | grep cloud_evolve"
