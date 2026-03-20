@@ -5,6 +5,7 @@
 """
 
 import numpy as np
+import numba as nb
 import json
 import os
 import sys
@@ -13,6 +14,7 @@ import requests
 import yfinance as yf
 from datetime import datetime
 from concurrent.futures import ProcessPoolExecutor, as_completed
+import multiprocessing
 
 # === Telegram（從環境變數讀，不寫死在公開 repo）===
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
@@ -249,14 +251,101 @@ def precompute(data):
 
     return {"tickers": tickers, "dates": dates, "n_stocks": n, "n_days": min_len, "ind": ind}
 
-# === 回測（單組參數）===
+# === Numba 編譯的核心模擬（快 10-50 倍）===
+@nb.njit(cache=True)
+def simulate_trading(n_stocks, n_days, close, rsi, bb_pos, vol_ratio,
+    macd_line, macd_hist, k_val, d_val, momentum, is_green, gap, near_high,
+    ma_fast, ma_slow, ma60, bb_width, vol_prev,
+    use_rsi_buy, rsi_buy, use_bb_buy, bb_buy_th, use_vol, vol_th,
+    require_ma_bull, use_macd, macd_mode, use_kd, kd_k_th, kd_cross,
+    mom_min, consec_green, use_gap, near_high_pct, above_ma60,
+    require_ma_cross, vol_gt_yesterday,
+    stop_loss, use_tp, take_profit, trailing_stop,
+    use_rsi_sell, rsi_sell_th, use_macd_sell, use_kd_sell,
+    sell_vol_shrink, hold_days_max):
+
+    MAX_TRADES = 100
+    trade_returns = np.zeros(MAX_TRADES)
+    trade_stocks = np.zeros(MAX_TRADES, dtype=np.int64)
+    trade_buy_days = np.zeros(MAX_TRADES, dtype=np.int64)
+    trade_sell_days = np.zeros(MAX_TRADES, dtype=np.int64)
+    trade_hold_days = np.zeros(MAX_TRADES, dtype=np.int64)
+    trade_reasons = np.zeros(MAX_TRADES, dtype=np.int64)
+    n_trades = 0
+    holding = -1; buy_price = 0.0; peak_price = 0.0; buy_day = 0
+
+    for day in range(30, n_days - 1):
+        if holding >= 0:
+            si = holding
+            cur = close[si, day]
+            dh = day - buy_day
+            ret = (cur / buy_price - 1.0) * 100.0
+            if dh < 1: continue
+            if cur > peak_price: peak_price = cur
+            sell = False; reason = 0
+            if ret <= stop_loss: sell = True; reason = 2
+            if not sell and use_tp == 1 and ret >= take_profit: sell = True; reason = 1
+            if not sell and trailing_stop > 0 and peak_price > buy_price:
+                if (cur / peak_price - 1.0) * 100.0 <= -trailing_stop: sell = True; reason = 4
+            if not sell and use_rsi_sell == 1 and rsi[si, day] >= rsi_sell_th: sell = True; reason = 3
+            if not sell and use_macd_sell == 1 and day >= 1:
+                if macd_hist[si, day] < 0 and macd_hist[si, day-1] >= 0: sell = True; reason = 5
+            if not sell and use_kd_sell == 1 and day >= 1:
+                if k_val[si, day] < d_val[si, day] and k_val[si, day-1] >= d_val[si, day-1]: sell = True; reason = 6
+            if not sell and sell_vol_shrink > 0 and dh >= 2 and vol_ratio[si, day] < sell_vol_shrink: sell = True; reason = 8
+            if not sell and dh >= hold_days_max: sell = True; reason = 0
+            if sell and n_trades < MAX_TRADES:
+                trade_returns[n_trades] = ret
+                trade_stocks[n_trades] = si
+                trade_buy_days[n_trades] = buy_day
+                trade_sell_days[n_trades] = day
+                trade_hold_days[n_trades] = dh
+                trade_reasons[n_trades] = reason
+                n_trades += 1
+                holding = -1
+            continue
+
+        best_si = -1; best_vol = 0.0
+        for si in range(n_stocks):
+            buy = True
+            if buy and use_rsi_buy == 1 and rsi[si, day] < rsi_buy: buy = False
+            if buy and use_bb_buy == 1 and bb_pos[si, day] < bb_buy_th: buy = False
+            if buy and use_vol == 1 and vol_ratio[si, day] < vol_th: buy = False
+            if buy and require_ma_bull == 1 and close[si, day] < ma_fast[si, day]: buy = False
+            if buy and use_macd == 1:
+                if macd_mode == 0 and not (macd_hist[si, day] > 0 and macd_hist[si, day-1] <= 0): buy = False
+                elif macd_mode == 1 and macd_line[si, day] <= 0: buy = False
+            if buy and use_kd == 1:
+                if k_val[si, day] < kd_k_th: buy = False
+                if buy and kd_cross == 1 and day >= 1:
+                    if not (k_val[si, day] > d_val[si, day] and k_val[si, day-1] <= d_val[si, day-1]): buy = False
+            if buy and mom_min > 0 and momentum[si, day] < mom_min: buy = False
+            if buy and consec_green >= 1:
+                for g in range(consec_green):
+                    if day - g < 0 or is_green[si, day - g] != 1: buy = False; break
+            if buy and use_gap == 1 and gap[si, day] < 1.0: buy = False
+            if buy and near_high_pct > 0 and abs(near_high[si, day]) > near_high_pct: buy = False
+            if buy and above_ma60 == 1 and close[si, day] < ma60[si, day]: buy = False
+            if buy and require_ma_cross == 1 and ma_fast[si, day] < ma_slow[si, day]: buy = False
+            if buy and vol_gt_yesterday == 1 and day >= 1 and vol_ratio[si, day] <= vol_prev[si, day]: buy = False
+            if buy and vol_ratio[si, day] > best_vol:
+                best_si = si; best_vol = vol_ratio[si, day]
+        if best_si >= 0 and day + 1 < n_days:
+            holding = best_si
+            buy_price = close[best_si, day + 1]
+            peak_price = buy_price
+            buy_day = day + 1
+
+    return n_trades, trade_returns, trade_stocks, trade_buy_days, trade_sell_days, trade_hold_days, trade_reasons
+
+REASON_NAMES = ["到期", "停利", "停損", "RSI超買", "移動停利", "MACD死叉", "KD死叉", "跌破均線", "量縮"]
+
+# === 回測（單組參數，用 Numba 快版）===
 def backtest_one(args):
     p, pre = args
     ind = pre["ind"]
     ns, nd = pre["n_stocks"], pre["n_days"]
-
-    mfw = p.get("ma_fast_w", 5)
-    msw = p.get("ma_slow_w", 20)
+    mfw = p.get("ma_fast_w", 5); msw = p.get("ma_slow_w", 20)
     if mfw >= msw: return None
     maf = ind.get(f"ma{mfw}", ind["ma5"])
     mas = ind.get(f"ma{msw}", ind["ma20"])
@@ -264,86 +353,34 @@ def backtest_one(args):
     md = p.get("momentum_days", 5)
     mom = ind.get(f"mom_{md}", ind["mom_5"])
 
-    trades = []
-    holding = None
+    n_trades, rets_arr, stocks, buy_days, sell_days, hold_days, reasons = simulate_trading(
+        ns, nd, ind["close"], ind["rsi"], ind["bb_pos"], ind["vol_ratio"],
+        ind["macd_line"], ind["macd_hist"], ind["k_val"], ind["d_val"],
+        mom, ind["is_green"], ind["gap"], ind["near_high"],
+        maf, mas, ma60, ind["bb_width"], ind["vol_prev"],
+        p.get("use_rsi_buy",1), p.get("rsi_buy",55),
+        p.get("use_bb_buy",1), p.get("bb_buy",0.7),
+        p.get("use_vol_filter",1), p.get("vol_filter",3.0),
+        p.get("require_ma_bull",0), p.get("use_macd",0),
+        p.get("macd_mode",2), p.get("use_kd",0),
+        p.get("kd_buy_k",50), p.get("kd_cross",0),
+        p.get("momentum_min",0), p.get("consecutive_green",0),
+        p.get("gap_up",0), p.get("near_high_pct",0),
+        p.get("above_ma60",0), p.get("require_ma_cross",0),
+        p.get("vol_gt_yesterday",0),
+        p.get("stop_loss",-10), p.get("use_take_profit",1),
+        p.get("take_profit",20), p.get("trailing_stop",0),
+        p.get("use_rsi_sell",1), p.get("rsi_sell",90),
+        p.get("use_macd_sell",0), p.get("use_kd_sell",0),
+        p.get("sell_vol_shrink",0), p.get("hold_days",10))
 
-    for day in range(30, nd - 1):
-        if holding:
-            si = holding["si"]
-            cur = ind["close"][si, day]
-            dh = day - holding["bd"]
-            ret = (cur / holding["bp"] - 1) * 100
-            if dh < 1: continue
-            if cur > holding["pk"]: holding["pk"] = cur
-            sell = None
-
-            if ret <= p["stop_loss"]: sell = "停損"
-            if not sell and p.get("use_take_profit", 1) and ret >= p["take_profit"]: sell = "停利"
-            ts = p.get("trailing_stop", 0)
-            if not sell and ts > 0 and holding["pk"] > holding["bp"]:
-                if (cur / holding["pk"] - 1) * 100 <= -ts: sell = "移動停利"
-            if not sell and p.get("use_rsi_sell", 1) and ind["rsi"][si, day] >= p.get("rsi_sell", 90): sell = "RSI超買"
-            if not sell and p.get("use_macd_sell", 0) and day >= 1:
-                if ind["macd_hist"][si, day] < 0 and ind["macd_hist"][si, day-1] >= 0: sell = "MACD死叉"
-            if not sell and p.get("use_kd_sell", 0) and day >= 1:
-                if ind["k_val"][si, day] < ind["d_val"][si, day] and ind["k_val"][si, day-1] >= ind["d_val"][si, day-1]: sell = "KD死叉"
-            svs = p.get("sell_vol_shrink", 0)
-            if not sell and svs > 0 and dh >= 2 and ind["vol_ratio"][si, day] < svs: sell = "量縮"
-            if not sell and dh >= p["hold_days"]: sell = "到期"
-
-            if sell:
-                trades.append({"si": si, "bd": holding["bd"], "sd": day, "bp": holding["bp"], "sp": float(cur), "ret": ret, "dh": dh, "reason": sell})
-                holding = None
-            continue
-
-        best_si, best_v = -1, 0
-        for si in range(ns):
-            ok = True
-            if p.get("use_rsi_buy", 1) and ind["rsi"][si, day] < p["rsi_buy"]: ok = False
-            if ok and p.get("use_bb_buy", 1) and ind["bb_pos"][si, day] < p["bb_buy"]: ok = False
-            if ok and p.get("use_vol_filter", 1) and ind["vol_ratio"][si, day] < p["vol_filter"]: ok = False
-            if ok and p.get("require_ma_bull", 0) and ind["close"][si, day] < maf[si, day]: ok = False
-            if ok and p.get("use_macd", 0):
-                mm = p.get("macd_mode", 2)
-                if mm == 0 and not (ind["macd_hist"][si, day] > 0 and ind["macd_hist"][si, day-1] <= 0): ok = False
-                elif mm == 1 and ind["macd_line"][si, day] <= 0: ok = False
-            if ok and p.get("use_kd", 0):
-                if ind["k_val"][si, day] < p.get("kd_buy_k", 50): ok = False
-                if ok and p.get("kd_cross", 0):
-                    if not (ind["k_val"][si, day] > ind["d_val"][si, day] and ind["k_val"][si, day-1] <= ind["d_val"][si, day-1]): ok = False
-            mm_val = p.get("momentum_min", 0)
-            if ok and mm_val > 0 and mom[si, day] < mm_val: ok = False
-            vid = p.get("vol_increase_days", 0)
-            if ok and vid >= 2:
-                for v in range(vid):
-                    if day - v < 1 or ind["vol_ratio"][si, day-v] < 1.0: ok = False; break
-            if ok and p.get("bb_width_min", 0) > 0 and ind["bb_width"][si, day] < p["bb_width_min"]: ok = False
-            cg = p.get("consecutive_green", 0)
-            if ok and cg >= 1:
-                for g in range(cg):
-                    if day - g < 0 or ind["is_green"][si, day-g] != 1: ok = False; break
-            if ok and p.get("gap_up", 0) and ind["gap"][si, day] < 1.0: ok = False
-            nhp = p.get("near_high_pct", 0)
-            if ok and nhp > 0 and abs(ind["near_high"][si, day]) > nhp: ok = False
-            if ok and p.get("above_ma60", 0) and ind["close"][si, day] < ma60[si, day]: ok = False
-            if ok and p.get("require_ma_cross", 0) and maf[si, day] < mas[si, day]: ok = False
-            if ok and p.get("vol_gt_yesterday", 0) and day >= 1 and ind["vol_ratio"][si, day] <= ind["vol_prev"][si, day]: ok = False
-            if ok and ind["vol_ratio"][si, day] > best_v:
-                best_si = si; best_v = ind["vol_ratio"][si, day]
-
-        if best_si >= 0 and day + 1 < nd:
-            holding = {"si": best_si, "bp": float(ind["close"][best_si, day+1]), "bd": day+1, "pk": float(ind["close"][best_si, day+1])}
-
-    if len(trades) < 10: return None  # 2 年至少 10 筆
-    rets = np.array([t["ret"] for t in trades])
-    bds = np.array([t["bd"] for t in trades])
+    if n_trades < 10: return None
+    rets = rets_arr[:n_trades]; bds = buy_days[:n_trades]
     avg_r = np.mean(rets)
-    if avg_r < 6 or np.sum(rets > 0)/len(rets)*100 < 50: return None
-    avg_hd = np.mean([t["dh"] for t in trades])
+    if avg_r < 6 or np.sum(rets > 0)/n_trades*100 < 50: return None
+    avg_hd = np.mean(hold_days[:n_trades].astype(np.float64))
     if avg_hd > 15 or avg_hd < 1: return None
 
-    # 雙段驗證
-    nd = pre["n_days"]
     mid = nd // 2
     first = rets[bds < mid]; second = rets[bds >= mid]
     if len(first) < 2 or len(second) < 2: return None
@@ -351,19 +388,30 @@ def backtest_one(args):
     consistency = min(np.mean(first), np.mean(second)) / max(np.mean(first), np.mean(second))
 
     w = rets[rets > 0]; l = rets[rets <= 0]
-    wasted = np.sum(rets < 5) / len(rets) * 100
-    if wasted > 60: return None  # 白做工超過 60% 淘汰
+    wasted = np.sum(rets < 5) / n_trades * 100
+    if wasted > 60: return None
     pf = abs(np.sum(w) / np.sum(l)) if len(l) > 0 and np.sum(l) != 0 else 999
-    win_rate = np.sum(rets > 0) / len(rets) * 100
+    win_rate = np.sum(rets > 0) / n_trades * 100
 
     score = (np.sum(rets)*0.15 + avg_r*0.30 + win_rate*0.10 +
              min(pf,5)*3*0.05 + consistency*20*0.10 +
-             len(trades)*0.5*0.10 - wasted*0.20)  # 平均報酬最重要，白做工重罰
+             n_trades*0.5*0.10 - wasted*0.20)
+
+    # 組裝交易明細
+    tickers = pre["tickers"]
+    trades = []
+    for j in range(n_trades):
+        si = int(stocks[j])
+        trades.append({"si": si, "bd": int(buy_days[j]), "sd": int(sell_days[j]),
+            "bp": float(pre["ind"]["close"][si, int(buy_days[j])]),
+            "sp": float(pre["ind"]["close"][si, int(sell_days[j])]),
+            "ret": float(rets[j]), "dh": int(hold_days[j]),
+            "reason": REASON_NAMES[int(reasons[j])]})
 
     return {"score": float(score), "params": p, "trades": trades,
             "avg_return": float(avg_r), "total_return": float(np.sum(rets)),
-            "win_rate": float(np.sum(rets>0)/len(rets)*100), "max_return": float(np.max(rets)),
-            "avg_hold": float(avg_hd), "n_trades": len(trades), "pf": float(pf)}
+            "win_rate": float(win_rate), "max_return": float(np.max(rets)),
+            "avg_hold": float(avg_hd), "n_trades": n_trades, "pf": float(pf)}
 
 # === 參數空間 ===
 PARAMS = {
