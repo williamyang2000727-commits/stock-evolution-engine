@@ -67,13 +67,14 @@ TW_TICKERS = [
 ]
 
 CACHE_PATH = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_data_cache.pkl")
+DATA_GIST_ID = "a300b9e29372ac76f79eda39a2a86321"
 
 def download_data():
-    import pickle
-    # 有快取且不到 12 小時就直接讀
+    import pickle, base64
+    # 有快取且不到 24 小時就直接讀
     if os.path.exists(CACHE_PATH):
         age_hours = (time.time() - os.path.getmtime(CACHE_PATH)) / 3600
-        if age_hours < 12:
+        if age_hours < 24:
             try:
                 with open(CACHE_PATH, "rb") as f:
                     data = pickle.load(f)
@@ -83,7 +84,7 @@ def download_data():
             except:
                 pass
 
-    # 下載（加延遲避免 rate limit）
+    # 方法 1：yfinance 下載（加延遲避免 rate limit）
     data = {}
     for i, ticker in enumerate(TW_TICKERS):
         try:
@@ -91,11 +92,24 @@ def download_data():
             if len(h) >= 40:
                 data[ticker] = h
             if i % 5 == 4:
-                time.sleep(1)  # 每 5 檔休息 1 秒
+                time.sleep(1)
         except:
             continue
 
-    # 存快取
+    # 方法 2：yfinance 失敗就從 Gist 下載資料快取
+    if len(data) < 10:
+        print("[yfinance 失敗] 從 Gist 下載資料快取...")
+        try:
+            r = requests.get(f"https://api.github.com/gists/{DATA_GIST_ID}", timeout=30)
+            b64 = list(r.json()["files"].values())[0]["content"]
+            raw = base64.b64decode(b64)
+            data = pickle.loads(raw)
+            print(f"[Gist 快取] 成功讀取 {len(data)} 檔")
+        except Exception as e:
+            print(f"[Gist 快取失敗] {e}")
+            return {}
+
+    # 存本地快取
     if len(data) >= 10:
         try:
             os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
