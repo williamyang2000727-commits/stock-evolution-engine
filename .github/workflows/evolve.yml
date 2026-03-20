@@ -34,4 +34,4 @@ jobs:
           GIST_ID: ${{ secrets.GIST_ID }}
           GH_TOKEN: ${{ secrets.GH_TOKEN }}
         run: python cloud_evolve.py
-        timeout-minutes: 10
+        timeout-minutes: 14
