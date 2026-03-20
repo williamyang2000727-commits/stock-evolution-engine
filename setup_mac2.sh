@@ -40,9 +40,10 @@ echo "📥 下載進化引擎..."
 curl -sL "https://raw.githubusercontent.com/williamyang2000727-commits/stock-evolution-engine/main/cloud_evolve.py" -o cloud_evolve.py
 curl -sL "https://raw.githubusercontent.com/williamyang2000727-commits/stock-evolution-engine/main/requirements.txt" -o requirements.txt
 
-# 4. 安裝 Python 依賴
-echo "📦 安裝依賴..."
-pip3 install --user numpy yfinance requests 2>/dev/null || python3 -m pip install --user numpy yfinance requests
+# 4. 建立 venv 並安裝依賴
+echo "📦 建立虛擬環境並安裝依賴..."
+python3 -m venv ~/stock-evolution/venv
+~/stock-evolution/venv/bin/pip install --upgrade pip numpy yfinance requests
 
 # 5. 設定環境變數
 cat > .env.sh << ENVEOF
@@ -61,7 +62,7 @@ cat > run_forever.sh << 'RUNEOF'
 #!/bin/bash
 cd ~/stock-evolution
 source .env.sh
-PY=$(which python3)
+PY=~/stock-evolution/venv/bin/python3
 
 echo "🦞 第二台 Mac 進化引擎啟動！"
 echo "M1 16GB 火力全開：每輪 30,000 組 x 8 並行"
