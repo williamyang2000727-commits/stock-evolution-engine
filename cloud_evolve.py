@@ -411,13 +411,39 @@ def main():
             tk = tickers[si]
             lines.append(f"  {get_name(tk)}({tk.replace('.TW','')}) | {str(dates[t['bd']].date())[5:]}→{str(dates[t['sd']].date())[5:]} | {t['bp']:.1f}→{t['sp']:.1f} | {t['ret']:+.1f}% | {t['dh']}天 | {t['reason']}")
 
-        # 雲端不直接推 Telegram，只存 Gist
-        # 本地 sync_cloud.py 統一判斷是否突破再推播
-        print(f"[Job {job_id}] 找到候選策略，存入 Gist（由本地統一推播）")
+        print(f"[Job {job_id}] 找到候選策略，嘗試同步...")
 
         # 同步到 GitHub Gist（中央資料庫）
         gist_id = os.environ.get("GIST_ID", "")
         gh_token = os.environ.get("GH_TOKEN", "")
+
+        # 無 GH_TOKEN 模式（第二台 Mac）：讀公開 Gist 比分數，超過就推 Telegram
+        if gist_id and not gh_token:
+            try:
+                r = requests.get(f"https://api.github.com/gists/{gist_id}", timeout=10)
+                gist_data = r.json()
+                current_gist_score = json.loads(list(gist_data["files"].values())[0]["content"]).get("score", 0)
+                if best_score > current_gist_score:
+                    telegram_push(
+                        f"🖥️ 第二台 Mac 突破！\n"
+                        f"分數 {best_score:.2f} > Gist {current_gist_score:.2f}\n"
+                        f"勝率 {best['win_rate']:.1f}% | 平均報酬 {best['avg_return']:.1f}%\n"
+                        f"總報酬 {best['total_return']:.0f}% | {best['n_trades']}筆\n"
+                        f"⚠️ 無 GH_TOKEN，請手動同步或設定 token"
+                    )
+                    # 存本地檔案備查
+                    with open(os.path.expanduser("~/stock-evolution/best_found.json"), "w") as f:
+                        json.dump({"score": best_score, "params": best["params"],
+                            "backtest": {"avg_return": round(best["avg_return"], 2),
+                                "total_return": round(best["total_return"], 2),
+                                "win_rate": round(best["win_rate"], 2),
+                                "total_trades": best["n_trades"]}}, f, indent=2)
+                    print(f"[Job {job_id}] ✅ 超越 Gist！已推 Telegram")
+                else:
+                    print(f"[Job {job_id}] Gist 分數 {current_gist_score:.2f} 更高，不更新")
+            except Exception as e:
+                print(f"[Job {job_id}] Gist 讀取失敗: {e}")
+
         if gist_id and gh_token:
             try:
                 # 先讀目前 Gist 的分數
