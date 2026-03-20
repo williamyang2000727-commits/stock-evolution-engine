@@ -461,7 +461,7 @@ def main():
     print(f"[Job {job_id}] 歷史最佳：{best_score:.2f}")
 
     seed_offset = int(os.environ.get("SEED_OFFSET", "1000000"))
-    workers = max(1, os.cpu_count() - 1)
+    workers = int(os.environ.get("N_WORKERS", str(max(1, os.cpu_count() - 1))))
 
     best = None
     improved = 0
