@@ -284,7 +284,7 @@ def backtest_one(args):
         if best_si >= 0 and day + 1 < nd:
             holding = {"si": best_si, "bp": float(ind["close"][best_si, day+1]), "bd": day+1, "pk": float(ind["close"][best_si, day+1])}
 
-    if len(trades) < 5: return None
+    if len(trades) < 10: return None  # 2 年至少 10 筆
     rets = np.array([t["ret"] for t in trades])
     bds = np.array([t["bd"] for t in trades])
     avg_r = np.mean(rets)
@@ -305,9 +305,9 @@ def backtest_one(args):
     pf = abs(np.sum(w) / np.sum(l)) if len(l) > 0 and np.sum(l) != 0 else 999
     win_rate = np.sum(rets > 0) / len(rets) * 100
 
-    score = (np.sum(rets)*0.15 + avg_r*0.25 + win_rate*0.15 +
-             min(pf,5)*3*0.10 + np.max(rets)*0.05 +
-             consistency*20*0.15 + len(trades)*0.5*0.05 - wasted*0.10)
+    score = (np.sum(rets)*0.20 + avg_r*0.20 + win_rate*0.10 +
+             min(pf,5)*3*0.05 + consistency*20*0.10 +
+             len(trades)*1.0*0.25 - wasted*0.10)  # 交易筆數 25% 權重
 
     return {"score": float(score), "params": p, "trades": trades,
             "avg_return": float(avg_r), "total_return": float(np.sum(rets)),
