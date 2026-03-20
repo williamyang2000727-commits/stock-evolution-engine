@@ -66,15 +66,43 @@ TW_TICKERS = [
     "2049.TW","1504.TW","2207.TW","1476.TW","9910.TW","2368.TW","2449.TW","2383.TW",
 ]
 
+CACHE_PATH = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_data_cache.pkl")
+
 def download_data():
+    import pickle
+    # 有快取且不到 12 小時就直接讀
+    if os.path.exists(CACHE_PATH):
+        age_hours = (time.time() - os.path.getmtime(CACHE_PATH)) / 3600
+        if age_hours < 12:
+            try:
+                with open(CACHE_PATH, "rb") as f:
+                    data = pickle.load(f)
+                if len(data) >= 10:
+                    print(f"[快取] 讀取 {len(data)} 檔 | {age_hours:.1f} 小時前下載")
+                    return data
+            except:
+                pass
+
+    # 下載（加延遲避免 rate limit）
     data = {}
-    for ticker in TW_TICKERS:
+    for i, ticker in enumerate(TW_TICKERS):
         try:
             h = yf.Ticker(ticker).history(period="2y")
             if len(h) >= 40:
                 data[ticker] = h
+            if i % 5 == 4:
+                time.sleep(1)  # 每 5 檔休息 1 秒
         except:
             continue
+
+    # 存快取
+    if len(data) >= 10:
+        try:
+            os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
+            with open(CACHE_PATH, "wb") as f:
+                pickle.dump(data, f)
+        except:
+            pass
     return data
 
 def filter_top_volume(data, top_n=50):

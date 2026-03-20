@@ -65,7 +65,11 @@ source .env.sh
 PY=~/stock-evolution/venv/bin/python3
 
 echo "🦞 第二台 Mac 進化引擎啟動！"
-echo "M1 16GB 火力全開：每輪 30,000 組 x 8 並行"
+echo "先下載資料快取，再 8 組並行..."
+
+# 先跑一次下載資料快取
+$PY cloud_evolve.py 2>&1 | tail -3
+echo "快取完成，啟動 8 組並行"
 
 for i in 1 2 3 4 5 6 7 8; do
     while true; do
