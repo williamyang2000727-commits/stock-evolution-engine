@@ -1,3 +1,4 @@
 yfinance
 numpy
 requests
+numba
