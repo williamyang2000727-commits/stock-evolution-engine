@@ -338,11 +338,13 @@ PARAMS = {
 # === 主程式 ===
 def main():
     job_id = os.environ.get("JOB_ID", "0")
-    n_tests = int(os.environ.get("N_TESTS", "5000"))
+    max_minutes = 7  # 跑滿 7 分鐘（timeout 是 8 分鐘，留 1 分鐘緩衝）
+    batch_size = 10000  # 每批 10000 組
 
-    print(f"[Job {job_id}] 🚀 雲端進化引擎啟動 | {n_tests} 組")
+    print(f"[Job {job_id}] 🚀 雲端進化引擎啟動 | 跑滿 {max_minutes} 分鐘")
+    start_time = time.time()
 
-    # 下載資料
+    # 下載資料（只下載一次）
     t0 = time.time()
     raw = download_data()
     data = filter_top_volume(raw, 50)
@@ -354,39 +356,48 @@ def main():
     pre = precompute(data)
     print(f"[Job {job_id}] 指標預算完成：{pre['n_stocks']}檔 x {pre['n_days']}天")
 
-    # 載入歷史最佳（從環境變數或檔案）
+    # 載入歷史最佳
     best_score = float(os.environ.get("BEST_SCORE", "-999999"))
     print(f"[Job {job_id}] 歷史最佳：{best_score:.2f}")
 
-    # 隨機測試
-    # 每台機器用不同 seed，且跟本地 Mac 的 seed 完全不重疊
     seed_offset = int(os.environ.get("SEED_OFFSET", "1000000"))
-    np.random.seed((int(time.time()) + int(job_id) * 99991 + seed_offset) % 2**31)
-    param_sets = []
-    for _ in range(n_tests):
-        p = {k: np.random.choice(v) for k, v in PARAMS.items()}
-        p = {k: int(v) if isinstance(v, (np.integer,)) else float(v) if isinstance(v, (np.floating,)) else v for k, v in p.items()}
-        if p.get("ma_fast_w", 5) >= p.get("ma_slow_w", 20): continue
-        param_sets.append((p, pre))
+    workers = max(1, os.cpu_count() - 1)
 
-    t1 = time.time()
     best = None
     improved = 0
     tested = 0
+    round_num = 0
 
-    workers = max(1, os.cpu_count() - 1)
-    with ProcessPoolExecutor(max_workers=workers) as ex:
-        for r in ex.map(backtest_one, param_sets):
-            tested += 1
-            if r and r["score"] > best_score:
-                best_score = r["score"]
-                best = r
-                improved += 1
-                print(f"  [Job {job_id}] 新紀錄！{r['score']:.1f} | 勝率{r['win_rate']:.0f}% | 平均報酬{r['avg_return']:.1f}% | 總報酬{r['total_return']:.0f}%")
+    # 無限循環跑到 7 分鐘為止
+    while (time.time() - start_time) < max_minutes * 60:
+        round_num += 1
 
-    elapsed = time.time() - t1
+        # 每輪用不同 seed
+        np.random.seed((int(time.time() * 1000) + int(job_id) * 99991 + seed_offset + round_num * 77777) % 2**31)
+
+        param_sets = []
+        for _ in range(batch_size):
+            p = {k: np.random.choice(v) for k, v in PARAMS.items()}
+            p = {k: int(v) if isinstance(v, (np.integer,)) else float(v) if isinstance(v, (np.floating,)) else v for k, v in p.items()}
+            if p.get("ma_fast_w", 5) >= p.get("ma_slow_w", 20): continue
+            param_sets.append((p, pre))
+
+        with ProcessPoolExecutor(max_workers=workers) as ex:
+            for r in ex.map(backtest_one, param_sets):
+                tested += 1
+                if r and r["score"] > best_score:
+                    best_score = r["score"]
+                    best = r
+                    improved += 1
+                    print(f"  [Job {job_id}] R{round_num} 新紀錄！{r['score']:.1f} | 勝率{r['win_rate']:.0f}% | 平均報酬{r['avg_return']:.1f}%")
+
+        elapsed_so_far = time.time() - start_time
+        speed = tested / elapsed_so_far if elapsed_so_far > 0 else 0
+        print(f"[Job {job_id}] R{round_num} | 累計{tested}組 | {elapsed_so_far:.0f}秒 | {speed:.0f}組/秒")
+
+    elapsed = time.time() - start_time
     speed = tested / elapsed if elapsed > 0 else 0
-    print(f"[Job {job_id}] 完成 | {tested}組 | {elapsed:.1f}秒 | {speed:.0f}組/秒 | 突破{improved}次")
+    print(f"[Job {job_id}] 結束 | {round_num}輪 | {tested}組 | {elapsed:.0f}秒 | {speed:.0f}組/秒 | 突破{improved}次")
 
     if best:
         tickers = pre["tickers"]
