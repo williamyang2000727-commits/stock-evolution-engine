@@ -410,17 +410,9 @@ def main():
             tk = tickers[si]
             lines.append(f"  {get_name(tk)}({tk.replace('.TW','')}) | {str(dates[t['bd']].date())[5:]}→{str(dates[t['sd']].date())[5:]} | {t['bp']:.1f}→{t['sp']:.1f} | {t['ret']:+.1f}% | {t['dh']}天 | {t['reason']}")
 
-        msg = (
-            f"☁️ 雲端進化突破！Job{job_id}\n"
-            f"━━━━━━━━━━━━\n"
-            f"平均報酬：{best['avg_return']:.1f}%\n"
-            f"總報酬：{best['total_return']:.1f}%\n"
-            f"勝率：{best['win_rate']:.0f}% | {best['n_trades']}筆\n"
-            f"持有：{best['avg_hold']:.1f}天\n"
-            f"⚡ {tested}組/{elapsed:.1f}秒/{speed:.0f}組/秒\n\n"
-            f"📋 交易明細：\n" + "\n".join(lines)
-        )
-        telegram_push(msg)
+        # 雲端不直接推 Telegram，只存 Gist
+        # 本地 sync_cloud.py 統一判斷是否突破再推播
+        print(f"[Job {job_id}] 找到候選策略，存入 Gist（由本地統一推播）")
 
         # 同步到 GitHub Gist（中央資料庫）
         gist_id = os.environ.get("GIST_ID", "")
