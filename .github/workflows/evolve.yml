@@ -2,7 +2,7 @@ name: 🦞 Strategy Evolution
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '0,15,30,45 * * * *'  # 每 15 分鐘（整點、15、30、45）
   workflow_dispatch:
 
 jobs:

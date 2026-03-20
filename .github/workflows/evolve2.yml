@@ -2,7 +2,7 @@ name: 🦞 Strategy Evolution Wave 2
 
 on:
   schedule:
-    - cron: '2,7,12,17,22,27,32,37,42,47,52,57 * * * *'  # 跟 Wave 1 錯開 2 分鐘
+    - cron: '8,23,38,53 * * * *'  # 跟 Wave 1 錯開 8 分鐘，確保不重疊
   workflow_dispatch:
 
 jobs:
