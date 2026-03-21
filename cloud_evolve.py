@@ -347,7 +347,7 @@ def simulate_trading(n_stocks, n_days, close, rsi, bb_pos, vol_ratio,
     require_ma_cross, vol_gt_yesterday,
     stop_loss, use_tp, take_profit, trailing_stop,
     use_rsi_sell, rsi_sell_th, use_macd_sell, use_kd_sell,
-    sell_vol_shrink, hold_days_max):
+    sell_vol_shrink, sell_below_ma, hold_days_max):
 
     MAX_TRADES = 100
     trade_returns = np.zeros(MAX_TRADES)
@@ -378,6 +378,12 @@ def simulate_trading(n_stocks, n_days, close, rsi, bb_pos, vol_ratio,
             if not sell and use_kd_sell == 1 and day >= 1:
                 if k_val[si, day] < d_val[si, day] and k_val[si, day-1] >= d_val[si, day-1]: sell = True; reason = 6
             if not sell and sell_vol_shrink > 0 and dh >= 2 and vol_ratio[si, day] < sell_vol_shrink: sell = True; reason = 7
+            if not sell and sell_below_ma > 0:
+                ma_check = 0.0
+                if sell_below_ma == 1: ma_check = ma_fast[si, day]
+                elif sell_below_ma == 2: ma_check = ma_slow[si, day]
+                elif sell_below_ma == 3: ma_check = ma60[si, day]
+                if ma_check > 0 and cur < ma_check: sell = True; reason = 8
             if not sell and dh >= hold_days_max: sell = True; reason = 0
             if sell and n_trades < MAX_TRADES:
                 trade_returns[n_trades] = ret
@@ -424,7 +430,7 @@ def simulate_trading(n_stocks, n_days, close, rsi, bb_pos, vol_ratio,
 
     return n_trades, trade_returns, trade_stocks, trade_buy_days, trade_sell_days, trade_hold_days, trade_reasons
 
-REASON_NAMES = ["到期", "停利", "停損", "RSI超買", "移動停利", "MACD死叉", "KD死叉", "量縮"]
+REASON_NAMES = ["到期", "停利", "停損", "RSI超買", "移動停利", "MACD死叉", "KD死叉", "量縮", "跌破均線"]
 
 # === 回測（單組參數，用 Numba 快版）===
 def backtest_one(args):
@@ -459,7 +465,7 @@ def backtest_one(args):
         p.get("take_profit",20), p.get("trailing_stop",0),
         p.get("use_rsi_sell",1), p.get("rsi_sell",90),
         p.get("use_macd_sell",0), p.get("use_kd_sell",0),
-        p.get("sell_vol_shrink",0), p.get("hold_days",10))
+        p.get("sell_vol_shrink",0), p.get("sell_below_ma",0), p.get("hold_days",10))
 
     if n_trades < 10: return None
     rets = rets_arr[:n_trades]; bds = buy_days[:n_trades]
@@ -522,6 +528,7 @@ PARAMS = {
     "use_rsi_sell": [0,1], "rsi_sell": [75,80,85,90,95],
     "use_macd_sell": [0,1], "use_kd_sell": [0,1],
     "sell_vol_shrink": [0,0.3,0.5,0.7],
+    "sell_below_ma": [0,1,2,3],  # 0=關 1=快線 2=慢線 3=MA60
     "hold_days": [5,7,10,15],
 }
 
