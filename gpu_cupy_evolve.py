@@ -394,6 +394,87 @@ def precompute(data):
         "williams_r":wr,"near_high":nh,"vol_prev":vol_prev.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
+REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線"]
+
+def cpu_replay(pre, p):
+    """用 CPU 重跑一次最佳參數，拿完整交易明細（股票名、日期、價格）"""
+    ns, nd = pre["n_stocks"], pre["n_days"]
+    tickers = pre["tickers"]; dates = pre["dates"]; close = pre["close"]
+    rsi=pre["rsi"]; bb_pos=pre["bb_pos"]; vol_ratio=pre["vol_ratio"]
+    macd_hist=pre["macd_hist"]; macd_line=pre["macd_line"]
+    k_val=pre["k_val"]; d_val=pre["d_val"]; williams_r=pre["williams_r"]
+    is_green=pre["is_green"]; gap=pre["gap"]; near_high=pre["near_high"]
+    vol_prev=pre["vol_prev"]
+    maf=pre["ma_d"].get(int(p.get("ma_fast_w",5)), pre["ma_d"][5])
+    mas=pre["ma_d"].get(int(p.get("ma_slow_w",20)), pre["ma_d"][20])
+    ma60=pre["ma60"]
+    mom=pre["mom_d"].get(int(p.get("momentum_days",5)), pre["mom_d"][5])
+
+    holding=-1; bp=0.0; pk=0.0; bd=0; trades=[]
+    for day in range(30, nd-1):
+        if holding >= 0:
+            si=holding; cur=float(close[si,day]); dh=day-bd
+            ret=(cur/bp-1)*100
+            if dh<1: continue
+            if cur>pk: pk=cur
+            sell=False; reason=0
+            if ret<=p["stop_loss"]: sell=True; reason=2
+            if not sell and p.get("use_take_profit",1) and ret>=p["take_profit"]: sell=True; reason=1
+            if not sell and p.get("trailing_stop",0)>0 and pk>bp:
+                if (cur/pk-1)*100<=-p["trailing_stop"]: sell=True; reason=4
+            if not sell and p.get("use_rsi_sell",1) and rsi[si,day]>=p.get("rsi_sell",90): sell=True; reason=3
+            if not sell and p.get("use_macd_sell",0) and day>=1:
+                if macd_hist[si,day]<0 and macd_hist[si,day-1]>=0: sell=True; reason=5
+            if not sell and p.get("use_kd_sell",0) and day>=1:
+                if k_val[si,day]<d_val[si,day] and k_val[si,day-1]>=d_val[si,day-1]: sell=True; reason=6
+            if not sell and p.get("sell_vol_shrink",0)>0 and dh>=2 and vol_ratio[si,day]<p["sell_vol_shrink"]: sell=True; reason=7
+            sbm=int(p.get("sell_below_ma",0))
+            if not sell and sbm>0:
+                mc=0
+                if sbm==1: mc=maf[si,day]
+                elif sbm==2: mc=mas[si,day]
+                elif sbm==3: mc=ma60[si,day]
+                if mc>0 and cur<mc: sell=True; reason=8
+            if not sell and dh>=int(p["hold_days"]): sell=True; reason=0
+            if sell:
+                trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
+                    "buy_date":str(dates[bd].date()),"sell_date":str(dates[day].date()),
+                    "buy_price":round(bp,2),"sell_price":round(cur,2),
+                    "return":round(ret,2),"days":dh,"reason":REASON_NAMES[min(reason,len(REASON_NAMES)-1)]})
+                holding=-1
+            continue
+        best_si=-1; best_v=0
+        for si in range(ns):
+            buy=True
+            if buy and p.get("use_rsi_buy",1) and rsi[si,day]<p.get("rsi_buy",55): buy=False
+            if buy and p.get("use_bb_buy",1) and bb_pos[si,day]<p.get("bb_buy",0.7): buy=False
+            if buy and p.get("use_vol_filter",1) and vol_ratio[si,day]<p.get("vol_filter",3): buy=False
+            if buy and p.get("require_ma_bull",0) and close[si,day]<maf[si,day]: buy=False
+            if buy and p.get("use_macd",0):
+                mm=int(p.get("macd_mode",2))
+                if mm==0 and not (macd_hist[si,day]>0 and macd_hist[si,day-1]<=0): buy=False
+                elif mm==1 and macd_line[si,day]<=0: buy=False
+            if buy and p.get("use_kd",0):
+                if k_val[si,day]<p.get("kd_buy_k",50): buy=False
+                if buy and p.get("kd_cross",0) and day>=1:
+                    if not (k_val[si,day]>d_val[si,day] and k_val[si,day-1]<=d_val[si,day-1]): buy=False
+            if buy and p.get("use_wr_buy",0) and williams_r[si,day]<p.get("wr_buy",-30): buy=False
+            if buy and p.get("momentum_min",0)>0 and mom[si,day]<p["momentum_min"]: buy=False
+            cg=int(p.get("consecutive_green",0))
+            if buy and cg>=1:
+                for g in range(cg):
+                    if day-g<0 or is_green[si,day-g]!=1: buy=False; break
+            if buy and p.get("gap_up",0) and gap[si,day]<1.0: buy=False
+            nhp=p.get("near_high_pct",0)
+            if buy and nhp>0 and abs(near_high[si,day])>nhp: buy=False
+            if buy and p.get("above_ma60",0) and close[si,day]<ma60[si,day]: buy=False
+            if buy and p.get("require_ma_cross",0) and maf[si,day]<mas[si,day]: buy=False
+            if buy and p.get("vol_gt_yesterday",0) and day>=1 and vol_ratio[si,day]<=vol_prev[si,day]: buy=False
+            if buy and vol_ratio[si,day]>best_v: best_si=si; best_v=vol_ratio[si,day]
+        if best_si>=0 and day+1<nd:
+            holding=best_si; bp=float(close[best_si,day+1]); pk=bp; bd=day+1
+    return sorted(trades, key=lambda x: x["buy_date"])
+
 def main():
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     raw = download_data()
@@ -486,16 +567,32 @@ def main():
                 headers = {"Authorization": f"token {GH_TOKEN}"}
                 r = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers=headers, timeout=10)
                 cs = json.loads(list(r.json()["files"].values())[0]["content"]).get("score", 0)
-                if best_score > cs + 0.01:  # 加 0.01 避免浮點精度問題
+                if best_score > cs + 0.01:
+                    # CPU 重跑一次拿完整交易明細
+                    trade_details = cpu_replay(pre, best_params)
+                    trade_lines = "\n".join([
+                        f"  {t['name']}({t['ticker'].replace('.TW','')}) | {t['buy_date'][5:]}→{t['sell_date'][5:]} | {t['return']:+.1f}% | {t['days']}天 | {t['reason']}"
+                        for t in trade_details
+                    ])
                     content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060",
                         "updated_at":time.strftime("%Y-%m-%dT%H:%M:%S"),
                         "params":best_params,"backtest":{
                             "avg_return":round(best_avg,2),"total_return":round(best_total,2),
-                            "win_rate":round(best_wr,2),"total_trades":best_nt}},
+                            "win_rate":round(best_wr,2),"total_trades":best_nt},
+                        "trade_details":trade_details},
                         ensure_ascii=False, indent=2)
                     requests.patch(f"https://api.github.com/gists/{GIST_ID}", headers=headers,
                         json={"files":{"best_strategy.json":{"content":content}}}, timeout=10)
-                    telegram_push(f"🎮 GPU RTX 3060 突破！\n分數 {best_score:.2f}\n勝率 {best_wr:.0f}% | 平均 {best_avg:.1f}%\n{best_nt}筆 | {speed:,.0f}組/秒")
+                    telegram_push(
+                        f"🎮 GPU RTX 3060 突破！\n"
+                        f"━━━━━━━━━━━━\n"
+                        f"分數：{best_score:.2f} > {cs:.2f}\n"
+                        f"平均報酬：{best_avg:.1f}%\n"
+                        f"總報酬：{best_total:.0f}%\n"
+                        f"勝率：{best_wr:.0f}% | {best_nt}筆\n"
+                        f"⚡ {total_tested:,}組/{elapsed:.0f}秒/{speed:,.0f}組/秒\n\n"
+                        f"📋 交易明細：\n{trade_lines}"
+                    )
                     print(f"  [GPU] ✅ Gist 同步！({best_score:.2f} > {cs:.2f})")
                 last_synced_improved = total_improved
             except Exception as e:
