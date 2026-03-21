@@ -335,22 +335,19 @@ def precompute(data):
 
     return {"tickers": tickers, "dates": dates, "n_stocks": n, "n_days": min_len, "ind": ind}
 
-# === Numba 編譯的核心模擬（快 10-50 倍）===
+# === Numba 編譯的核心模擬（七大核心統一版）===
 @nb.njit(cache=True)
 def simulate_trading(n_stocks, n_days, close, rsi, bb_pos, vol_ratio,
     macd_line, macd_hist, k_val, d_val, momentum, is_green, gap, near_high,
     williams_r, ma_fast, ma_slow, ma60, bb_width, vol_prev,
-    low3, obv, obv_ma, atr, bias5, bias10, bias20,
     use_rsi_buy, rsi_buy, use_bb_buy, bb_buy_th, use_vol, vol_th,
     require_ma_bull, use_macd, macd_mode, use_kd, kd_k_th, kd_cross,
+    use_wr_buy, wr_buy_th,
     mom_min, consec_green, use_gap, near_high_pct, above_ma60,
-    require_ma_cross, vol_gt_yesterday, use_obv_buy,
-    bias_buy_w, bias_buy_th, use_wr_buy, wr_buy_th,
+    require_ma_cross, vol_gt_yesterday,
     stop_loss, use_tp, take_profit, trailing_stop,
     use_rsi_sell, rsi_sell_th, use_macd_sell, use_kd_sell,
-    sell_below_ma_period, sell_below_low_w, sell_vol_shrink,
-    use_atr_stop, atr_stop_n, bias_sell_w, bias_sell_th,
-    hold_days_max):
+    sell_vol_shrink, hold_days_max):
 
     MAX_TRADES = 100
     trade_returns = np.zeros(MAX_TRADES)
@@ -380,20 +377,7 @@ def simulate_trading(n_stocks, n_days, close, rsi, bb_pos, vol_ratio,
                 if macd_hist[si, day] < 0 and macd_hist[si, day-1] >= 0: sell = True; reason = 5
             if not sell and use_kd_sell == 1 and day >= 1:
                 if k_val[si, day] < d_val[si, day] and k_val[si, day-1] >= d_val[si, day-1]: sell = True; reason = 6
-            if not sell and sell_below_ma_period > 0:
-                if cur < ma_fast[si, day]: sell = True; reason = 7
-            if not sell and sell_below_low_w > 0:
-                if cur < low3[si, day]: sell = True; reason = 9
-            if not sell and sell_vol_shrink > 0 and dh >= 2 and vol_ratio[si, day] < sell_vol_shrink: sell = True; reason = 8
-            if not sell and use_atr_stop > 0:
-                atr_stop_val = peak_price - atr_stop_n * atr[si, day]
-                if cur < atr_stop_val: sell = True; reason = 4
-            if not sell and bias_sell_w > 0:
-                cur_bias = 0.0
-                if bias_sell_w == 5: cur_bias = bias5[si, day]
-                elif bias_sell_w == 10: cur_bias = bias10[si, day]
-                elif bias_sell_w == 20: cur_bias = bias20[si, day]
-                if cur_bias > bias_sell_th: sell = True; reason = 3
+            if not sell and sell_vol_shrink > 0 and dh >= 2 and vol_ratio[si, day] < sell_vol_shrink: sell = True; reason = 7
             if not sell and dh >= hold_days_max: sell = True; reason = 0
             if sell and n_trades < MAX_TRADES:
                 trade_returns[n_trades] = ret
@@ -420,6 +404,7 @@ def simulate_trading(n_stocks, n_days, close, rsi, bb_pos, vol_ratio,
                 if k_val[si, day] < kd_k_th: buy = False
                 if buy and kd_cross == 1 and day >= 1:
                     if not (k_val[si, day] > d_val[si, day] and k_val[si, day-1] <= d_val[si, day-1]): buy = False
+            if buy and use_wr_buy == 1 and williams_r[si, day] < wr_buy_th: buy = False
             if buy and mom_min > 0 and momentum[si, day] < mom_min: buy = False
             if buy and consec_green >= 1:
                 for g in range(consec_green):
@@ -429,16 +414,6 @@ def simulate_trading(n_stocks, n_days, close, rsi, bb_pos, vol_ratio,
             if buy and above_ma60 == 1 and close[si, day] < ma60[si, day]: buy = False
             if buy and require_ma_cross == 1 and ma_fast[si, day] < ma_slow[si, day]: buy = False
             if buy and vol_gt_yesterday == 1 and day >= 1 and vol_ratio[si, day] <= vol_prev[si, day]: buy = False
-            if buy and use_obv_buy == 1:
-                if obv[si, day] <= obv_ma[si, day]: buy = False
-            if buy and bias_buy_w > 0:
-                cur_bias = 0.0
-                if bias_buy_w == 5: cur_bias = bias5[si, day]
-                elif bias_buy_w == 10: cur_bias = bias10[si, day]
-                elif bias_buy_w == 20: cur_bias = bias20[si, day]
-                if cur_bias > bias_buy_th: buy = False
-            if buy and use_wr_buy == 1:
-                if williams_r[si, day] < wr_buy_th: buy = False
             if buy and vol_ratio[si, day] > best_vol:
                 best_si = si; best_vol = vol_ratio[si, day]
         if best_si >= 0 and day + 1 < n_days:
@@ -449,7 +424,7 @@ def simulate_trading(n_stocks, n_days, close, rsi, bb_pos, vol_ratio,
 
     return n_trades, trade_returns, trade_stocks, trade_buy_days, trade_sell_days, trade_hold_days, trade_reasons
 
-REASON_NAMES = ["到期", "停利", "停損", "RSI超買", "移動停利", "MACD死叉", "KD死叉", "跌破均線", "量縮", "跌破前低"]
+REASON_NAMES = ["到期", "停利", "停損", "RSI超買", "移動停利", "MACD死叉", "KD死叉", "量縮"]
 
 # === 回測（單組參數，用 Numba 快版）===
 def backtest_one(args):
@@ -469,28 +444,22 @@ def backtest_one(args):
         ind["macd_line"], ind["macd_hist"], ind["k_val"], ind["d_val"],
         mom, ind["is_green"], ind["gap"], ind["near_high"],
         ind["williams_r"], maf, mas, ma60, ind["bb_width"], ind["vol_prev"],
-        ind["low3"], ind["obv"], ind["obv_ma"], ind["atr"],
-        ind["bias5"], ind["bias10"], ind["bias20"],
         p.get("use_rsi_buy",1), p.get("rsi_buy",55),
         p.get("use_bb_buy",1), p.get("bb_buy",0.7),
         p.get("use_vol_filter",1), p.get("vol_filter",3.0),
         p.get("require_ma_bull",0), p.get("use_macd",0),
         p.get("macd_mode",2), p.get("use_kd",0),
         p.get("kd_buy_k",50), p.get("kd_cross",0),
+        p.get("use_wr_buy",0), p.get("wr_buy",-30),
         p.get("momentum_min",0), p.get("consecutive_green",0),
         p.get("gap_up",0), p.get("near_high_pct",0),
         p.get("above_ma60",0), p.get("require_ma_cross",0),
-        p.get("vol_gt_yesterday",0), p.get("use_obv_buy",0),
-        p.get("bias_buy_w",0), p.get("bias_buy_th",10),
-        p.get("use_wr_buy",0), p.get("wr_buy",-30),
+        p.get("vol_gt_yesterday",0),
         p.get("stop_loss",-10), p.get("use_take_profit",1),
         p.get("take_profit",20), p.get("trailing_stop",0),
         p.get("use_rsi_sell",1), p.get("rsi_sell",90),
         p.get("use_macd_sell",0), p.get("use_kd_sell",0),
-        0, p.get("sell_below_low_w",0), p.get("sell_vol_shrink",0),
-        p.get("use_atr_stop",0), p.get("atr_stop_n",2.0),
-        p.get("bias_sell_w",0), p.get("bias_sell_th",20),
-        p.get("hold_days",10))
+        p.get("sell_vol_shrink",0), p.get("hold_days",10))
 
     if n_trades < 10: return None
     rets = rets_arr[:n_trades]; bds = buy_days[:n_trades]
