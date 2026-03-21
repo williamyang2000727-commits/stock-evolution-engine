@@ -32,8 +32,27 @@ CN_NAMES = {
     "2345.TW": "智邦", "3443.TW": "創意", "2474.TW": "可成",
     "2801.TW": "彰銀", "2834.TW": "臺企銀", "2883.TW": "開發金",
     "2884.TW": "玉山金", "2887.TW": "台新金", "2892.TW": "第一金", "3189.TW": "景碩",
+    "2327.TW": "國巨", "1326.TW": "台化", "3008.TW": "大立光", "1402.TW": "遠東新",
+    "1590.TW": "亞德客-KY", "5871.TW": "中租-KY", "2395.TW": "研華", "2379.TW": "瑞昱",
+    "6239.TW": "力成", "3044.TW": "健鼎", "2474.TW": "可成", "3443.TW": "創意",
+    "2345.TW": "智邦", "2449.TW": "京元電子", "1102.TW": "亞泥", "5880.TW": "合庫金",
+    "3017.TW": "奇鋐", "6669.TW": "緯穎", "3034.TW": "聯詠", "3661.TW": "世芯-KY",
+    "2634.TW": "漢翔", "1513.TW": "中興電", "1504.TW": "東元", "2049.TW": "上銀",
+    "1476.TW": "儒鴻", "9910.TW": "豐泰", "2207.TW": "和泰車", "2368.TW": "金像電",
+    "2383.TW": "台光電", "1312.TW": "國喬", "1314.TW": "中石化", "2605.TW": "新興",
+    "8454.TW": "富邦媒", "2542.TW": "興富發", "2404.TW": "漢唐", "1210.TW": "大成",
+    "1227.TW": "佳格", "9933.TW": "中鼎", "5876.TW": "上海商銀", "9921.TW": "巨大",
 }
 def get_name(t): return CN_NAMES.get(t, t.replace(".TW",""))
+def auto_fetch_names(tickers):
+    missing = [t for t in tickers if t not in CN_NAMES]
+    if not missing: return
+    for t in missing:
+        try:
+            info = yf.Ticker(t).info
+            name = info.get("shortName","") or info.get("longName","")
+            if name and not name[0].isdigit(): CN_NAMES[t] = name
+        except: pass
 def telegram_push(msg):
     for cid in CHAT_IDS:
         cid = cid.strip()
@@ -490,6 +509,7 @@ def main():
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     raw = download_data()
     data = filter_top(raw, 50)
+    auto_fetch_names(list(data.keys()))
     if len(data) < 10: print("資料不足"); return
     pre = precompute(data)
     ns, nd = pre["n_stocks"], pre["n_days"]
