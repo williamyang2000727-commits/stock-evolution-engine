@@ -449,7 +449,7 @@ def simulate_trading(n_stocks, n_days, close, rsi, bb_pos, vol_ratio,
 
     return n_trades, trade_returns, trade_stocks, trade_buy_days, trade_sell_days, trade_hold_days, trade_reasons
 
-REASON_NAMES = ["到期", "停利", "停損", "RSI超買", "移動停利", "MACD死叉", "KD死叉", "跌破均線", "量縮"]
+REASON_NAMES = ["到期", "停利", "停損", "RSI超買", "移動停利", "MACD死叉", "KD死叉", "跌破均線", "量縮", "跌破前低"]
 
 # === 回測（單組參數，用 Numba 快版）===
 def backtest_one(args):
