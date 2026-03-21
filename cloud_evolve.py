@@ -533,31 +533,33 @@ def backtest_one(args):
 
 # === 參數空間 ===
 PARAMS = {
-    # 精簡版 — 搜索空間縮小 1260 倍，更快找到突破
-    "use_rsi_buy": [0,1], "rsi_buy": [40,55,65,75],
-    "use_bb_buy": [0,1], "bb_buy": [0.3,0.6,0.8,1.0],
-    "use_vol_filter": [0,1], "vol_filter": [1.5,2.5,4.0],
-    "require_ma_bull": [0,1], "ma_fast_w": [3,5,10], "ma_slow_w": [15,20,30,60],
-    "use_macd": [0,1], "macd_mode": [0,1,2],
-    "use_kd": [0,1], "kd_buy_k": [30,50,70], "kd_cross": [0,1],
-    "momentum_days": [3,5,10], "momentum_min": [0,3,8],
-    "vol_increase_days": [0,2], "bb_width_min": [0,0.05],
-    "consecutive_green": [0,1,2,3], "gap_up": [0,1],
-    "near_high_pct": [0,5,10], "above_ma60": [0,1],
-    "require_ma_cross": [0,1], "vol_gt_yesterday": [0,1],
-    "stop_loss": [-5,-7,-10,-15],
-    "use_take_profit": [0,1], "take_profit": [10,20,40,60],
-    "trailing_stop": [0,5,10],
-    "use_rsi_sell": [0,1], "rsi_sell": [75,85,95],
-    "use_macd_sell": [0,1], "use_kd_sell": [0,1],
-    "sell_vol_shrink": [0,0.3,0.7], "hold_days": [5,10,15],
-    # 龍蝦新增指標
-    "use_obv_buy": [0,1],
-    "bias_buy_w": [0,5,10,20], "bias_buy_th": [5,10,15,20],
-    "use_wr_buy": [0,1], "wr_buy": [-10,-20,-30,-40,-50],
-    "sell_below_low_w": [0,1],
-    "use_atr_stop": [0,1], "atr_stop_n": [1.5,2.0,2.5,3.0],
-    "bias_sell_w": [0,5,10,20], "bias_sell_th": [10,15,20,25],
+    # 買入：五大核心
+    "use_rsi_buy": [0, 1], "rsi_buy": [40, 50, 55, 60, 65, 70, 75, 80],
+    "use_bb_buy": [0, 1], "bb_buy": [0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    "use_vol_filter": [0, 1], "vol_filter": [1.5, 2.0, 2.5, 3.0, 3.5, 4.0],
+    "require_ma_bull": [0, 1], "ma_fast_w": [3, 5, 8, 10], "ma_slow_w": [15, 20, 30, 60],
+    "use_wr_buy": [0, 1], "wr_buy": [-10, -20, -30, -40, -50, -60],
+    
+    # 輔助：動能、連續紅K、跳空、突破等
+    "momentum_days": [3, 5, 10], "momentum_min": [0, 3, 5, 8],
+    "vol_increase_days": [0, 2, 3],
+    "bb_width_min": [0, 0.03, 0.05],
+    "consecutive_green": [0, 1, 2, 3, 4], "gap_up": [0, 1],
+    "near_high_pct": [0, 5, 10, 15], "above_ma60": [0, 1],
+    "require_ma_cross": [0, 1], "vol_gt_yesterday": [0, 1],
+
+    # 賣出：停損、停利與其他條件
+    "stop_loss": [-5, -7, -10, -12, -15],
+    "use_take_profit": [0, 1], "take_profit": [10, 20, 30, 40, 50, 60, 80],
+    "trailing_stop": [0, 5, 8, 10, 15],
+    "use_rsi_sell": [0, 1], "rsi_sell": [75, 80, 85, 90, 95],
+    
+    "sell_below_ma_w": [0, 1],
+    "sell_below_low_w": [0, 1],
+    "sell_vol_shrink": [0, 0.3, 0.5, 0.7, 0.8],
+    "stagnation_days": [0, 3, 5, 7], "stagnation_min_ret": [0.5, 1.0, 2.0],
+    "use_atr_stop": [0, 1], "atr_stop_n": [1.5, 2.0, 2.5, 3.0, 3.5],
+    "hold_days": [3, 5, 7, 10, 12, 15]
 }
 
 # === 主程式 ===
