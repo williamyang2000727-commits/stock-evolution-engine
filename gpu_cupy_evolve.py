@@ -500,8 +500,8 @@ def main():
     d_vp = cp.asarray(pre["vol_prev"])
     d_ma60 = cp.asarray(pre["ma60"])
 
-    print("[GPU] 開始進化！每批 100,000 組")
-    BATCH = 100000
+    print("[GPU] 開始進化！每批 500,000 組")
+    BATCH = 500000
     BLOCK = 256
     N_PARAMS = len(PARAM_ORDER)
     best_score = -999999
