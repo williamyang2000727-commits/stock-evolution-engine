@@ -1,8 +1,8 @@
 name: 🦞 Strategy Evolution Wave 2
 
 on:
-  schedule:
-    - cron: '8,23,38,53 * * * *'  # 跟 Wave 1 錯開 8 分鐘，確保不重疊
+  # schedule:
+  #   - cron: '8,23,38,53 * * * *'  # 暫停，GPU 接管
   workflow_dispatch:
 
 jobs:
