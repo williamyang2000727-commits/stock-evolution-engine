@@ -426,7 +426,7 @@ def main():
     best_score = -999999
     best_params = None
     best_avg = 0; best_total = 0; best_wr = 0; best_nt = 0
-    total_tested = 0; total_improved = 0
+    total_tested = 0; total_improved = 0; last_synced_improved = 0
     start = time.time()
     rnd = 0
 
@@ -480,13 +480,13 @@ def main():
         speed = total_tested / elapsed
         print(f"[GPU] R{rnd} | {total_tested:,}組 | {elapsed:.0f}秒 | {speed:,.0f}組/秒 | 突破{total_improved}")
 
-        # Gist 同步
-        if best_score > 0 and GH_TOKEN and GIST_ID:
+        # Gist 同步（只在這輪有突破時才檢查）
+        if total_improved > last_synced_improved and best_score > 0 and GH_TOKEN and GIST_ID:
             try:
                 headers = {"Authorization": f"token {GH_TOKEN}"}
                 r = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers=headers, timeout=10)
                 cs = json.loads(list(r.json()["files"].values())[0]["content"]).get("score", 0)
-                if best_score > cs:
+                if best_score > cs + 0.01:  # 加 0.01 避免浮點精度問題
                     content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060",
                         "updated_at":time.strftime("%Y-%m-%dT%H:%M:%S"),
                         "params":best_params,"backtest":{
@@ -497,6 +497,7 @@ def main():
                         json={"files":{"best_strategy.json":{"content":content}}}, timeout=10)
                     telegram_push(f"🎮 GPU RTX 3060 突破！\n分數 {best_score:.2f}\n勝率 {best_wr:.0f}% | 平均 {best_avg:.1f}%\n{best_nt}筆 | {speed:,.0f}組/秒")
                     print(f"  [GPU] ✅ Gist 同步！({best_score:.2f} > {cs:.2f})")
+                last_synced_improved = total_improved
             except Exception as e:
                 print(f"  [GPU] Gist 錯誤: {e}")
 
