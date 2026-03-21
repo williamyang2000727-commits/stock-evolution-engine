@@ -593,6 +593,22 @@ def main():
                         timeout=10
                     )
                     print(f"[Job {job_id}] ✅ 已同步到 Gist（分數 {best_score:.2f} > {current_gist_score:.2f}）")
+
+                    # 推播完整策略 + 交易明細
+                    trade_lines = "\n".join([
+                        f"  {t['name']}({t['ticker'].replace('.TW','')}) | {t['buy_date'][5:]}→{t['sell_date'][5:]} | {t['return']:+.1f}% | {t['days']}天 | {t['reason']}"
+                        for t in trade_details
+                    ])
+                    telegram_push(
+                        f"🚀 策略突破！（Job {job_id}）\n"
+                        f"━━━━━━━━━━━━\n"
+                        f"分數：{best_score:.2f} > {current_gist_score:.2f}\n"
+                        f"平均報酬：{best['avg_return']:.1f}%\n"
+                        f"總報酬：{best['total_return']:.0f}%\n"
+                        f"勝率：{best['win_rate']:.0f}% | {best['n_trades']}筆\n"
+                        f"⚡ {tested}組/{elapsed:.0f}秒/{speed:.0f}組/秒\n\n"
+                        f"📋 交易明細：\n{trade_lines}"
+                    )
                 else:
                     print(f"[Job {job_id}] Gist 分數 {current_gist_score:.2f} 更高，不更新")
             except Exception as e:
