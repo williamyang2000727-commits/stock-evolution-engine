@@ -260,7 +260,7 @@ void backtest(
         float win_rate = win_count / n_trades * 100.0f;
         float wasted = wasted_count / n_trades * 100.0f;
 
-        if (avg_ret >= 6 && win_rate >= 50 && wasted <= 60) {
+        if (avg_ret >= 15 && win_rate >= 50 && wasted <= 60) {
             // 雙段驗證
             int mid_day = n_days / 2;
             float f_sum=0, s_sum=0; int f_n=0, s_n=0;
@@ -278,7 +278,7 @@ void backtest(
                     }
                     float pf = l_sum>0 ? w_sum/l_sum : 999.0f;
                     if (pf > 5) pf = 5;
-                    score = total_ret*0.15f + avg_ret*0.30f + win_rate*0.10f
+                    score = total_ret*0.10f + avg_ret*0.50f + win_rate*0.10f
                           + pf*3*0.05f + consistency*20*0.10f
                           + n_trades*0.5f*0.10f - wasted*0.20f;
                 }
@@ -308,7 +308,7 @@ PARAMS_SPACE = {
     "near_high_pct": [0,5,10], "above_ma60": [0,1],
     "require_ma_cross": [0,1], "vol_gt_yesterday": [0,1],
     "stop_loss": [-5,-7,-10,-15],
-    "use_take_profit": [0,1], "take_profit": [10,15,20,30,40,60],
+    "use_take_profit": [0,1], "take_profit": [20,30,40,50,60,80,100],
     "trailing_stop": [0,3,5,7,10],
     "use_rsi_sell": [0,1], "rsi_sell": [75,80,85,90,95],
     "use_macd_sell": [0,1], "use_kd_sell": [0,1],

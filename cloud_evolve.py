@@ -470,7 +470,7 @@ def backtest_one(args):
     if n_trades < 10: return None
     rets = rets_arr[:n_trades]; bds = buy_days[:n_trades]
     avg_r = np.mean(rets)
-    if avg_r < 6 or np.sum(rets > 0)/n_trades*100 < 50: return None
+    if avg_r < 15 or np.sum(rets > 0)/n_trades*100 < 50: return None
     avg_hd = np.mean(hold_days[:n_trades].astype(np.float64))
     if avg_hd > 15 or avg_hd < 1: return None
 
@@ -486,7 +486,7 @@ def backtest_one(args):
     pf = abs(np.sum(w) / np.sum(l)) if len(l) > 0 and np.sum(l) != 0 else 999
     win_rate = np.sum(rets > 0) / n_trades * 100
 
-    score = (np.sum(rets)*0.15 + avg_r*0.30 + win_rate*0.10 +
+    score = (np.sum(rets)*0.10 + avg_r*0.50 + win_rate*0.10 +
              min(pf,5)*3*0.05 + consistency*20*0.10 +
              n_trades*0.5*0.10 - wasted*0.20)
 
@@ -523,7 +523,7 @@ PARAMS = {
     "require_ma_cross": [0,1], "vol_gt_yesterday": [0,1],
     # 賣出
     "stop_loss": [-5,-7,-10,-15],
-    "use_take_profit": [0,1], "take_profit": [10,15,20,30,40,60],
+    "use_take_profit": [0,1], "take_profit": [20,30,40,50,60,80,100],
     "trailing_stop": [0,3,5,7,10],
     "use_rsi_sell": [0,1], "rsi_sell": [75,80,85,90,95],
     "use_macd_sell": [0,1], "use_kd_sell": [0,1],
