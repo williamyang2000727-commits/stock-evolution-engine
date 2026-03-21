@@ -99,10 +99,13 @@ void backtest(
     const int n_stocks, const int n_days,
     const float* close, const float* rsi, const float* bb_pos,
     const float* vol_ratio, const float* macd_hist, const float* macd_line,
-    const float* k_val, const float* d_val, const float* momentum,
+    const float* k_val, const float* d_val,
+    const float* mom3, const float* mom5, const float* mom10,
     const float* is_green, const float* gap, const float* near_high,
-    const float* williams_r, const float* ma_fast, const float* ma_slow,
-    const float* ma60, const float* vol_prev,
+    const float* williams_r,
+    const float* ma3, const float* ma5, const float* ma10,
+    const float* ma15, const float* ma20, const float* ma30, const float* ma60,
+    const float* vol_prev,
     const float* params, const int n_params_per_combo,
     float* results, const int n_combos
 ) {
@@ -128,6 +131,14 @@ void backtest(
     int use_macd_sell = (int)p[27]; int use_kd_sell = (int)p[28];
     float sell_vol_shrink = p[29]; int sell_below_ma = (int)p[30];
     int hold_days_max = (int)p[31];
+    int ma_fast_idx = (int)p[32];  // 0=ma3, 1=ma5, 2=ma10
+    int ma_slow_idx = (int)p[33];  // 0=ma15, 1=ma20, 2=ma30, 3=ma60
+    int mom_idx = (int)p[34];      // 0=mom3, 1=mom5, 2=mom10
+
+    // 選均線和動量陣列指標
+    const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
+    const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
+    const float* momentum = mom_idx==0 ? mom3 : mom_idx==1 ? mom5 : mom10;
 
     // 交易模擬
     int holding = -1;
@@ -162,8 +173,8 @@ void backtest(
             if (!sell && sell_vol_shrink > 0 && dh >= 2 && vol_ratio[si*n_days+day] < sell_vol_shrink) sell = true;
             if (!sell && sell_below_ma > 0) {
                 float ma_check = 0;
-                if (sell_below_ma == 1) ma_check = ma_fast[si*n_days+day];
-                else if (sell_below_ma == 2) ma_check = ma_slow[si*n_days+day];
+                if (sell_below_ma == 1) ma_check = ma_fast_arr[si*n_days+day];
+                else if (sell_below_ma == 2) ma_check = ma_slow_arr[si*n_days+day];
                 else if (sell_below_ma == 3) ma_check = ma60[si*n_days+day];
                 if (ma_check > 0 && cur < ma_check) sell = true;
             }
@@ -190,7 +201,7 @@ void backtest(
             if (buy && use_rsi_buy == 1 && rsi[d] < rsi_buy) buy = false;
             if (buy && use_bb_buy == 1 && bb_pos[d] < bb_buy) buy = false;
             if (buy && use_vol == 1 && vol_ratio[d] < vol_th) buy = false;
-            if (buy && require_ma_bull == 1 && close[d] < ma_fast[d]) buy = false;
+            if (buy && require_ma_bull == 1 && close[d] < ma_fast_arr[d]) buy = false;
             if (buy && use_macd == 1) {
                 if (macd_mode == 0 && !(macd_hist[d] > 0 && macd_hist[d-1] <= 0)) buy = false;
                 else if (macd_mode == 1 && macd_line[d] <= 0) buy = false;
@@ -211,7 +222,7 @@ void backtest(
             if (buy && use_gap == 1 && gap[d] < 1.0f) buy = false;
             if (buy && near_high_pct > 0 && fabsf(near_high[d]) > near_high_pct) buy = false;
             if (buy && above_ma60 == 1 && close[d] < ma60[d]) buy = false;
-            if (buy && require_ma_cross == 1 && ma_fast[d] < ma_slow[d]) buy = false;
+            if (buy && require_ma_cross == 1 && ma_fast_arr[d] < ma_slow_arr[d]) buy = false;
             if (buy && vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] <= vol_prev[d]) buy = false;
             if (buy && vol_ratio[d] > best_vol) { best_si = si; best_vol = vol_ratio[d]; }
         }
@@ -511,51 +522,69 @@ def main():
     start = time.time()
     rnd = 0
 
+    # 所有 MA/MOM 陣列傳到 GPU（一次性）
+    d_ma3 = cp.asarray(pre["ma_d"][3]); d_ma5 = cp.asarray(pre["ma_d"][5])
+    d_ma10 = cp.asarray(pre["ma_d"][10]); d_ma15 = cp.asarray(pre["ma_d"][15])
+    d_ma20 = cp.asarray(pre["ma_d"][20]); d_ma30 = cp.asarray(pre["ma_d"][30])
+    d_mom3 = cp.asarray(pre["mom_d"][3]); d_mom5 = cp.asarray(pre["mom_d"][5])
+    d_mom10 = cp.asarray(pre["mom_d"][10])
+
+    # MA/MOM 的對應 index
+    MA_FAST_MAP = {3:0, 5:1, 10:2}
+    MA_SLOW_MAP = {15:0, 20:1, 30:2, 60:3}
+    MOM_MAP = {3:0, 5:1, 10:2}
+    N_PARAMS_FULL = N_PARAMS + 3  # 加 ma_fast_idx, ma_slow_idx, mom_idx
+
     while True:
         rnd += 1
-        for mfw in MA_FAST_OPTS:
-            for msw in MA_SLOW_OPTS:
-                if mfw >= msw: continue
-                for mdw in MOM_DAYS_OPTS:
-                    # 產生參數
-                    params_np = np.zeros((BATCH, N_PARAMS), dtype=np.float32)
-                    for i, key in enumerate(PARAM_ORDER):
-                        params_np[:, i] = np.random.choice(PARAMS_SPACE[key], BATCH).astype(np.float32)
+        # 一次產生全部參數（含 MA/MOM 選擇）
+        params_np = np.zeros((BATCH, N_PARAMS_FULL), dtype=np.float32)
+        for i, key in enumerate(PARAM_ORDER):
+            params_np[:, i] = np.random.choice(PARAMS_SPACE[key], BATCH).astype(np.float32)
+        # 隨機選 MA 和 MOM
+        mf_choices = np.random.choice(MA_FAST_OPTS, BATCH)
+        ms_choices = np.random.choice(MA_SLOW_OPTS, BATCH)
+        md_choices = np.random.choice(MOM_DAYS_OPTS, BATCH)
+        # 過濾 ma_fast >= ma_slow 的（設 idx 讓 kernel 跳過）
+        for j in range(BATCH):
+            if mf_choices[j] >= ms_choices[j]:
+                ms_choices[j] = max(MA_SLOW_OPTS)  # 強制用 60
+            params_np[j, N_PARAMS] = MA_FAST_MAP[mf_choices[j]]
+            params_np[j, N_PARAMS+1] = MA_SLOW_MAP[ms_choices[j]]
+            params_np[j, N_PARAMS+2] = MOM_MAP[md_choices[j]]
 
-                    d_params = cp.asarray(params_np)
-                    d_results = cp.zeros((BATCH, 5), dtype=cp.float32)
-                    d_maf = cp.asarray(pre["ma_d"][mfw])
-                    d_mas = cp.asarray(pre["ma_d"][msw])
-                    d_mom = cp.asarray(pre["mom_d"][mdw])
+        d_params = cp.asarray(params_np)
+        d_results = cp.zeros((BATCH, 5), dtype=cp.float32)
+        grid = (BATCH + BLOCK - 1) // BLOCK
 
-                    grid = (BATCH + BLOCK - 1) // BLOCK
+        CUDA_KERNEL((grid,), (BLOCK,), (
+            np.int32(ns), np.int32(nd),
+            d_close, d_rsi, d_bb, d_vr, d_mh, d_ml,
+            d_kv, d_dv, d_mom3, d_mom5, d_mom10,
+            d_ig, d_gp, d_nh, d_wr,
+            d_ma3, d_ma5, d_ma10, d_ma15, d_ma20, d_ma30, d_ma60,
+            d_vp,
+            d_params, np.int32(N_PARAMS_FULL),
+            d_results, np.int32(BATCH)
+        ))
 
-                    CUDA_KERNEL((grid,), (BLOCK,), (
-                        np.int32(ns), np.int32(nd),
-                        d_close, d_rsi, d_bb, d_vr, d_mh, d_ml,
-                        d_kv, d_dv, d_mom, d_ig, d_gp, d_nh,
-                        d_wr, d_maf, d_mas, d_ma60, d_vp,
-                        d_params, np.int32(N_PARAMS),
-                        d_results, np.int32(BATCH)
-                    ))
+        results = d_results.get()
+        total_tested += BATCH
 
-                    results = d_results.get()
-                    total_tested += BATCH
-
-                    bi = np.argmax(results[:, 0])
-                    if results[bi, 0] > best_score:
-                        best_score = float(results[bi, 0])
-                        best_nt = int(results[bi, 1])
-                        best_avg = float(results[bi, 2])
-                        best_total = float(results[bi, 3])
-                        best_wr = float(results[bi, 4])
-                        bp = params_np[bi]
-                        best_params = {PARAM_ORDER[i]: float(bp[i]) for i in range(N_PARAMS)}
-                        best_params["ma_fast_w"] = mfw
-                        best_params["ma_slow_w"] = msw
-                        best_params["momentum_days"] = mdw
-                        total_improved += 1
-                        print(f"  [GPU] 新紀錄！{best_score:.1f} | 勝率{best_wr:.0f}% | 平均{best_avg:.1f}% | {best_nt}筆")
+        bi = np.argmax(results[:, 0])
+        if results[bi, 0] > best_score:
+            best_score = float(results[bi, 0])
+            best_nt = int(results[bi, 1])
+            best_avg = float(results[bi, 2])
+            best_total = float(results[bi, 3])
+            best_wr = float(results[bi, 4])
+            bp = params_np[bi]
+            best_params = {PARAM_ORDER[i]: float(bp[i]) for i in range(N_PARAMS)}
+            best_params["ma_fast_w"] = int(mf_choices[bi])
+            best_params["ma_slow_w"] = int(ms_choices[bi])
+            best_params["momentum_days"] = int(md_choices[bi])
+            total_improved += 1
+            print(f"  [GPU] 新紀錄！{best_score:.1f} | 勝率{best_wr:.0f}% | 平均{best_avg:.1f}% | {best_nt}筆")
 
         elapsed = time.time() - start
         speed = total_tested / elapsed
