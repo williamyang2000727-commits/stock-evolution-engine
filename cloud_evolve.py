@@ -56,6 +56,40 @@ CN_NAMES = {
     "2884.TW": "玉山金", "2887.TW": "台新金", "2892.TW": "第一金", "3189.TW": "景碩",
 }
 
+NAMES_CACHE_PATH = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_names.json")
+
+def load_names_cache():
+    """從快取檔讀取股票名稱"""
+    if os.path.exists(NAMES_CACHE_PATH):
+        try:
+            with open(NAMES_CACHE_PATH, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+                CN_NAMES.update(cached)
+        except: pass
+
+def save_names_cache():
+    """儲存股票名稱快取"""
+    try:
+        os.makedirs(os.path.dirname(NAMES_CACHE_PATH), exist_ok=True)
+        with open(NAMES_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(CN_NAMES, f, ensure_ascii=False, indent=2)
+    except: pass
+
+def auto_fetch_names(tickers):
+    """自動從 yfinance 抓缺漏的中文名"""
+    missing = [t for t in tickers if t not in CN_NAMES or CN_NAMES[t] == t.replace(".TW","")]
+    if not missing: return
+    for t in missing:
+        try:
+            info = yf.Ticker(t).info
+            name = info.get("shortName", "") or info.get("longName", "")
+            if name and not name[0].isdigit():
+                CN_NAMES[t] = name
+        except: pass
+    save_names_cache()
+
+load_names_cache()
+
 def get_name(t):
     n = CN_NAMES.get(t, "")
     if not n or " " in n or (len(n) > 0 and n[0].isupper()):
@@ -143,6 +177,8 @@ def filter_top_volume(data, top_n=50):
         if "Volume" in h.columns and len(h) >= 20:
             vol_rank[t] = h["Volume"].tail(20).mean()
     top = sorted(vol_rank, key=vol_rank.get, reverse=True)[:top_n]
+    # 自動抓缺漏的中文名
+    auto_fetch_names(top)
     return {k: data[k] for k in top}
 
 # === 預算指標 ===
