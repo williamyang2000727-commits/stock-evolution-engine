@@ -678,7 +678,7 @@ def main():
                     # CPU 重跑一次拿完整交易明細
                     trade_details = cpu_replay(pre, best_params)
                     trade_lines = "\n".join([
-                        f"  {t['name']}({t['ticker'].replace('.TW','')}) | {t['buy_date'][5:]}→{t['sell_date'][5:]} | {t['return']:+.1f}% | {t['days']}天 | {t['reason']}"
+                        f"  {t['name']}({t['ticker'].replace('.TWO','').replace('.TW','')}) | {t['buy_date'][5:]}→{t['sell_date'][5:]} | {t['return']:+.1f}% | {t['days']}天 | {t['reason']}"
                         for t in trade_details
                     ])
                     content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060",
