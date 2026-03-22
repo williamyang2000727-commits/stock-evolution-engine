@@ -807,11 +807,11 @@ def main():
             print(f"  [GPU] 新紀錄！{best_score:.1f} | 勝率{best_wr:.0f}% | 平均{best_avg:.1f}% | {best_nt}筆 | 名人堂Top:{hall_of_fame[0][0]:.1f}")
         else:
             no_improve_rounds += 1
-            # 名人堂大爆炸：卡太久就清空，逼迫重新探索
-            if no_improve_rounds > 0 and no_improve_rounds % 50 == 0:
+            # 變異率到頂 = 爬山已退化成亂射，立刻清空重來
+            if mutate_rate >= 0.50:
                 hall_of_fame = []
-                no_improve_rounds = 0  # 變異率歸零，讓爬山重新精細微調
-                print(f"  [GPU] 🔄 名人堂清空 + 變異率歸零！重新探索")
+                no_improve_rounds = 0
+                print(f"  [GPU] 🔄 變異率封頂！名人堂清空 + 歸零重新爬山")
 
         elapsed = time.time() - start
         speed = total_tested / elapsed
