@@ -691,7 +691,47 @@ def main():
             print(f"[GPU] 載入 Gist 最佳策略（{best_score:.2f}）作為爬山起點")
     except: pass
 
+    last_data_date = time.strftime("%Y-%m-%d")
+
     while True:
+        # 每天自動刷新資料（偵測到日期變了就重下載，不用重啟）
+        today_str = time.strftime("%Y-%m-%d")
+        if today_str != last_data_date:
+            print(f"\n[GPU] 🔄 新的一天（{today_str}），自動刷新資料...")
+            try:
+                if os.path.exists(CACHE_PATH): os.remove(CACHE_PATH)
+                raw = download_data()
+                valid = {k:v for k,v in raw.items() if len(v) >= 400}
+                vol_rank = {}
+                for t, h in valid.items():
+                    if "Volume" in h.columns and len(h) >= 20:
+                        vol_rank[t] = h["Volume"].tail(20).mean()
+                top = sorted(vol_rank, key=vol_rank.get, reverse=True)[:300]
+                data = {k: valid[k] for k in top}
+                print(f"[GPU] 刷新完成：{len(data)} 檔")
+                pre = precompute(data)
+                ns, nd = pre["n_stocks"], pre["n_days"]
+                d_close = cp.asarray(pre["close"]); d_rsi = cp.asarray(pre["rsi"])
+                d_bb = cp.asarray(pre["bb_pos"]); d_vr = cp.asarray(pre["vol_ratio"])
+                d_mh = cp.asarray(pre["macd_hist"]); d_ml = cp.asarray(pre["macd_line"])
+                d_kv = cp.asarray(pre["k_val"]); d_dv = cp.asarray(pre["d_val"])
+                d_ig = cp.asarray(pre["is_green"]); d_gp = cp.asarray(pre["gap"])
+                d_wr = cp.asarray(pre["williams_r"]); d_nh = cp.asarray(pre["near_high"])
+                d_vp = cp.asarray(pre["vol_prev"])
+                d_squeeze = cp.asarray(pre["squeeze_fire"]); d_newhigh = cp.asarray(pre["new_high_60"])
+                d_adx = cp.asarray(pre["adx"]); d_bias = cp.asarray(pre["bias"])
+                d_ma60 = cp.asarray(pre["ma60"])
+                d_ma3 = cp.asarray(pre["ma_d"][3]); d_ma5 = cp.asarray(pre["ma_d"][5])
+                d_ma10 = cp.asarray(pre["ma_d"][10]); d_ma15 = cp.asarray(pre["ma_d"][15])
+                d_ma20 = cp.asarray(pre["ma_d"][20]); d_ma30 = cp.asarray(pre["ma_d"][30])
+                d_mom3 = cp.asarray(pre["mom_d"][3]); d_mom5 = cp.asarray(pre["mom_d"][5])
+                d_mom10 = cp.asarray(pre["mom_d"][10])
+                print(f"[GPU] {ns}檔 x {nd}天 | GPU 陣列已更新，繼續進化！")
+                last_data_date = today_str
+            except Exception as e:
+                print(f"[GPU] 刷新失敗：{e}，沿用舊資料繼續跑")
+                last_data_date = today_str  # 避免重複嘗試
+
         rnd += 1
         params_np = np.zeros((BATCH, N_PARAMS_FULL), dtype=np.float32)
         mutate_rate = min(0.5, 0.15 + no_improve_rounds * 0.02)
