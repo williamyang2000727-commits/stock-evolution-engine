@@ -613,20 +613,69 @@ def main():
     MOM_MAP = {3:0, 5:1, 10:2}
     N_PARAMS_FULL = N_PARAMS + 3  # 加 ma_fast_idx, ma_slow_idx, mom_idx
 
+    # 嘗試從 Gist 載入最佳策略作為爬山起點
+    gist_best_params = None
+    try:
+        headers = {"Authorization": f"token {GH_TOKEN}"} if GH_TOKEN else {}
+        r = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers=headers, timeout=10)
+        gist_data = json.loads(list(r.json()["files"].values())[0]["content"])
+        if gist_data.get("score", 0) > 0 and "params" in gist_data:
+            gist_best_params = gist_data["params"]
+            best_score = gist_data["score"]
+            print(f"[GPU] 載入 Gist 最佳策略（{best_score:.2f}）作為爬山起點")
+    except: pass
+
     while True:
         rnd += 1
-        # 一次產生全部參數（含 MA/MOM 選擇）
         params_np = np.zeros((BATCH, N_PARAMS_FULL), dtype=np.float32)
+
+        # 50% 隨機探索 + 50% 爬山微調
+        half = BATCH // 2
+
+        # 前半：完全隨機（探索新區域）
         for i, key in enumerate(PARAM_ORDER):
-            params_np[:, i] = np.random.choice(PARAMS_SPACE[key], BATCH).astype(np.float32)
+            params_np[:half, i] = np.random.choice(PARAMS_SPACE[key], half).astype(np.float32)
+
+        # 後半：基於最佳策略微調（爬山）
+        if gist_best_params or best_params:
+            base = best_params if best_params else gist_best_params
+            for j in range(half, BATCH):
+                for i, key in enumerate(PARAM_ORDER):
+                    opts = PARAMS_SPACE[key]
+                    base_val = base.get(key, opts[0])
+                    # 找到 base_val 在 opts 中最近的 index
+                    diffs = [abs(float(o) - float(base_val)) for o in opts]
+                    base_idx = diffs.index(min(diffs))
+                    # 80% 機率保持不變，20% 機率隨機跳到鄰近值
+                    if np.random.random() < 0.2:
+                        # 在 base_idx ±2 範圍內隨機選
+                        lo = max(0, base_idx - 2)
+                        hi = min(len(opts) - 1, base_idx + 2)
+                        new_idx = np.random.randint(lo, hi + 1)
+                        params_np[j, i] = float(opts[new_idx])
+                    else:
+                        params_np[j, i] = float(opts[base_idx])
+        else:
+            # 還沒有最佳策略，全部隨機
+            for i, key in enumerate(PARAM_ORDER):
+                params_np[half:, i] = np.random.choice(PARAMS_SPACE[key], BATCH - half).astype(np.float32)
+
         # 隨機選 MA 和 MOM
         mf_choices = np.random.choice(MA_FAST_OPTS, BATCH)
         ms_choices = np.random.choice(MA_SLOW_OPTS, BATCH)
         md_choices = np.random.choice(MOM_DAYS_OPTS, BATCH)
-        # 過濾 ma_fast >= ma_slow 的（設 idx 讓 kernel 跳過）
+        # 爬山部分保持最佳策略的 MA/MOM
+        if best_params or gist_best_params:
+            bp = best_params if best_params else gist_best_params
+            for j in range(half, BATCH):
+                if np.random.random() < 0.8:
+                    mf_choices[j] = int(bp.get("ma_fast_w", 5))
+                    ms_choices[j] = int(bp.get("ma_slow_w", 20))
+                    md_choices[j] = int(bp.get("momentum_days", 5))
+        # 過濾 ma_fast >= ma_slow
         for j in range(BATCH):
             if mf_choices[j] >= ms_choices[j]:
-                ms_choices[j] = max(MA_SLOW_OPTS)  # 強制用 60
+                ms_choices[j] = max(MA_SLOW_OPTS)
             params_np[j, N_PARAMS] = MA_FAST_MAP[mf_choices[j]]
             params_np[j, N_PARAMS+1] = MA_SLOW_MAP[ms_choices[j]]
             params_np[j, N_PARAMS+2] = MOM_MAP[md_choices[j]]
