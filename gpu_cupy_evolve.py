@@ -844,7 +844,8 @@ def main():
             explore_round += 1
             if explore_round >= 15:  # 5 起點 × 3 輪
                 explore_bases = None
-                print(f"  [GPU] ✅ 多起點爬山完成，名人堂已種好，恢復正常模式")
+                no_improve_rounds = 0  # 歸零，變異率從 0.15 重新開始
+                print(f"  [GPU] ✅ 多起點爬山完成，名人堂已種好，變異率歸零，恢復正常模式")
 
         elapsed = time.time() - start
         speed = total_tested / elapsed
