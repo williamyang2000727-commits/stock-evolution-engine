@@ -631,76 +631,73 @@ def main():
     while True:
         rnd += 1
         params_np = np.zeros((BATCH, N_PARAMS_FULL), dtype=np.float32)
-
-        # 自適應變異率：卡住越久，變異越大
         mutate_rate = min(0.5, 0.15 + no_improve_rounds * 0.02)
         third = BATCH // 3
 
-        # === 第 1/3：完全隨機（探索新大陸）===
+        # === 全部先用隨機填滿（向量化，超快）===
         for i, key in enumerate(PARAM_ORDER):
-            params_np[:third, i] = np.random.choice(PARAMS_SPACE[key], third).astype(np.float32)
+            params_np[:, i] = np.random.choice(PARAMS_SPACE[key], BATCH).astype(np.float32)
 
-        # === 第 2/3：爬山微調最佳策略 ===
-        if best_params or gist_best_params:
-            base = best_params if best_params else gist_best_params
-            for j in range(third, 2*third):
-                for i, key in enumerate(PARAM_ORDER):
-                    opts = PARAMS_SPACE[key]
-                    base_val = base.get(key, opts[0])
-                    diffs = [abs(float(o) - float(base_val)) for o in opts]
-                    base_idx = diffs.index(min(diffs))
-                    if np.random.random() < mutate_rate:
-                        lo = max(0, base_idx - 2)
-                        hi = min(len(opts) - 1, base_idx + 2)
-                        params_np[j, i] = float(opts[np.random.randint(lo, hi + 1)])
-                    else:
-                        params_np[j, i] = float(opts[base_idx])
-        else:
+        # === 第 2/3：爬山微調（向量化）===
+        base = best_params if best_params else gist_best_params
+        if base:
             for i, key in enumerate(PARAM_ORDER):
-                params_np[third:2*third, i] = np.random.choice(PARAMS_SPACE[key], third).astype(np.float32)
+                opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
+                base_val = float(base.get(key, opts[0]))
+                diffs = np.abs(opts - base_val)
+                base_idx = int(np.argmin(diffs))
+                # 產生 mask：哪些要保持不變
+                keep = np.random.random(third) >= mutate_rate
+                # 鄰近值隨機
+                lo = max(0, base_idx - 2)
+                hi = min(len(opts) - 1, base_idx + 2)
+                nearby = np.random.randint(lo, hi + 1, third)
+                vals = opts[nearby]
+                vals[keep] = opts[base_idx]
+                params_np[third:2*third, i] = vals
 
-        # === 第 3/3：交叉配種（從 Top 5 名人堂選兩個配種）===
+        # === 第 3/3：交叉配種（向量化）===
         if len(hall_of_fame) >= 2:
-            for j in range(2*third, BATCH):
-                # 隨機選兩個親代
-                p1 = hall_of_fame[np.random.randint(len(hall_of_fame))][1]
-                p2 = hall_of_fame[np.random.randint(len(hall_of_fame))][1]
-                for i, key in enumerate(PARAM_ORDER):
-                    opts = PARAMS_SPACE[key]
-                    # 50% 機率從 p1 拿，50% 從 p2 拿
-                    parent = p1 if np.random.random() < 0.5 else p2
-                    val = parent.get(key, opts[0])
-                    diffs = [abs(float(o) - float(val)) for o in opts]
-                    idx = diffs.index(min(diffs))
-                    # 10% 機率突變
-                    if np.random.random() < 0.1:
-                        idx = np.random.randint(len(opts))
-                    params_np[j, i] = float(opts[idx])
-        else:
+            n_hof = len(hall_of_fame)
+            breed_size = BATCH - 2*third
             for i, key in enumerate(PARAM_ORDER):
-                params_np[2*third:, i] = np.random.choice(PARAMS_SPACE[key], BATCH - 2*third).astype(np.float32)
+                opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
+                # 隨機選親代
+                p1_idx = np.random.randint(n_hof, size=breed_size)
+                p2_idx = np.random.randint(n_hof, size=breed_size)
+                pick_p1 = np.random.random(breed_size) < 0.5
+                vals = np.zeros(breed_size, dtype=np.float32)
+                for j in range(breed_size):
+                    pidx = p1_idx[j] if pick_p1[j] else p2_idx[j]
+                    pval = float(hall_of_fame[pidx][1].get(key, opts[0]))
+                    d = np.abs(opts - pval)
+                    idx = int(np.argmin(d))
+                    if np.random.random() < 0.1:  # 10% 突變
+                        idx = np.random.randint(len(opts))
+                    vals[j] = opts[idx]
+                params_np[2*third:, i] = vals
 
-        # 隨機選 MA 和 MOM
+        # MA/MOM 選擇（向量化）
         mf_choices = np.random.choice(MA_FAST_OPTS, BATCH)
         ms_choices = np.random.choice(MA_SLOW_OPTS, BATCH)
         md_choices = np.random.choice(MOM_DAYS_OPTS, BATCH)
-        # 爬山+配種部分保持親代的 MA/MOM
-        if best_params or gist_best_params:
-            bp = best_params if best_params else gist_best_params
-            for j in range(third, BATCH):
-                if np.random.random() < 0.8:
-                    src = bp
-                    if j >= 2*third and len(hall_of_fame) >= 2:
-                        src = hall_of_fame[np.random.randint(len(hall_of_fame))][1]
-                    mf_choices[j] = int(src.get("ma_fast_w", 5))
-                    ms_choices[j] = int(src.get("ma_slow_w", 20))
-                    md_choices[j] = int(src.get("momentum_days", 5))
-        # 過濾 ma_fast >= ma_slow
-        for j in range(BATCH):
-            if mf_choices[j] >= ms_choices[j]:
-                ms_choices[j] = max(MA_SLOW_OPTS)
-            params_np[j, N_PARAMS] = MA_FAST_MAP[mf_choices[j]]
-            params_np[j, N_PARAMS+1] = MA_SLOW_MAP[ms_choices[j]]
+        if base:
+            keep_ma = np.random.random(BATCH) < 0.8
+            base_mf = int(base.get("ma_fast_w", 5))
+            base_ms = int(base.get("ma_slow_w", 20))
+            base_md = int(base.get("momentum_days", 5))
+            mf_choices[third:] = np.where(keep_ma[third:], base_mf, mf_choices[third:])
+            ms_choices[third:] = np.where(keep_ma[third:], base_ms, ms_choices[third:])
+            md_choices[third:] = np.where(keep_ma[third:], base_md, md_choices[third:])
+        # 過濾 ma_fast >= ma_slow（向量化）
+        bad = mf_choices >= ms_choices
+        ms_choices[bad] = max(MA_SLOW_OPTS)
+        mf_mapped = np.vectorize(MA_FAST_MAP.get)(mf_choices)
+        ms_mapped = np.vectorize(MA_SLOW_MAP.get)(ms_choices)
+        md_mapped = np.vectorize(MOM_MAP.get)(md_choices)
+        params_np[:, N_PARAMS] = mf_mapped.astype(np.float32)
+        params_np[:, N_PARAMS+1] = ms_mapped.astype(np.float32)
+        params_np[:, N_PARAMS+2] = md_mapped.astype(np.float32)
             params_np[j, N_PARAMS+2] = MOM_MAP[md_choices[j]]
 
         d_params = cp.asarray(params_np)
