@@ -810,7 +810,8 @@ def main():
             # 名人堂大爆炸：卡太久就清空，逼迫重新探索
             if no_improve_rounds > 0 and no_improve_rounds % 50 == 0:
                 hall_of_fame = []
-                print(f"  [GPU] 🔄 名人堂清空！（連續 {no_improve_rounds} 輪無突破，強制重新探索）")
+                no_improve_rounds = 0  # 變異率歸零，讓爬山重新精細微調
+                print(f"  [GPU] 🔄 名人堂清空 + 變異率歸零！重新探索")
 
         elapsed = time.time() - start
         speed = total_tested / elapsed
