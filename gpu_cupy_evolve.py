@@ -137,10 +137,12 @@ void backtest(
     int hold_days_max = (int)p[37];
     // BIAS 乖離率
     int w_bias = (int)p[38]; float bias_max_th = p[39];
+    // 停滯出場
+    int use_stagnation = (int)p[40]; int stag_days = (int)p[41]; float stag_min_ret = p[42];
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[40];
-    int ma_slow_idx = (int)p[41];
-    int mom_idx = (int)p[42];
+    int ma_fast_idx = (int)p[43];
+    int ma_slow_idx = (int)p[44];
+    int mom_idx = (int)p[45];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -184,6 +186,7 @@ void backtest(
                 else if (sell_below_ma == 3) ma_check = ma60[si*n_days+day];
                 if (ma_check > 0 && cur < ma_check) sell = true;
             }
+            if (!sell && use_stagnation == 1 && dh >= stag_days && ret < stag_min_ret) sell = true;
             if (!sell && dh >= hold_days_max) sell = true;
 
             if (sell && n_trades < 100) {
@@ -327,8 +330,10 @@ PARAMS_SPACE = {
     "sell_vol_shrink": [0,0.3,0.5,0.7],
     "sell_below_ma": [0,1,2,3],
     "hold_days": [5,7,10,15,20,25,30],
-    # ====== BIAS 乖離率（新指標）======
+    # ====== BIAS 乖離率 ======
     "w_bias": [0,1,2,3], "bias_max": [3,5,8,10,15,20,30],
+    # ====== 停滯出場 ======
+    "use_stagnation_exit": [0,1], "stagnation_days": [5,7,10,15], "stagnation_min_ret": [3,5,8,10],
 }
 
 PARAM_ORDER = [
@@ -346,6 +351,7 @@ PARAM_ORDER = [
     "use_rsi_sell","rsi_sell","use_macd_sell","use_kd_sell",
     "sell_vol_shrink","sell_below_ma","hold_days",
     "w_bias","bias_max",
+    "use_stagnation_exit","stagnation_days","stagnation_min_ret",
 ]
 
 MA_FAST_OPTS = [3,5,10]
@@ -508,7 +514,7 @@ def precompute(data):
         "bb_std":bb_std.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
-REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線"]
+REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線","停滯出場"]
 
 def cpu_replay(pre, p):
     """用 CPU 重跑一次最佳參數，拿完整交易明細（股票名、日期、價格）"""
@@ -550,6 +556,7 @@ def cpu_replay(pre, p):
                 elif sbm==2: mc=mas[si,day]
                 elif sbm==3: mc=ma60[si,day]
                 if mc>0 and cur<mc: sell=True; reason=8
+            if not sell and p.get("use_stagnation_exit",0) and dh>=int(p.get("stagnation_days",10)) and ret<p.get("stagnation_min_ret",5): sell=True; reason=9
             if not sell and dh>=int(p["hold_days"]): sell=True; reason=0
             if sell:
                 trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
@@ -656,7 +663,8 @@ def main():
     # Top 5 名人堂（交叉配種用）
     hall_of_fame = []  # [(score, params_dict), ...]
     no_improve_rounds = 0  # 連續沒突破的輪數
-    force_random = 0  # 清空後強制全隨機幾輪
+    explore_bases = None  # 多起點爬山用的隨機起點
+    explore_round = 0
 
     # 所有 MA/MOM 陣列傳到 GPU（一次性）
     d_ma3 = cp.asarray(pre["ma_d"][3]); d_ma5 = cp.asarray(pre["ma_d"][5])
@@ -687,14 +695,13 @@ def main():
         rnd += 1
         params_np = np.zeros((BATCH, N_PARAMS_FULL), dtype=np.float32)
         mutate_rate = min(0.5, 0.15 + no_improve_rounds * 0.02)
-        # 清空後前幾輪全隨機，種出多樣性名人堂
-        if force_random > 0:
-            n_random = BATCH
-            n_climb = 0
+        # 多起點爬山：80% 爬山（從隨機起點）+ 20% 隨機，不配種（名人堂還在重建）
+        if explore_bases is not None:
+            n_random = BATCH // 5
+            n_climb = BATCH - n_random
             n_breed = 0
-            force_random -= 1
         else:
-            # 20% 隨機 / 50% 爬山 / 30% 配種
+            # 正常模式：20% 隨機 / 50% 爬山 / 30% 配種
             n_random = BATCH // 5
             n_climb = BATCH // 2
             n_breed = BATCH - n_random - n_climb
@@ -705,7 +712,10 @@ def main():
             params_np[:, i] = np.random.choice(PARAMS_SPACE[key], BATCH).astype(np.float32)
 
         # === 爬山微調（向量化）===
-        base = best_params if best_params else gist_best_params
+        if explore_bases is not None:
+            base = explore_bases[explore_round % len(explore_bases)]
+        else:
+            base = best_params if best_params else gist_best_params
         if base:
             for i, key in enumerate(PARAM_ORDER):
                 opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
@@ -815,16 +825,31 @@ def main():
             print(f"  [GPU] 新紀錄！{best_score:.1f} | 勝率{best_wr:.0f}% | 平均{best_avg:.1f}% | {best_nt}筆 | 名人堂Top:{hall_of_fame[0][0]:.1f}")
         else:
             no_improve_rounds += 1
-            # 變異率到頂 = 爬山已退化成亂射，立刻清空重來
+            # 變異率到頂 = 爬山已退化成亂射，啟動多起點爬山
             if mutate_rate >= 0.50:
                 hall_of_fame = []
                 no_improve_rounds = 0
-                force_random = 2  # 前 2 輪全隨機，種出多樣性名人堂
-                print(f"  [GPU] 🔄 變異率封頂！名人堂清空 + 2輪全隨機探索")
+                explore_bases = []
+                for _eb in range(5):
+                    rb = {key: float(np.random.choice(PARAMS_SPACE[key])) for key in PARAM_ORDER}
+                    rb["ma_fast_w"] = int(np.random.choice(MA_FAST_OPTS))
+                    rb["ma_slow_w"] = int(np.random.choice(MA_SLOW_OPTS))
+                    rb["momentum_days"] = int(np.random.choice(MOM_DAYS_OPTS))
+                    explore_bases.append(rb)
+                explore_round = 0
+                print(f"  [GPU] 🔄 多起點爬山！5 個隨機起點各爬 3 輪")
+
+        # 多起點爬山進度
+        if explore_bases is not None:
+            explore_round += 1
+            if explore_round >= 15:  # 5 起點 × 3 輪
+                explore_bases = None
+                print(f"  [GPU] ✅ 多起點爬山完成，名人堂已種好，恢復正常模式")
 
         elapsed = time.time() - start
         speed = total_tested / elapsed
-        print(f"[GPU] R{rnd} | {total_tested:,}組 | {elapsed:.0f}秒 | {speed:,.0f}組/秒 | 突破{total_improved} | 變異率{mutate_rate:.0%}")
+        explore_tag = f" | 探索{explore_round}/15" if explore_bases is not None else ""
+        print(f"[GPU] R{rnd} | {total_tested:,}組 | {elapsed:.0f}秒 | {speed:,.0f}組/秒 | 突破{total_improved} | 變異率{mutate_rate:.0%}{explore_tag}")
 
         # Gist 同步（只在這輪有突破時才檢查）
         if total_improved > last_synced_improved and best_score > 0 and GH_TOKEN and GIST_ID:
