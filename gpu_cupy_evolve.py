@@ -296,24 +296,24 @@ void backtest(
 
 PARAMS_SPACE = {
     # ====== 評分制買入（權重 0-3 + 門檻）======
-    "w_rsi": [0,1,2,3], "rsi_th": [35,40,50,55,60,65,70,75],
-    "w_bb": [0,1,2,3], "bb_th": [0.3,0.5,0.6,0.7,0.8,0.9,1.0],
-    "w_vol": [0,1,2,3], "vol_th": [1.5,2.0,2.5,3.0,4.0,5.0],
+    "w_rsi": [0,1,2,3], "rsi_th": [30,35,40,45,50,55,60,63,65,68,70,72,75,80],
+    "w_bb": [0,1,2,3], "bb_th": [0.2,0.3,0.4,0.5,0.6,0.65,0.7,0.75,0.8,0.85,0.9,0.95,1.0],
+    "w_vol": [0,1,2,3], "vol_th": [1.2,1.5,1.8,2.0,2.5,3.0,3.5,4.0,5.0,6.0],
     "w_ma": [0,1,2,3],
     "w_macd": [0,1,2,3], "macd_mode": [0,1,2],
-    "w_kd": [0,1,2,3], "kd_th": [20,30,40,50,60,70,80], "kd_cross": [0,1],
-    "w_wr": [0,1,2,3], "wr_th": [-10,-20,-30,-40,-50],
-    "w_mom": [0,1,2,3], "mom_th": [0,3,5,8],
+    "w_kd": [0,1,2,3], "kd_th": [20,30,40,50,55,60,65,70,75,80,85], "kd_cross": [0,1],
+    "w_wr": [0,1,2,3], "wr_th": [-5,-10,-15,-20,-25,-30,-35,-40,-50],
+    "w_mom": [0,1,2,3], "mom_th": [0,2,3,5,8,10,12],
     "w_near_high": [0,1,2], "near_high_pct": [3,5,10,15],
     "w_squeeze": [0,1,2,3], "w_new_high": [0,1,2,3],
     "consecutive_green": [0,1,2,3], "gap_up": [0,1],
     "above_ma60": [0,1], "vol_gt_yesterday": [0,1],
     "buy_threshold": [3,4,5,6,7,8,9,10],
     # ====== 賣出 ======
-    "stop_loss": [-5,-7,-10,-15],
-    "use_take_profit": [0,1], "take_profit": [20,30,40,50,60,80,100],
-    "trailing_stop": [0,3,5,7,10],
-    "use_rsi_sell": [0,1], "rsi_sell": [75,80,85,90,95],
+    "stop_loss": [-3,-5,-7,-10,-12,-15,-20],
+    "use_take_profit": [0,1], "take_profit": [20,30,40,50,60,80,100,150],
+    "trailing_stop": [0,3,5,7,10,15,20],
+    "use_rsi_sell": [0,1], "rsi_sell": [70,75,80,85,90,95],
     "use_macd_sell": [0,1], "use_kd_sell": [0,1],
     "sell_vol_shrink": [0,0.3,0.5,0.7],
     "sell_below_ma": [0,1,2,3],
@@ -632,13 +632,17 @@ def main():
         rnd += 1
         params_np = np.zeros((BATCH, N_PARAMS_FULL), dtype=np.float32)
         mutate_rate = min(0.5, 0.15 + no_improve_rounds * 0.02)
-        third = BATCH // 3
+        # 20% 隨機 / 50% 爬山 / 30% 配種（高分階段重爬山）
+        n_random = BATCH // 5
+        n_climb = BATCH // 2
+        n_breed = BATCH - n_random - n_climb
+        third = n_random  # 相容舊變數名
 
         # === 全部先用隨機填滿（向量化，超快）===
         for i, key in enumerate(PARAM_ORDER):
             params_np[:, i] = np.random.choice(PARAMS_SPACE[key], BATCH).astype(np.float32)
 
-        # === 第 2/3：爬山微調（向量化）===
+        # === 爬山微調（向量化）===
         base = best_params if best_params else gist_best_params
         if base:
             for i, key in enumerate(PARAM_ORDER):
@@ -646,20 +650,18 @@ def main():
                 base_val = float(base.get(key, opts[0]))
                 diffs = np.abs(opts - base_val)
                 base_idx = int(np.argmin(diffs))
-                # 產生 mask：哪些要保持不變
-                keep = np.random.random(third) >= mutate_rate
-                # 鄰近值隨機
+                keep = np.random.random(n_climb) >= mutate_rate
                 lo = max(0, base_idx - 2)
                 hi = min(len(opts) - 1, base_idx + 2)
-                nearby = np.random.randint(lo, hi + 1, third)
+                nearby = np.random.randint(lo, hi + 1, n_climb)
                 vals = opts[nearby]
                 vals[keep] = opts[base_idx]
-                params_np[third:2*third, i] = vals
+                params_np[n_random:n_random+n_climb, i] = vals
 
-        # === 第 3/3：交叉配種（向量化）===
+        # === 交叉配種（向量化）===
         if len(hall_of_fame) >= 2:
             n_hof = len(hall_of_fame)
-            breed_size = BATCH - 2*third
+            breed_size = n_breed
             for i, key in enumerate(PARAM_ORDER):
                 opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
                 # 隨機選親代
@@ -675,7 +677,7 @@ def main():
                     if np.random.random() < 0.1:  # 10% 突變
                         idx = np.random.randint(len(opts))
                     vals[j] = opts[idx]
-                params_np[2*third:, i] = vals
+                params_np[n_random+n_climb:, i] = vals
 
         # MA/MOM 選擇（向量化）
         mf_choices = np.random.choice(MA_FAST_OPTS, BATCH)
@@ -686,9 +688,9 @@ def main():
             base_mf = int(base.get("ma_fast_w", 5))
             base_ms = int(base.get("ma_slow_w", 20))
             base_md = int(base.get("momentum_days", 5))
-            mf_choices[third:] = np.where(keep_ma[third:], base_mf, mf_choices[third:])
-            ms_choices[third:] = np.where(keep_ma[third:], base_ms, ms_choices[third:])
-            md_choices[third:] = np.where(keep_ma[third:], base_md, md_choices[third:])
+            mf_choices[n_random:] = np.where(keep_ma[n_random:], base_mf, mf_choices[n_random:])
+            ms_choices[n_random:] = np.where(keep_ma[n_random:], base_ms, ms_choices[n_random:])
+            md_choices[n_random:] = np.where(keep_ma[n_random:], base_md, md_choices[n_random:])
         # 過濾 ma_fast >= ma_slow（向量化）
         bad = mf_choices >= ms_choices
         ms_choices[bad] = max(MA_SLOW_OPTS)
