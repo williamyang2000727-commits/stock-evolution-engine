@@ -721,6 +721,20 @@ def main():
         results = d_results.get()
         total_tested += BATCH
 
+        # 收集這批裡分數 > 0 的前 5 名加入名人堂（不用破紀錄也能入）
+        top_indices = np.argsort(results[:, 0])[-5:][::-1]
+        for ti in top_indices:
+            sc = float(results[ti, 0])
+            if sc > 0:
+                tp = params_np[ti]
+                tp_dict = {PARAM_ORDER[i]: float(tp[i]) for i in range(N_PARAMS)}
+                tp_dict["ma_fast_w"] = int(mf_choices[ti])
+                tp_dict["ma_slow_w"] = int(ms_choices[ti])
+                tp_dict["momentum_days"] = int(md_choices[ti])
+                hall_of_fame.append((sc, tp_dict))
+        hall_of_fame.sort(key=lambda x: -x[0])
+        hall_of_fame = hall_of_fame[:5]
+
         bi = np.argmax(results[:, 0])
         if results[bi, 0] > best_score:
             best_score = float(results[bi, 0])
@@ -734,12 +748,8 @@ def main():
             best_params["ma_slow_w"] = int(ms_choices[bi])
             best_params["momentum_days"] = int(md_choices[bi])
             total_improved += 1
-            no_improve_rounds = 0  # 重設卡住計數器
-            # 更新名人堂 Top 5
-            hall_of_fame.append((best_score, dict(best_params)))
-            hall_of_fame.sort(key=lambda x: -x[0])
-            hall_of_fame = hall_of_fame[:5]
-            print(f"  [GPU] 新紀錄！{best_score:.1f} | 勝率{best_wr:.0f}% | 平均{best_avg:.1f}% | {best_nt}筆 | 名人堂{len(hall_of_fame)}個")
+            no_improve_rounds = 0
+            print(f"  [GPU] 新紀錄！{best_score:.1f} | 勝率{best_wr:.0f}% | 平均{best_avg:.1f}% | {best_nt}筆 | 名人堂Top:{hall_of_fame[0][0]:.1f}")
         else:
             no_improve_rounds += 1
 
