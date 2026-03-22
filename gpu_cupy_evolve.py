@@ -125,6 +125,7 @@ void backtest(
     const float* ma3, const float* ma5, const float* ma10,
     const float* ma15, const float* ma20, const float* ma30, const float* ma60,
     const float* vol_prev,
+    const float* squeeze_fire, const float* new_high_60,
     const float* params, const int n_params_per_combo,
     float* results, const int n_combos
 ) {
@@ -143,20 +144,21 @@ void backtest(
     int w_wr = (int)p[12]; float wr_th = p[13];
     int w_mom = (int)p[14]; float mom_th = p[15];
     int w_near_high = (int)p[16]; float near_high_pct = p[17];
-    int consec_green = (int)p[18]; int use_gap = (int)p[19];
-    int above_ma60 = (int)p[20]; int vol_gt_yesterday = (int)p[21];
-    float buy_threshold = p[22];
+    int w_squeeze = (int)p[18]; int w_new_high = (int)p[19];
+    int consec_green = (int)p[20]; int use_gap = (int)p[21];
+    int above_ma60 = (int)p[22]; int vol_gt_yesterday = (int)p[23];
+    float buy_threshold = p[24];
     // 賣出
-    float stop_loss = p[23]; int use_tp = (int)p[24]; float take_profit = p[25];
-    float trailing_stop = p[26];
-    int use_rsi_sell = (int)p[27]; float rsi_sell_th = p[28];
-    int use_macd_sell = (int)p[29]; int use_kd_sell = (int)p[30];
-    float sell_vol_shrink = p[31]; int sell_below_ma = (int)p[32];
-    int hold_days_max = (int)p[33];
+    float stop_loss = p[25]; int use_tp = (int)p[26]; float take_profit = p[27];
+    float trailing_stop = p[28];
+    int use_rsi_sell = (int)p[29]; float rsi_sell_th = p[30];
+    int use_macd_sell = (int)p[31]; int use_kd_sell = (int)p[32];
+    float sell_vol_shrink = p[33]; int sell_below_ma = (int)p[34];
+    int hold_days_max = (int)p[35];
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[34];
-    int ma_slow_idx = (int)p[35];
-    int mom_idx = (int)p[36];
+    int ma_fast_idx = (int)p[36];
+    int ma_slow_idx = (int)p[37];
+    int mom_idx = (int)p[38];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -242,6 +244,10 @@ void backtest(
             if (w_wr > 0 && williams_r[d] >= wr_th) sc += w_wr;
             if (w_mom > 0 && momentum[d] >= mom_th) sc += w_mom;
             if (w_near_high > 0 && fabsf(near_high[d]) <= near_high_pct) sc += w_near_high;
+            // TTM Squeeze 爆發
+            if (w_squeeze > 0 && squeeze_fire[d] > 0.5f) sc += w_squeeze;
+            // 60 天新高突破（台灣散戶效應）
+            if (w_new_high > 0 && new_high_60[d] > 0.5f) sc += w_new_high;
 
             // 輔助加分（各 +1）
             if (consec_green >= 1) {
@@ -321,6 +327,7 @@ PARAMS_SPACE = {
     "w_wr": [0,1,2,3], "wr_th": [-10,-20,-30,-40,-50],
     "w_mom": [0,1,2,3], "mom_th": [0,3,5,8],
     "w_near_high": [0,1,2], "near_high_pct": [3,5,10,15],
+    "w_squeeze": [0,1,2,3], "w_new_high": [0,1,2,3],
     "consecutive_green": [0,1,2,3], "gap_up": [0,1],
     "above_ma60": [0,1], "vol_gt_yesterday": [0,1],
     "buy_threshold": [3,4,5,6,7,8,9,10],
@@ -341,6 +348,7 @@ PARAM_ORDER = [
     "w_macd","macd_mode","w_kd","kd_th","kd_cross",
     "w_wr","wr_th","w_mom","mom_th",
     "w_near_high","near_high_pct",
+    "w_squeeze","w_new_high",
     "consecutive_green","gap_up",
     "above_ma60","vol_gt_yesterday",
     "buy_threshold",
@@ -437,11 +445,41 @@ def precompute(data):
     for i in range(20,close.shape[1]): h20[:,i]=np.max(high[:,i-20:i+1],axis=1)
     nh=np.where(h20>0,(close/h20-1)*100,0).astype(np.float32)
 
+    # ATR (14) — for Keltner Channel
+    tr = np.zeros_like(close)
+    tr[:, 1:] = np.maximum(high[:, 1:] - low[:, 1:],
+        np.maximum(np.abs(high[:, 1:] - close[:, :-1]), np.abs(low[:, 1:] - close[:, :-1])))
+    atr = np.zeros_like(close)
+    for i in range(1, close.shape[1]):
+        if i <= 14: atr[:, i] = np.mean(tr[:, 1:min(i+1,15)], axis=1)
+        else: atr[:, i] = (atr[:, i-1] * 13 + tr[:, i]) / 14
+
+    # TTM Squeeze: BB inside Keltner Channel = squeeze ON, release = buy signal
+    ema20 = ma_d[20]  # use MA20 as approximation
+    kc_upper = ema20 + 1.5 * atr
+    kc_lower = ema20 - 1.5 * atr
+    bb_upper = ma_d[20] + 2 * bb_std
+    bb_lower = ma_d[20] - 2 * bb_std
+    squeeze_on = ((bb_upper < kc_upper) & (bb_lower > kc_lower)).astype(np.float32)
+    # Squeeze fire: was ON yesterday, OFF today
+    squeeze_fire = np.zeros_like(close)
+    squeeze_fire[:, 1:] = ((squeeze_on[:, :-1] == 1) & (squeeze_on[:, 1:] == 0)).astype(np.float32)
+    # Also require momentum positive (MACD histogram > 0) for quality
+    squeeze_fire = (squeeze_fire * (mh > 0)).astype(np.float32)
+
+    # 60-day new high (Taiwan effect: breaking historical high = strong momentum)
+    h60 = np.zeros_like(close)
+    for i in range(60, close.shape[1]):
+        h60[:, i] = np.max(high[:, i-60:i], axis=1)  # previous 60 days high (not including today)
+    new_high_60 = (close > h60).astype(np.float32)  # today's close > 60-day high = breakout
+
     return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,
         "close":close,"rsi":rsi,"bb_pos":bb_pos,"vol_ratio":vol_ratio,
         "macd_line":ml_arr,"macd_hist":mh,"k_val":kv.astype(np.float32),
         "d_val":dv.astype(np.float32),"is_green":ig,"gap":gp.astype(np.float32),
         "williams_r":wr,"near_high":nh,"vol_prev":vol_prev.astype(np.float32),
+        "squeeze_fire":squeeze_fire,"new_high_60":new_high_60,
+        "bb_std":bb_std.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
 REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線"]
@@ -455,6 +493,7 @@ def cpu_replay(pre, p):
     k_val=pre["k_val"]; d_val=pre["d_val"]; williams_r=pre["williams_r"]
     is_green=pre["is_green"]; gap=pre["gap"]; near_high=pre["near_high"]
     vol_prev=pre["vol_prev"]
+    squeeze_fire=pre["squeeze_fire"]; new_high_60=pre["new_high_60"]
     maf=pre["ma_d"].get(int(p.get("ma_fast_w",5)), pre["ma_d"][5])
     mas=pre["ma_d"].get(int(p.get("ma_slow_w",20)), pre["ma_d"][20])
     ma60=pre["ma60"]
@@ -497,6 +536,7 @@ def cpu_replay(pre, p):
         w_rsi=int(p.get("w_rsi",0)); w_bb=int(p.get("w_bb",0)); w_vol=int(p.get("w_vol",0))
         w_ma=int(p.get("w_ma",0)); w_macd=int(p.get("w_macd",0)); w_kd=int(p.get("w_kd",0))
         w_wr=int(p.get("w_wr",0)); w_mom=int(p.get("w_mom",0)); w_nh=int(p.get("w_near_high",0))
+        w_sq=int(p.get("w_squeeze",0)); w_newh=int(p.get("w_new_high",0))
         buy_th=p.get("buy_threshold",5)
         for si in range(ns):
             sc=0.0
@@ -519,6 +559,8 @@ def cpu_replay(pre, p):
             if w_wr>0 and williams_r[si,day]>=p.get("wr_th",-30): sc+=w_wr
             if w_mom>0 and mom[si,day]>=p.get("mom_th",3): sc+=w_mom
             if w_nh>0 and abs(near_high[si,day])<=p.get("near_high_pct",10): sc+=w_nh
+            if w_sq>0 and squeeze_fire[si,day]>0.5: sc+=w_sq
+            if w_newh>0 and new_high_60[si,day]>0.5: sc+=w_newh
             cg=int(p.get("consecutive_green",0))
             if cg>=1:
                 ok=True
@@ -557,6 +599,8 @@ def main():
     d_wr = cp.asarray(pre["williams_r"])
     d_nh = cp.asarray(pre["near_high"])
     d_vp = cp.asarray(pre["vol_prev"])
+    d_squeeze = cp.asarray(pre["squeeze_fire"])
+    d_newhigh = cp.asarray(pre["new_high_60"])
     d_ma60 = cp.asarray(pre["ma60"])
 
     print("[GPU] 開始進化！每批 500,000 組")
@@ -611,7 +655,7 @@ def main():
             d_kv, d_dv, d_mom3, d_mom5, d_mom10,
             d_ig, d_gp, d_nh, d_wr,
             d_ma3, d_ma5, d_ma10, d_ma15, d_ma20, d_ma30, d_ma60,
-            d_vp,
+            d_vp, d_squeeze, d_newhigh,
             d_params, np.int32(N_PARAMS_FULL),
             d_results, np.int32(BATCH)
         ))
