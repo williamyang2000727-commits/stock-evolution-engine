@@ -556,7 +556,9 @@ def cpu_replay(pre, p):
 def main():
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     raw = download_data()
-    data = raw  # 不預先篩選，用全部股票，讓量能門檻自然篩選每天的標的
+    # 過濾掉資料太短的（至少 200 天），避免拖累整體天數
+    data = {k:v for k,v in raw.items() if len(v) >= 200}
+    print(f"[過濾] {len(raw)} → {len(data)} 檔（>= 200 天）")
     if len(data) < 10: print("資料不足"); return
     pre = precompute(data)
     ns, nd = pre["n_stocks"], pre["n_days"]
