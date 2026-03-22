@@ -557,8 +557,15 @@ def main():
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     raw = download_data()
     # 過濾掉資料太短的（至少 200 天），避免拖累整體天數
-    data = {k:v for k,v in raw.items() if len(v) >= 400}
-    print(f"[過濾] {len(raw)} → {len(data)} 檔（>= 400 天）")
+    # 過濾資料太短的，再取成交量前 300 名（平衡速度和覆蓋率）
+    valid = {k:v for k,v in raw.items() if len(v) >= 400}
+    vol_rank = {}
+    for t, h in valid.items():
+        if "Volume" in h.columns and len(h) >= 20:
+            vol_rank[t] = h["Volume"].tail(20).mean()
+    top = sorted(vol_rank, key=vol_rank.get, reverse=True)[:300]
+    data = {k: valid[k] for k in top}
+    print(f"[過濾] {len(raw)} → {len(valid)} (>=400天) → {len(data)} 檔 (成交量前300)")
     if len(data) < 10: print("資料不足"); return
     pre = precompute(data)
     ns, nd = pre["n_stocks"], pre["n_days"]
