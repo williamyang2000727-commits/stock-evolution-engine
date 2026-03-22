@@ -317,7 +317,7 @@ PARAMS_SPACE = {
     "use_macd_sell": [0,1], "use_kd_sell": [0,1],
     "sell_vol_shrink": [0,0.3,0.5,0.7],
     "sell_below_ma": [0,1,2,3],
-    "hold_days": [5,7,10,15],
+    "hold_days": [5,7,10,15,20,25,30],
 }
 
 PARAM_ORDER = [
