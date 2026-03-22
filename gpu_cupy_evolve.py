@@ -104,6 +104,7 @@ void backtest(
     const float* ma15, const float* ma20, const float* ma30, const float* ma60,
     const float* vol_prev,
     const float* squeeze_fire, const float* new_high_60, const float* adx,
+    const float* bias,
     const float* params, const int n_params_per_combo,
     float* results, const int n_combos
 ) {
@@ -134,10 +135,12 @@ void backtest(
     int use_macd_sell = (int)p[33]; int use_kd_sell = (int)p[34];
     float sell_vol_shrink = p[35]; int sell_below_ma = (int)p[36];
     int hold_days_max = (int)p[37];
+    // BIAS 乖離率
+    int w_bias = (int)p[38]; float bias_max_th = p[39];
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[38];
-    int ma_slow_idx = (int)p[39];
-    int mom_idx = (int)p[40];
+    int ma_fast_idx = (int)p[40];
+    int ma_slow_idx = (int)p[41];
+    int mom_idx = (int)p[42];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -229,6 +232,8 @@ void backtest(
             if (w_new_high > 0 && new_high_60[d] > 0.5f) sc += w_new_high;
             // ADX 趨勢強度
             if (w_adx > 0 && adx[d] >= adx_th) sc += w_adx;
+            // BIAS 乖離率（在均線上方但不過度延伸 = 甜蜜點）
+            if (w_bias > 0 && bias[d] >= 0 && bias[d] <= bias_max_th) sc += w_bias;
 
             // 輔助加分（各 +1）
             if (consec_green >= 1) {
@@ -322,6 +327,8 @@ PARAMS_SPACE = {
     "sell_vol_shrink": [0,0.3,0.5,0.7],
     "sell_below_ma": [0,1,2,3],
     "hold_days": [5,7,10,15,20,25,30],
+    # ====== BIAS 乖離率（新指標）======
+    "w_bias": [0,1,2,3], "bias_max": [3,5,8,10,15,20,30],
 }
 
 PARAM_ORDER = [
@@ -338,6 +345,7 @@ PARAM_ORDER = [
     "stop_loss","use_take_profit","take_profit","trailing_stop",
     "use_rsi_sell","rsi_sell","use_macd_sell","use_kd_sell",
     "sell_vol_shrink","sell_below_ma","hold_days",
+    "w_bias","bias_max",
 ]
 
 MA_FAST_OPTS = [3,5,10]
@@ -487,13 +495,16 @@ def precompute(data):
         else:
             adx[:, i] = (adx[:, i-1] * 13 + dx[:, i]) / 14
 
+    # BIAS 乖離率 = (close - MA20) / MA20 * 100
+    bias = np.where(ma_d[20] > 0, (close - ma_d[20]) / ma_d[20] * 100, 0).astype(np.float32)
+
     return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,
         "close":close,"rsi":rsi,"bb_pos":bb_pos,"vol_ratio":vol_ratio,
         "macd_line":ml_arr,"macd_hist":mh,"k_val":kv.astype(np.float32),
         "d_val":dv.astype(np.float32),"is_green":ig,"gap":gp.astype(np.float32),
         "williams_r":wr,"near_high":nh,"vol_prev":vol_prev.astype(np.float32),
         "squeeze_fire":squeeze_fire,"new_high_60":new_high_60,
-        "adx":adx.astype(np.float32),
+        "adx":adx.astype(np.float32),"bias":bias,
         "bb_std":bb_std.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
@@ -508,7 +519,7 @@ def cpu_replay(pre, p):
     k_val=pre["k_val"]; d_val=pre["d_val"]; williams_r=pre["williams_r"]
     is_green=pre["is_green"]; gap=pre["gap"]; near_high=pre["near_high"]
     vol_prev=pre["vol_prev"]
-    squeeze_fire=pre["squeeze_fire"]; new_high_60=pre["new_high_60"]; adx_arr=pre["adx"]
+    squeeze_fire=pre["squeeze_fire"]; new_high_60=pre["new_high_60"]; adx_arr=pre["adx"]; bias_arr=pre["bias"]
     maf=pre["ma_d"].get(int(p.get("ma_fast_w",5)), pre["ma_d"][5])
     mas=pre["ma_d"].get(int(p.get("ma_slow_w",20)), pre["ma_d"][20])
     ma60=pre["ma60"]
@@ -553,6 +564,7 @@ def cpu_replay(pre, p):
         w_wr=int(p.get("w_wr",0)); w_mom=int(p.get("w_mom",0)); w_nh=int(p.get("w_near_high",0))
         w_sq=int(p.get("w_squeeze",0)); w_newh=int(p.get("w_new_high",0))
         w_adx=int(p.get("w_adx",0)); adx_threshold=p.get("adx_th",25)
+        w_bias=int(p.get("w_bias",0)); bias_max_val=p.get("bias_max",15)
         buy_th=p.get("buy_threshold",5)
         for si in range(ns):
             sc=0.0
@@ -578,6 +590,7 @@ def cpu_replay(pre, p):
             if w_sq>0 and squeeze_fire[si,day]>0.5: sc+=w_sq
             if w_newh>0 and new_high_60[si,day]>0.5: sc+=w_newh
             if w_adx>0 and adx_arr[si,day]>=adx_threshold: sc+=w_adx
+            if w_bias>0 and bias_arr[si,day]>=0 and bias_arr[si,day]<=bias_max_val: sc+=w_bias
             cg=int(p.get("consecutive_green",0))
             if cg>=1:
                 ok=True
@@ -627,6 +640,7 @@ def main():
     d_squeeze = cp.asarray(pre["squeeze_fire"])
     d_newhigh = cp.asarray(pre["new_high_60"])
     d_adx = cp.asarray(pre["adx"])
+    d_bias = cp.asarray(pre["bias"])
     d_ma60 = cp.asarray(pre["ma60"])
 
     print("[GPU] 開始進化！每批 500,000 組")
@@ -743,7 +757,6 @@ def main():
         params_np[:, N_PARAMS] = mf_mapped.astype(np.float32)
         params_np[:, N_PARAMS+1] = ms_mapped.astype(np.float32)
         params_np[:, N_PARAMS+2] = md_mapped.astype(np.float32)
-            params_np[j, N_PARAMS+2] = MOM_MAP[md_choices[j]]
 
         d_params = cp.asarray(params_np)
         d_results = cp.zeros((BATCH, 5), dtype=cp.float32)
@@ -755,7 +768,7 @@ def main():
             d_kv, d_dv, d_mom3, d_mom5, d_mom10,
             d_ig, d_gp, d_nh, d_wr,
             d_ma3, d_ma5, d_ma10, d_ma15, d_ma20, d_ma30, d_ma60,
-            d_vp, d_squeeze, d_newhigh, d_adx,
+            d_vp, d_squeeze, d_newhigh, d_adx, d_bias,
             d_params, np.int32(N_PARAMS_FULL),
             d_results, np.int32(BATCH)
         ))
@@ -794,6 +807,10 @@ def main():
             print(f"  [GPU] 新紀錄！{best_score:.1f} | 勝率{best_wr:.0f}% | 平均{best_avg:.1f}% | {best_nt}筆 | 名人堂Top:{hall_of_fame[0][0]:.1f}")
         else:
             no_improve_rounds += 1
+            # 名人堂大爆炸：卡太久就清空，逼迫重新探索
+            if no_improve_rounds > 0 and no_improve_rounds % 50 == 0:
+                hall_of_fame = []
+                print(f"  [GPU] 🔄 名人堂清空！（連續 {no_improve_rounds} 輪無突破，強制重新探索）")
 
         elapsed = time.time() - start
         speed = total_tested / elapsed
