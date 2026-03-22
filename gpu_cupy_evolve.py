@@ -36,16 +36,16 @@ def telegram_push(msg):
 
 # === 資料載入 ===
 import yfinance as yf
-TW_TICKERS = [
-    "2330.TW","2454.TW","2317.TW","2303.TW","2382.TW","3231.TW","2353.TW","2357.TW",
-    "2881.TW","2882.TW","2891.TW","2886.TW","2412.TW","1301.TW","2603.TW","2609.TW",
-    "1216.TW","2002.TW","2308.TW","3711.TW","2409.TW","3481.TW","2356.TW","2324.TW",
-    "4938.TW","2337.TW","2344.TW","3037.TW","6770.TW","3576.TW","1802.TW","8039.TW",
-    "2485.TW","1711.TW","1717.TW","6505.TW","1303.TW","2406.TW","8150.TW",
-    "2615.TW","2618.TW","2610.TW","2912.TW","1101.TW","2880.TW","2885.TW","2890.TW",
-    "2801.TW","2834.TW","2883.TW","2884.TW","2887.TW","2892.TW","3189.TW","2301.TW",
-    "2408.TW","3008.TW","2345.TW","3443.TW","2474.TW",
-]
+# 從完整名單讀取所有股票代號（排除 ETF 00xx 開頭）
+TW_TICKERS = []
+try:
+    nf = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tw_stock_names.json")
+    with open(nf, "r", encoding="utf-8") as f:
+        all_names = json.load(f)
+    TW_TICKERS = [t for t in all_names.keys() if not t.startswith("00")]
+    CN_NAMES.update(all_names)
+except:
+    TW_TICKERS = ["2330.TW","2454.TW","2317.TW","2303.TW","2382.TW","3231.TW"]
 
 def download_data():
     if os.path.exists(CACHE_PATH):
@@ -56,12 +56,16 @@ def download_data():
                 if len(data) >= 10: print(f"[快取] {len(data)} 檔"); return data
             except: pass
     data = {}
+    total = len(TW_TICKERS)
+    print(f"[下載] {total} 檔股票資料（首次需 10-20 分鐘）...")
     for i, t in enumerate(TW_TICKERS):
         try:
             h = yf.Ticker(t).history(period="2y")
             if len(h) >= 40: data[t] = h
-            if i % 5 == 4: time.sleep(1)
+            if i % 10 == 9: time.sleep(1)
+            if i % 50 == 49: print(f"  進度 {i+1}/{total} | 成功 {len(data)} 檔")
         except: continue
+    print(f"[下載完成] {len(data)} 檔")
     if len(data) < 10:
         try:
             headers = {"Authorization": f"token {GH_TOKEN}"} if GH_TOKEN else {}
