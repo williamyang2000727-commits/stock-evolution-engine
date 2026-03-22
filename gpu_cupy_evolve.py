@@ -599,6 +599,9 @@ def main():
     total_tested = 0; total_improved = 0; last_synced_improved = 0
     start = time.time()
     rnd = 0
+    # Top 5 名人堂（交叉配種用）
+    hall_of_fame = []  # [(score, params_dict), ...]
+    no_improve_rounds = 0  # 連續沒突破的輪數
 
     # 所有 MA/MOM 陣列傳到 GPU（一次性）
     d_ma3 = cp.asarray(pre["ma_d"][3]); d_ma5 = cp.asarray(pre["ma_d"][5])
@@ -629,49 +632,69 @@ def main():
         rnd += 1
         params_np = np.zeros((BATCH, N_PARAMS_FULL), dtype=np.float32)
 
-        # 50% 隨機探索 + 50% 爬山微調
-        half = BATCH // 2
+        # 自適應變異率：卡住越久，變異越大
+        mutate_rate = min(0.5, 0.15 + no_improve_rounds * 0.02)
+        third = BATCH // 3
 
-        # 前半：完全隨機（探索新區域）
+        # === 第 1/3：完全隨機（探索新大陸）===
         for i, key in enumerate(PARAM_ORDER):
-            params_np[:half, i] = np.random.choice(PARAMS_SPACE[key], half).astype(np.float32)
+            params_np[:third, i] = np.random.choice(PARAMS_SPACE[key], third).astype(np.float32)
 
-        # 後半：基於最佳策略微調（爬山）
-        if gist_best_params or best_params:
+        # === 第 2/3：爬山微調最佳策略 ===
+        if best_params or gist_best_params:
             base = best_params if best_params else gist_best_params
-            for j in range(half, BATCH):
+            for j in range(third, 2*third):
                 for i, key in enumerate(PARAM_ORDER):
                     opts = PARAMS_SPACE[key]
                     base_val = base.get(key, opts[0])
-                    # 找到 base_val 在 opts 中最近的 index
                     diffs = [abs(float(o) - float(base_val)) for o in opts]
                     base_idx = diffs.index(min(diffs))
-                    # 80% 機率保持不變，20% 機率隨機跳到鄰近值
-                    if np.random.random() < 0.2:
-                        # 在 base_idx ±2 範圍內隨機選
+                    if np.random.random() < mutate_rate:
                         lo = max(0, base_idx - 2)
                         hi = min(len(opts) - 1, base_idx + 2)
-                        new_idx = np.random.randint(lo, hi + 1)
-                        params_np[j, i] = float(opts[new_idx])
+                        params_np[j, i] = float(opts[np.random.randint(lo, hi + 1)])
                     else:
                         params_np[j, i] = float(opts[base_idx])
         else:
-            # 還沒有最佳策略，全部隨機
             for i, key in enumerate(PARAM_ORDER):
-                params_np[half:, i] = np.random.choice(PARAMS_SPACE[key], BATCH - half).astype(np.float32)
+                params_np[third:2*third, i] = np.random.choice(PARAMS_SPACE[key], third).astype(np.float32)
+
+        # === 第 3/3：交叉配種（從 Top 5 名人堂選兩個配種）===
+        if len(hall_of_fame) >= 2:
+            for j in range(2*third, BATCH):
+                # 隨機選兩個親代
+                p1 = hall_of_fame[np.random.randint(len(hall_of_fame))][1]
+                p2 = hall_of_fame[np.random.randint(len(hall_of_fame))][1]
+                for i, key in enumerate(PARAM_ORDER):
+                    opts = PARAMS_SPACE[key]
+                    # 50% 機率從 p1 拿，50% 從 p2 拿
+                    parent = p1 if np.random.random() < 0.5 else p2
+                    val = parent.get(key, opts[0])
+                    diffs = [abs(float(o) - float(val)) for o in opts]
+                    idx = diffs.index(min(diffs))
+                    # 10% 機率突變
+                    if np.random.random() < 0.1:
+                        idx = np.random.randint(len(opts))
+                    params_np[j, i] = float(opts[idx])
+        else:
+            for i, key in enumerate(PARAM_ORDER):
+                params_np[2*third:, i] = np.random.choice(PARAMS_SPACE[key], BATCH - 2*third).astype(np.float32)
 
         # 隨機選 MA 和 MOM
         mf_choices = np.random.choice(MA_FAST_OPTS, BATCH)
         ms_choices = np.random.choice(MA_SLOW_OPTS, BATCH)
         md_choices = np.random.choice(MOM_DAYS_OPTS, BATCH)
-        # 爬山部分保持最佳策略的 MA/MOM
+        # 爬山+配種部分保持親代的 MA/MOM
         if best_params or gist_best_params:
             bp = best_params if best_params else gist_best_params
-            for j in range(half, BATCH):
+            for j in range(third, BATCH):
                 if np.random.random() < 0.8:
-                    mf_choices[j] = int(bp.get("ma_fast_w", 5))
-                    ms_choices[j] = int(bp.get("ma_slow_w", 20))
-                    md_choices[j] = int(bp.get("momentum_days", 5))
+                    src = bp
+                    if j >= 2*third and len(hall_of_fame) >= 2:
+                        src = hall_of_fame[np.random.randint(len(hall_of_fame))][1]
+                    mf_choices[j] = int(src.get("ma_fast_w", 5))
+                    ms_choices[j] = int(src.get("ma_slow_w", 20))
+                    md_choices[j] = int(src.get("momentum_days", 5))
         # 過濾 ma_fast >= ma_slow
         for j in range(BATCH):
             if mf_choices[j] >= ms_choices[j]:
@@ -711,11 +734,18 @@ def main():
             best_params["ma_slow_w"] = int(ms_choices[bi])
             best_params["momentum_days"] = int(md_choices[bi])
             total_improved += 1
-            print(f"  [GPU] 新紀錄！{best_score:.1f} | 勝率{best_wr:.0f}% | 平均{best_avg:.1f}% | {best_nt}筆")
+            no_improve_rounds = 0  # 重設卡住計數器
+            # 更新名人堂 Top 5
+            hall_of_fame.append((best_score, dict(best_params)))
+            hall_of_fame.sort(key=lambda x: -x[0])
+            hall_of_fame = hall_of_fame[:5]
+            print(f"  [GPU] 新紀錄！{best_score:.1f} | 勝率{best_wr:.0f}% | 平均{best_avg:.1f}% | {best_nt}筆 | 名人堂{len(hall_of_fame)}個")
+        else:
+            no_improve_rounds += 1
 
         elapsed = time.time() - start
         speed = total_tested / elapsed
-        print(f"[GPU] R{rnd} | {total_tested:,}組 | {elapsed:.0f}秒 | {speed:,.0f}組/秒 | 突破{total_improved}")
+        print(f"[GPU] R{rnd} | {total_tested:,}組 | {elapsed:.0f}秒 | {speed:,.0f}組/秒 | 突破{total_improved} | 變異率{mutate_rate:.0%}")
 
         # Gist 同步（只在這輪有突破時才檢查）
         if total_improved > last_synced_improved and best_score > 0 and GH_TOKEN and GIST_ID:
