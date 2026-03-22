@@ -630,7 +630,7 @@ def main():
     d_ma60 = cp.asarray(pre["ma60"])
 
     print("[GPU] 開始進化！每批 500,000 組")
-    BATCH = 500000
+    BATCH = 200000  # 縮小避免 Python 參數生成卡住
     BLOCK = 256
     N_PARAMS = len(PARAM_ORDER)
     best_score = -999999
@@ -698,26 +698,29 @@ def main():
                 vals[keep] = opts[base_idx]
                 params_np[n_random:n_random+n_climb, i] = vals
 
-        # === 交叉配種（向量化）===
+        # === 交叉配種（完全向量化）===
         if len(hall_of_fame) >= 2:
             n_hof = len(hall_of_fame)
             breed_size = n_breed
+            # 預建親代參數矩陣
+            hof_matrix = np.zeros((n_hof, len(PARAM_ORDER)), dtype=np.float32)
+            for h in range(n_hof):
+                for i, key in enumerate(PARAM_ORDER):
+                    opts = PARAMS_SPACE[key]
+                    val = float(hall_of_fame[h][1].get(key, opts[0]))
+                    diffs = [abs(float(o) - val) for o in opts]
+                    hof_matrix[h, i] = float(opts[diffs.index(min(diffs))])
+            # 隨機選親代
+            parent_idx = np.random.randint(n_hof, size=breed_size)
+            parent_vals = hof_matrix[parent_idx]  # (breed_size, n_params)
+            # 10% 突變
+            mutate_mask = np.random.random((breed_size, len(PARAM_ORDER))) < 0.1
             for i, key in enumerate(PARAM_ORDER):
                 opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
-                # 隨機選親代
-                p1_idx = np.random.randint(n_hof, size=breed_size)
-                p2_idx = np.random.randint(n_hof, size=breed_size)
-                pick_p1 = np.random.random(breed_size) < 0.5
-                vals = np.zeros(breed_size, dtype=np.float32)
-                for j in range(breed_size):
-                    pidx = p1_idx[j] if pick_p1[j] else p2_idx[j]
-                    pval = float(hall_of_fame[pidx][1].get(key, opts[0]))
-                    d = np.abs(opts - pval)
-                    idx = int(np.argmin(d))
-                    if np.random.random() < 0.1:  # 10% 突變
-                        idx = np.random.randint(len(opts))
-                    vals[j] = opts[idx]
-                params_np[n_random+n_climb:, i] = vals
+                random_vals = opts[np.random.randint(len(opts), size=breed_size)]
+                col = parent_vals[:, i].copy()
+                col[mutate_mask[:, i]] = random_vals[mutate_mask[:, i]]
+                params_np[n_random+n_climb:, i] = col
 
         # MA/MOM 選擇（向量化）
         mf_choices = np.random.choice(MA_FAST_OPTS, BATCH)
