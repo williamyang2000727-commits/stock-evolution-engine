@@ -131,30 +131,33 @@ void backtest(
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= n_combos) return;
 
-    // 讀參數
+    // 讀參數 — 評分制
     const float* p = params + idx * n_params_per_combo;
-    int use_rsi_buy = (int)p[0]; float rsi_buy = p[1];
-    int use_bb_buy = (int)p[2]; float bb_buy = p[3];
-    int use_vol = (int)p[4]; float vol_th = p[5];
-    int require_ma_bull = (int)p[6];
-    int use_macd = (int)p[7]; int macd_mode = (int)p[8];
-    int use_kd = (int)p[9]; float kd_k_th = p[10]; int kd_cross = (int)p[11];
-    int use_wr = (int)p[12]; float wr_th = p[13];
-    float mom_min = p[14]; int consec_green = (int)p[15];
-    int use_gap = (int)p[16]; float near_high_pct = p[17];
-    int above_ma60 = (int)p[18]; int require_ma_cross = (int)p[19];
-    int vol_gt_yesterday = (int)p[20];
-    float stop_loss = p[21]; int use_tp = (int)p[22]; float take_profit = p[23];
-    float trailing_stop = p[24];
-    int use_rsi_sell = (int)p[25]; float rsi_sell_th = p[26];
-    int use_macd_sell = (int)p[27]; int use_kd_sell = (int)p[28];
-    float sell_vol_shrink = p[29]; int sell_below_ma = (int)p[30];
-    int hold_days_max = (int)p[31];
-    int ma_fast_idx = (int)p[32];  // 0=ma3, 1=ma5, 2=ma10
-    int ma_slow_idx = (int)p[33];  // 0=ma15, 1=ma20, 2=ma30, 3=ma60
-    int mom_idx = (int)p[34];      // 0=mom3, 1=mom5, 2=mom10
+    // 買入：每個指標的權重（0-3）和門檻
+    int w_rsi = (int)p[0]; float rsi_th = p[1];
+    int w_bb = (int)p[2]; float bb_th = p[3];
+    int w_vol = (int)p[4]; float vol_th = p[5];
+    int w_ma = (int)p[6];
+    int w_macd = (int)p[7]; int macd_mode = (int)p[8];
+    int w_kd = (int)p[9]; float kd_th = p[10]; int kd_cross = (int)p[11];
+    int w_wr = (int)p[12]; float wr_th = p[13];
+    int w_mom = (int)p[14]; float mom_th = p[15];
+    int w_near_high = (int)p[16]; float near_high_pct = p[17];
+    int consec_green = (int)p[18]; int use_gap = (int)p[19];
+    int above_ma60 = (int)p[20]; int vol_gt_yesterday = (int)p[21];
+    float buy_threshold = p[22];
+    // 賣出
+    float stop_loss = p[23]; int use_tp = (int)p[24]; float take_profit = p[25];
+    float trailing_stop = p[26];
+    int use_rsi_sell = (int)p[27]; float rsi_sell_th = p[28];
+    int use_macd_sell = (int)p[29]; int use_kd_sell = (int)p[30];
+    float sell_vol_shrink = p[31]; int sell_below_ma = (int)p[32];
+    int hold_days_max = (int)p[33];
+    // MA/MOM 選擇
+    int ma_fast_idx = (int)p[34];
+    int ma_slow_idx = (int)p[35];
+    int mom_idx = (int)p[36];
 
-    // 選均線和動量陣列指標
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
     const float* momentum = mom_idx==0 ? mom3 : mom_idx==1 ? mom5 : mom10;
@@ -204,46 +207,58 @@ void backtest(
                 trade_bdays[n_trades] = buy_day;
                 total_ret += ret;
                 if (ret > 0) win_count += 1;
-                if (ret < 5) wasted_count += 1;
+                if (ret < 10) wasted_count += 1;
                 n_trades++;
                 holding = -1;
             }
             continue;
         }
 
-        // 找買入
+        // === 評分制買入 ===
         int best_si = -1;
-        float best_vol = 0;
+        float best_buy_score = 0;
         for (int si = 0; si < n_stocks; si++) {
             int d = si * n_days + day;
-            bool buy = true;
-            if (buy && use_rsi_buy == 1 && rsi[d] < rsi_buy) buy = false;
-            if (buy && use_bb_buy == 1 && bb_pos[d] < bb_buy) buy = false;
-            if (buy && use_vol == 1 && vol_ratio[d] < vol_th) buy = false;
-            if (buy && require_ma_bull == 1 && close[d] < ma_fast_arr[d]) buy = false;
-            if (buy && use_macd == 1) {
-                if (macd_mode == 0 && !(macd_hist[d] > 0 && macd_hist[d-1] <= 0)) buy = false;
-                else if (macd_mode == 1 && macd_line[d] <= 0) buy = false;
+            float sc = 0.0f;
+
+            // 7 大核心指標評分（權重 0-3）
+            if (w_rsi > 0 && rsi[d] >= rsi_th) sc += w_rsi;
+            if (w_bb > 0 && bb_pos[d] >= bb_th) sc += w_bb;
+            if (w_vol > 0 && vol_ratio[d] >= vol_th) sc += w_vol;
+            if (w_ma > 0 && close[d] > ma_fast_arr[d]) sc += w_ma;
+            if (w_macd > 0) {
+                bool ok = false;
+                if (macd_mode == 0 && day >= 1 && macd_hist[d] > 0 && macd_hist[d-1] <= 0) ok = true;
+                else if (macd_mode == 1 && macd_line[d] > 0) ok = true;
+                else if (macd_mode == 2 && macd_hist[d] > 0) ok = true;
+                if (ok) sc += w_macd;
             }
-            if (buy && use_kd == 1) {
-                if (k_val[d] < kd_k_th) buy = false;
-                if (buy && kd_cross == 1 && day >= 1) {
-                    if (!(k_val[d] > d_val[d] && k_val[d-1] <= d_val[d-1])) buy = false;
-                }
+            if (w_kd > 0) {
+                bool ok = k_val[d] >= kd_th;
+                if (ok && kd_cross == 1 && day >= 1)
+                    ok = k_val[d] > d_val[d] && k_val[d-1] <= d_val[d-1];
+                if (ok) sc += w_kd;
             }
-            if (buy && use_wr == 1 && williams_r[d] < wr_th) buy = false;
-            if (buy && mom_min > 0 && momentum[d] < mom_min) buy = false;
-            if (buy && consec_green >= 1) {
+            if (w_wr > 0 && williams_r[d] >= wr_th) sc += w_wr;
+            if (w_mom > 0 && momentum[d] >= mom_th) sc += w_mom;
+            if (w_near_high > 0 && fabsf(near_high[d]) <= near_high_pct) sc += w_near_high;
+
+            // 輔助加分（各 +1）
+            if (consec_green >= 1) {
+                bool ok = true;
                 for (int g = 0; g < consec_green; g++) {
-                    if (day-g < 0 || is_green[si*n_days+day-g] != 1) { buy = false; break; }
+                    if (day-g < 0 || is_green[si*n_days+day-g] != 1) { ok = false; break; }
                 }
+                if (ok) sc += 1.0f;
             }
-            if (buy && use_gap == 1 && gap[d] < 1.0f) buy = false;
-            if (buy && near_high_pct > 0 && fabsf(near_high[d]) > near_high_pct) buy = false;
-            if (buy && above_ma60 == 1 && close[d] < ma60[d]) buy = false;
-            if (buy && require_ma_cross == 1 && ma_fast_arr[d] < ma_slow_arr[d]) buy = false;
-            if (buy && vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] <= vol_prev[d]) buy = false;
-            if (buy && vol_ratio[d] > best_vol) { best_si = si; best_vol = vol_ratio[d]; }
+            if (use_gap == 1 && gap[d] >= 1.0f) sc += 1.0f;
+            if (above_ma60 == 1 && close[d] >= ma60[d]) sc += 1.0f;
+            if (vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] > vol_prev[d]) sc += 1.0f;
+
+            // 選分數最高且超過門檻的
+            if (sc >= buy_threshold && sc > best_buy_score) {
+                best_si = si; best_buy_score = sc;
+            }
         }
         if (best_si >= 0 && day + 1 < n_days) {
             holding = best_si;
@@ -296,17 +311,20 @@ void backtest(
 ''', 'backtest')
 
 PARAMS_SPACE = {
-    "use_rsi_buy": [0,1], "rsi_buy": [35,40,45,50,55,60,65,70,75],
-    "use_bb_buy": [0,1], "bb_buy": [0.2,0.4,0.5,0.6,0.7,0.8,0.9,1.0],
-    "use_vol_filter": [0,1], "vol_filter": [1.5,2.0,2.5,3.0,4.0,5.0],
-    "require_ma_bull": [0,1],
-    "use_macd": [0,1], "macd_mode": [0,1,2],
-    "use_kd": [0,1], "kd_buy_k": [20,30,40,50,60,70,80], "kd_cross": [0,1],
-    "use_wr_buy": [0,1], "wr_buy": [-10,-20,-30,-40,-50],
-    "momentum_min": [0,3,8],
+    # ====== 評分制買入（權重 0-3 + 門檻）======
+    "w_rsi": [0,1,2,3], "rsi_th": [35,40,50,55,60,65,70,75],
+    "w_bb": [0,1,2,3], "bb_th": [0.3,0.5,0.6,0.7,0.8,0.9,1.0],
+    "w_vol": [0,1,2,3], "vol_th": [1.5,2.0,2.5,3.0,4.0,5.0],
+    "w_ma": [0,1,2,3],
+    "w_macd": [0,1,2,3], "macd_mode": [0,1,2],
+    "w_kd": [0,1,2,3], "kd_th": [20,30,40,50,60,70,80], "kd_cross": [0,1],
+    "w_wr": [0,1,2,3], "wr_th": [-10,-20,-30,-40,-50],
+    "w_mom": [0,1,2,3], "mom_th": [0,3,5,8],
+    "w_near_high": [0,1,2], "near_high_pct": [3,5,10,15],
     "consecutive_green": [0,1,2,3], "gap_up": [0,1],
-    "near_high_pct": [0,5,10], "above_ma60": [0,1],
-    "require_ma_cross": [0,1], "vol_gt_yesterday": [0,1],
+    "above_ma60": [0,1], "vol_gt_yesterday": [0,1],
+    "buy_threshold": [3,4,5,6,7,8,9,10],
+    # ====== 賣出 ======
     "stop_loss": [-5,-7,-10,-15],
     "use_take_profit": [0,1], "take_profit": [20,30,40,50,60,80,100],
     "trailing_stop": [0,3,5,7,10],
@@ -318,12 +336,14 @@ PARAMS_SPACE = {
 }
 
 PARAM_ORDER = [
-    "use_rsi_buy","rsi_buy","use_bb_buy","bb_buy",
-    "use_vol_filter","vol_filter","require_ma_bull",
-    "use_macd","macd_mode","use_kd","kd_buy_k","kd_cross",
-    "use_wr_buy","wr_buy",
-    "momentum_min","consecutive_green","gap_up","near_high_pct",
-    "above_ma60","require_ma_cross","vol_gt_yesterday",
+    "w_rsi","rsi_th","w_bb","bb_th",
+    "w_vol","vol_th","w_ma",
+    "w_macd","macd_mode","w_kd","kd_th","kd_cross",
+    "w_wr","wr_th","w_mom","mom_th",
+    "w_near_high","near_high_pct",
+    "consecutive_green","gap_up",
+    "above_ma60","vol_gt_yesterday",
+    "buy_threshold",
     "stop_loss","use_take_profit","take_profit","trailing_stop",
     "use_rsi_sell","rsi_sell","use_macd_sell","use_kd_sell",
     "sell_vol_shrink","sell_below_ma","hold_days",
@@ -473,34 +493,42 @@ def cpu_replay(pre, p):
                     "return":round(ret,2),"days":dh,"reason":REASON_NAMES[min(reason,len(REASON_NAMES)-1)]})
                 holding=-1
             continue
-        best_si=-1; best_v=0
+        best_si=-1; best_sc=0
+        w_rsi=int(p.get("w_rsi",0)); w_bb=int(p.get("w_bb",0)); w_vol=int(p.get("w_vol",0))
+        w_ma=int(p.get("w_ma",0)); w_macd=int(p.get("w_macd",0)); w_kd=int(p.get("w_kd",0))
+        w_wr=int(p.get("w_wr",0)); w_mom=int(p.get("w_mom",0)); w_nh=int(p.get("w_near_high",0))
+        buy_th=p.get("buy_threshold",5)
         for si in range(ns):
-            buy=True
-            if buy and p.get("use_rsi_buy",1) and rsi[si,day]<p.get("rsi_buy",55): buy=False
-            if buy and p.get("use_bb_buy",1) and bb_pos[si,day]<p.get("bb_buy",0.7): buy=False
-            if buy and p.get("use_vol_filter",1) and vol_ratio[si,day]<p.get("vol_filter",3): buy=False
-            if buy and p.get("require_ma_bull",0) and close[si,day]<maf[si,day]: buy=False
-            if buy and p.get("use_macd",0):
+            sc=0.0
+            if w_rsi>0 and rsi[si,day]>=p.get("rsi_th",55): sc+=w_rsi
+            if w_bb>0 and bb_pos[si,day]>=p.get("bb_th",0.7): sc+=w_bb
+            if w_vol>0 and vol_ratio[si,day]>=p.get("vol_th",3): sc+=w_vol
+            if w_ma>0 and close[si,day]>maf[si,day]: sc+=w_ma
+            if w_macd>0:
                 mm=int(p.get("macd_mode",2))
-                if mm==0 and not (macd_hist[si,day]>0 and macd_hist[si,day-1]<=0): buy=False
-                elif mm==1 and macd_line[si,day]<=0: buy=False
-            if buy and p.get("use_kd",0):
-                if k_val[si,day]<p.get("kd_buy_k",50): buy=False
-                if buy and p.get("kd_cross",0) and day>=1:
-                    if not (k_val[si,day]>d_val[si,day] and k_val[si,day-1]<=d_val[si,day-1]): buy=False
-            if buy and p.get("use_wr_buy",0) and williams_r[si,day]<p.get("wr_buy",-30): buy=False
-            if buy and p.get("momentum_min",0)>0 and mom[si,day]<p["momentum_min"]: buy=False
+                ok=False
+                if mm==0 and day>=1 and macd_hist[si,day]>0 and macd_hist[si,day-1]<=0: ok=True
+                elif mm==1 and macd_line[si,day]>0: ok=True
+                elif mm==2 and macd_hist[si,day]>0: ok=True
+                if ok: sc+=w_macd
+            if w_kd>0:
+                ok=k_val[si,day]>=p.get("kd_th",50)
+                if ok and p.get("kd_cross",0) and day>=1:
+                    ok=k_val[si,day]>d_val[si,day] and k_val[si,day-1]<=d_val[si,day-1]
+                if ok: sc+=w_kd
+            if w_wr>0 and williams_r[si,day]>=p.get("wr_th",-30): sc+=w_wr
+            if w_mom>0 and mom[si,day]>=p.get("mom_th",3): sc+=w_mom
+            if w_nh>0 and abs(near_high[si,day])<=p.get("near_high_pct",10): sc+=w_nh
             cg=int(p.get("consecutive_green",0))
-            if buy and cg>=1:
+            if cg>=1:
+                ok=True
                 for g in range(cg):
-                    if day-g<0 or is_green[si,day-g]!=1: buy=False; break
-            if buy and p.get("gap_up",0) and gap[si,day]<1.0: buy=False
-            nhp=p.get("near_high_pct",0)
-            if buy and nhp>0 and abs(near_high[si,day])>nhp: buy=False
-            if buy and p.get("above_ma60",0) and close[si,day]<ma60[si,day]: buy=False
-            if buy and p.get("require_ma_cross",0) and maf[si,day]<mas[si,day]: buy=False
-            if buy and p.get("vol_gt_yesterday",0) and day>=1 and vol_ratio[si,day]<=vol_prev[si,day]: buy=False
-            if buy and vol_ratio[si,day]>best_v: best_si=si; best_v=vol_ratio[si,day]
+                    if day-g<0 or is_green[si,day-g]!=1: ok=False; break
+                if ok: sc+=1
+            if p.get("gap_up",0) and gap[si,day]>=1.0: sc+=1
+            if p.get("above_ma60",0) and close[si,day]>=ma60[si,day]: sc+=1
+            if p.get("vol_gt_yesterday",0) and day>=1 and vol_ratio[si,day]>vol_prev[si,day]: sc+=1
+            if sc>=buy_th and sc>best_sc: best_si=si; best_sc=sc
         if best_si>=0 and day+1<nd:
             holding=best_si; bp=float(close[best_si,day+1]); pk=bp; bd=day+1
     return sorted(trades, key=lambda x: x["buy_date"])
