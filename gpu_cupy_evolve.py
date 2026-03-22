@@ -15,44 +15,18 @@ GH_TOKEN = os.environ.get("GH_TOKEN", "")
 DATA_GIST_ID = "a300b9e29372ac76f79eda39a2a86321"
 CACHE_PATH = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_data_cache.pkl")
 
-CN_NAMES = {
-    "2330.TW": "台積電", "2454.TW": "聯發科", "2317.TW": "鴻海", "2303.TW": "聯電",
-    "2382.TW": "廣達", "3231.TW": "緯創", "2353.TW": "宏碁", "2357.TW": "華碩",
-    "2881.TW": "富邦金", "2882.TW": "國泰金", "2891.TW": "中信金", "2886.TW": "兆豐金",
-    "2412.TW": "中華電", "1301.TW": "台塑", "2603.TW": "長榮", "2609.TW": "陽明",
-    "1216.TW": "統一", "2002.TW": "中鋼", "2308.TW": "台達電", "3711.TW": "日月光投控",
-    "2409.TW": "友達", "3481.TW": "群創", "2356.TW": "英業達", "2324.TW": "仁寶",
-    "4938.TW": "和碩", "2337.TW": "旺宏", "2344.TW": "華邦電", "3037.TW": "欣興",
-    "6770.TW": "力積電", "3576.TW": "聯合再生", "1802.TW": "台玻", "8039.TW": "台虹",
-    "2485.TW": "兆赫", "1711.TW": "永光", "1717.TW": "長興", "2313.TW": "華通",
-    "6505.TW": "台塑化", "1303.TW": "南亞", "2406.TW": "國碩", "8150.TW": "南茂",
-    "2615.TW": "萬海", "2618.TW": "長榮航", "2610.TW": "華航", "2912.TW": "統一超",
-    "1101.TW": "台泥", "2880.TW": "華南金", "2885.TW": "元大金", "2890.TW": "永豐金",
-    "2301.TW": "光寶科", "2408.TW": "南亞科", "2449.TW": "京元電子",
-    "2345.TW": "智邦", "3443.TW": "創意", "2474.TW": "可成",
-    "2801.TW": "彰銀", "2834.TW": "臺企銀", "2883.TW": "開發金",
-    "2884.TW": "玉山金", "2887.TW": "台新金", "2892.TW": "第一金", "3189.TW": "景碩",
-    "2327.TW": "國巨", "1326.TW": "台化", "3008.TW": "大立光", "1402.TW": "遠東新",
-    "1590.TW": "亞德客-KY", "5871.TW": "中租-KY", "2395.TW": "研華", "2379.TW": "瑞昱",
-    "6239.TW": "力成", "3044.TW": "健鼎", "2474.TW": "可成", "3443.TW": "創意",
-    "2345.TW": "智邦", "2449.TW": "京元電子", "1102.TW": "亞泥", "5880.TW": "合庫金",
-    "3017.TW": "奇鋐", "6669.TW": "緯穎", "3034.TW": "聯詠", "3661.TW": "世芯-KY",
-    "2634.TW": "漢翔", "1513.TW": "中興電", "1504.TW": "東元", "2049.TW": "上銀",
-    "1476.TW": "儒鴻", "9910.TW": "豐泰", "2207.TW": "和泰車", "2368.TW": "金像電",
-    "2383.TW": "台光電", "1312.TW": "國喬", "1314.TW": "中石化", "2605.TW": "新興",
-    "8454.TW": "富邦媒", "2542.TW": "興富發", "2404.TW": "漢唐", "1210.TW": "大成",
-    "1227.TW": "佳格", "9933.TW": "中鼎", "5876.TW": "上海商銀", "9921.TW": "巨大",
-}
-def get_name(t): return CN_NAMES.get(t, t.replace(".TW",""))
-def auto_fetch_names(tickers):
-    missing = [t for t in tickers if t not in CN_NAMES]
-    if not missing: return
-    for t in missing:
-        try:
-            info = yf.Ticker(t).info
-            name = info.get("shortName","") or info.get("longName","")
-            if name and not name[0].isdigit(): CN_NAMES[t] = name
-        except: pass
+CN_NAMES = {}
+# 從完整名單載入（1958 檔台灣上市櫃股票）
+NAMES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tw_stock_names.json")
+try:
+    if os.path.exists(NAMES_FILE):
+        with open(NAMES_FILE, "r", encoding="utf-8") as f:
+            CN_NAMES = json.load(f)
+except: pass
+def get_name(t):
+    n = CN_NAMES.get(t, "")
+    if not n: return t.replace(".TW","").replace(".TWO","")
+    return n
 def telegram_push(msg):
     for cid in CHAT_IDS:
         cid = cid.strip()
