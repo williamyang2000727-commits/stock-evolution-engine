@@ -656,6 +656,7 @@ def main():
     # Top 5 名人堂（交叉配種用）
     hall_of_fame = []  # [(score, params_dict), ...]
     no_improve_rounds = 0  # 連續沒突破的輪數
+    force_random = 0  # 清空後強制全隨機幾輪
 
     # 所有 MA/MOM 陣列傳到 GPU（一次性）
     d_ma3 = cp.asarray(pre["ma_d"][3]); d_ma5 = cp.asarray(pre["ma_d"][5])
@@ -686,10 +687,17 @@ def main():
         rnd += 1
         params_np = np.zeros((BATCH, N_PARAMS_FULL), dtype=np.float32)
         mutate_rate = min(0.5, 0.15 + no_improve_rounds * 0.02)
-        # 20% 隨機 / 50% 爬山 / 30% 配種（高分階段重爬山）
-        n_random = BATCH // 5
-        n_climb = BATCH // 2
-        n_breed = BATCH - n_random - n_climb
+        # 清空後前幾輪全隨機，種出多樣性名人堂
+        if force_random > 0:
+            n_random = BATCH
+            n_climb = 0
+            n_breed = 0
+            force_random -= 1
+        else:
+            # 20% 隨機 / 50% 爬山 / 30% 配種
+            n_random = BATCH // 5
+            n_climb = BATCH // 2
+            n_breed = BATCH - n_random - n_climb
         third = n_random  # 相容舊變數名
 
         # === 全部先用隨機填滿（向量化，超快）===
@@ -811,7 +819,8 @@ def main():
             if mutate_rate >= 0.50:
                 hall_of_fame = []
                 no_improve_rounds = 0
-                print(f"  [GPU] 🔄 變異率封頂！名人堂清空 + 歸零重新爬山")
+                force_random = 2  # 前 2 輪全隨機，種出多樣性名人堂
+                print(f"  [GPU] 🔄 變異率封頂！名人堂清空 + 2輪全隨機探索")
 
         elapsed = time.time() - start
         speed = total_tested / elapsed
