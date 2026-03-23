@@ -203,7 +203,7 @@ void backtest(
                 if (ma_check > 0 && cur < ma_check) sell = true;
             }
             if (!sell && use_stagnation == 1 && dh >= stag_days && ret < stag_min_ret) sell = true;
-            if (!sell && use_time_decay == 1 && dh >= 5 && ret < dh * ret_per_day) sell = true;
+            if (!sell && use_time_decay == 1 && dh >= hold_days_max / 2 && ret < (dh - hold_days_max / 2) * ret_per_day) sell = true;
             if (!sell && dh >= hold_days_max) sell = true;
 
             if (sell && n_trades < 100) {
@@ -366,7 +366,7 @@ PARAMS_SPACE = {
     # ====== OBV 能量潮 ======
     "w_obv": [0,1,2,3], "obv_rising_days": [3,5,10],
     # ====== 漸進式最低報酬 ======
-    "use_time_decay": [0,1], "ret_per_day": [0.3,0.5,0.8,1.0,1.5],
+    "use_time_decay": [0,1], "ret_per_day": [0.1,0.2,0.3,0.5,0.8,1.0,1.5],
     # ====== 多持倉 ======
     "max_positions": [1,2],
 }
@@ -618,7 +618,8 @@ def cpu_replay(pre, p):
                 elif sbm==3: mc=ma60[si,day]
                 if mc>0 and cur<mc: sell=True; reason=8
             if not sell and p.get("use_stagnation_exit",0) and dh>=int(p.get("stagnation_days",10)) and ret<p.get("stagnation_min_ret",5): sell=True; reason=9
-            if not sell and p.get("use_time_decay",0) and dh>=5 and ret<dh*p.get("ret_per_day",0.5): sell=True; reason=10
+            hd_half=int(p["hold_days"])//2
+            if not sell and p.get("use_time_decay",0) and dh>=hd_half and ret<(dh-hd_half)*p.get("ret_per_day",0.5): sell=True; reason=10
             if not sell and dh>=int(p["hold_days"]): sell=True; reason=0
             if sell:
                 trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
