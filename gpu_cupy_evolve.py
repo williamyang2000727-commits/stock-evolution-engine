@@ -314,7 +314,7 @@ void backtest(
                     if (pf > 5) pf = 5;
                     score = total_ret*0.10f + avg_ret*0.50f + win_rate*0.10f
                           + pf*3*0.05f + consistency*20*0.10f
-                          + n_trades*0.5f*0.10f - wasted*0.20f;
+                          + n_trades*0.5f*0.10f - wasted*0.40f;
                 }
             }
         }
