@@ -104,7 +104,7 @@ void backtest(
     const float* ma15, const float* ma20, const float* ma30, const float* ma60,
     const float* vol_prev,
     const float* squeeze_fire, const float* new_high_60, const float* adx,
-    const float* bias,
+    const float* bias, const float* obv_rising,
     const float* params, const int n_params_per_combo,
     float* results, const int n_combos
 ) {
@@ -139,10 +139,14 @@ void backtest(
     int w_bias = (int)p[38]; float bias_max_th = p[39];
     // 停滯出場
     int use_stagnation = (int)p[40]; int stag_days = (int)p[41]; float stag_min_ret = p[42];
+    // 保本停損
+    int use_breakeven = (int)p[43]; float breakeven_trigger = p[44];
+    // OBV 能量潮
+    int w_obv = (int)p[45]; int obv_days = (int)p[46];
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[43];
-    int ma_slow_idx = (int)p[44];
-    int mom_idx = (int)p[45];
+    int ma_fast_idx = (int)p[47];
+    int ma_slow_idx = (int)p[48];
+    int mom_idx = (int)p[49];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -166,7 +170,11 @@ void backtest(
             if (cur > peak_price) peak_price = cur;
             bool sell = false;
 
-            if (ret <= stop_loss) sell = true;
+            // 保本停損：漲過 trigger% 後停損拉到 0%
+            float effective_stop = stop_loss;
+            if (use_breakeven == 1 && (peak_price / buy_price - 1.0f) * 100.0f >= breakeven_trigger)
+                effective_stop = 0;
+            if (ret <= effective_stop) sell = true;
             if (!sell && use_tp == 1 && ret >= take_profit) sell = true;
             if (!sell && trailing_stop > 0 && peak_price > buy_price) {
                 if ((cur / peak_price - 1.0f) * 100.0f <= -trailing_stop) sell = true;
@@ -237,6 +245,8 @@ void backtest(
             if (w_adx > 0 && adx[d] >= adx_th) sc += w_adx;
             // BIAS 乖離率（在均線上方但不過度延伸 = 甜蜜點）
             if (w_bias > 0 && bias[d] >= 0 && bias[d] <= bias_max_th) sc += w_bias;
+            // OBV 能量潮（量價同步確認）
+            if (w_obv > 0 && obv_rising[d] > 0.5f) sc += w_obv;
 
             // 輔助加分（各 +1）
             if (consec_green >= 1) {
@@ -334,6 +344,10 @@ PARAMS_SPACE = {
     "w_bias": [0,1,2,3], "bias_max": [3,5,8,10,15,20,30],
     # ====== 停滯出場 ======
     "use_stagnation_exit": [0,1], "stagnation_days": [5,7,10,15], "stagnation_min_ret": [3,5,8,10],
+    # ====== 保本停損 ======
+    "use_breakeven": [0,1], "breakeven_trigger": [10,15,20,25,30],
+    # ====== OBV 能量潮 ======
+    "w_obv": [0,1,2,3], "obv_rising_days": [3,5,10],
 }
 
 PARAM_ORDER = [
@@ -352,6 +366,8 @@ PARAM_ORDER = [
     "sell_vol_shrink","sell_below_ma","hold_days",
     "w_bias","bias_max",
     "use_stagnation_exit","stagnation_days","stagnation_min_ret",
+    "use_breakeven","breakeven_trigger",
+    "w_obv","obv_rising_days",
 ]
 
 MA_FAST_OPTS = [3,5,10]
@@ -504,13 +520,28 @@ def precompute(data):
     # BIAS 乖離率 = (close - MA20) / MA20 * 100
     bias = np.where(ma_d[20] > 0, (close - ma_d[20]) / ma_d[20] * 100, 0).astype(np.float32)
 
+    # OBV (On Balance Volume) — 量價同步指標
+    # OBV = cumsum(volume * sign(close_change))
+    price_sign = np.sign(np.diff(close, axis=1))  # +1/-1/0
+    vol_signed = np.zeros_like(close)
+    vol_signed[:, 1:] = volume[:, 1:] * price_sign
+    obv = np.cumsum(vol_signed, axis=1).astype(np.float64)
+    # OBV rising = OBV 的短期 MA 在上升（今天 > N天前）
+    obv_rising = np.zeros_like(close)
+    for d in [3, 5, 10]:
+        rising = np.zeros_like(close)
+        rising[:, d:] = (obv[:, d:] > obv[:, :-d]).astype(np.float32)
+        obv_rising += rising
+    # 只要任一週期上升就算（簡化：用最寬鬆標準）
+    obv_rising = (obv_rising > 0).astype(np.float32)
+
     return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,
         "close":close,"rsi":rsi,"bb_pos":bb_pos,"vol_ratio":vol_ratio,
         "macd_line":ml_arr,"macd_hist":mh,"k_val":kv.astype(np.float32),
         "d_val":dv.astype(np.float32),"is_green":ig,"gap":gp.astype(np.float32),
         "williams_r":wr,"near_high":nh,"vol_prev":vol_prev.astype(np.float32),
         "squeeze_fire":squeeze_fire,"new_high_60":new_high_60,
-        "adx":adx.astype(np.float32),"bias":bias,
+        "adx":adx.astype(np.float32),"bias":bias,"obv_rising":obv_rising,
         "bb_std":bb_std.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
@@ -525,7 +556,7 @@ def cpu_replay(pre, p):
     k_val=pre["k_val"]; d_val=pre["d_val"]; williams_r=pre["williams_r"]
     is_green=pre["is_green"]; gap=pre["gap"]; near_high=pre["near_high"]
     vol_prev=pre["vol_prev"]
-    squeeze_fire=pre["squeeze_fire"]; new_high_60=pre["new_high_60"]; adx_arr=pre["adx"]; bias_arr=pre["bias"]
+    squeeze_fire=pre["squeeze_fire"]; new_high_60=pre["new_high_60"]; adx_arr=pre["adx"]; bias_arr=pre["bias"]; obv_rising_arr=pre["obv_rising"]
     maf=pre["ma_d"].get(int(p.get("ma_fast_w",5)), pre["ma_d"][5])
     mas=pre["ma_d"].get(int(p.get("ma_slow_w",20)), pre["ma_d"][20])
     ma60=pre["ma60"]
@@ -539,7 +570,9 @@ def cpu_replay(pre, p):
             if dh<1: continue
             if cur>pk: pk=cur
             sell=False; reason=0
-            if ret<=p["stop_loss"]: sell=True; reason=2
+            eff_stop = p["stop_loss"]
+            if p.get("use_breakeven",0) and (pk/bp-1)*100>=p.get("breakeven_trigger",20): eff_stop=0
+            if ret<=eff_stop: sell=True; reason=2
             if not sell and p.get("use_take_profit",1) and ret>=p["take_profit"]: sell=True; reason=1
             if not sell and p.get("trailing_stop",0)>0 and pk>bp:
                 if (cur/pk-1)*100<=-p["trailing_stop"]: sell=True; reason=4
@@ -572,6 +605,7 @@ def cpu_replay(pre, p):
         w_sq=int(p.get("w_squeeze",0)); w_newh=int(p.get("w_new_high",0))
         w_adx=int(p.get("w_adx",0)); adx_threshold=p.get("adx_th",25)
         w_bias=int(p.get("w_bias",0)); bias_max_val=p.get("bias_max",15)
+        w_obv=int(p.get("w_obv",0))
         buy_th=p.get("buy_threshold",5)
         for si in range(ns):
             sc=0.0
@@ -598,6 +632,7 @@ def cpu_replay(pre, p):
             if w_newh>0 and new_high_60[si,day]>0.5: sc+=w_newh
             if w_adx>0 and adx_arr[si,day]>=adx_threshold: sc+=w_adx
             if w_bias>0 and bias_arr[si,day]>=0 and bias_arr[si,day]<=bias_max_val: sc+=w_bias
+            if w_obv>0 and obv_rising_arr[si,day]>0.5: sc+=w_obv
             cg=int(p.get("consecutive_green",0))
             if cg>=1:
                 ok=True
@@ -648,6 +683,7 @@ def main():
     d_newhigh = cp.asarray(pre["new_high_60"])
     d_adx = cp.asarray(pre["adx"])
     d_bias = cp.asarray(pre["bias"])
+    d_obv_rising = cp.asarray(pre["obv_rising"])
     d_ma60 = cp.asarray(pre["ma60"])
 
     print("[GPU] 開始進化！每批 500,000 組")
@@ -826,7 +862,7 @@ def main():
             d_kv, d_dv, d_mom3, d_mom5, d_mom10,
             d_ig, d_gp, d_nh, d_wr,
             d_ma3, d_ma5, d_ma10, d_ma15, d_ma20, d_ma30, d_ma60,
-            d_vp, d_squeeze, d_newhigh, d_adx, d_bias,
+            d_vp, d_squeeze, d_newhigh, d_adx, d_bias, d_obv_rising,
             d_params, np.int32(N_PARAMS_FULL),
             d_results, np.int32(BATCH)
         ))
