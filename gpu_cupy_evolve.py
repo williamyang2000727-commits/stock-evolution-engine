@@ -373,7 +373,7 @@ PARAMS_SPACE = {
     # ====== BIAS 乖離率 ======
     "w_bias": [0,1,2,3], "bias_max": [3,5,8,10,15,20,30],
     # ====== 停滯出場 ======
-    "use_stagnation_exit": [0,1], "stagnation_days": [5,7,10,15], "stagnation_min_ret": [3,5,8,10],
+    "use_stagnation_exit": [1], "stagnation_days": [10,15,20], "stagnation_min_ret": [3,5,8,10,15],
     # ====== 保本停損 ======
     "use_breakeven": [0,1], "breakeven_trigger": [10,15,20,25,30],
     # ====== OBV 能量潮 ======
