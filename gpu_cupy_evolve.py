@@ -104,7 +104,7 @@ void backtest(
     const float* ma15, const float* ma20, const float* ma30, const float* ma60,
     const float* vol_prev,
     const float* squeeze_fire, const float* new_high_60, const float* adx,
-    const float* bias, const float* obv_rising,
+    const float* bias, const float* obv_rising, const float* atr_pct,
     const float* params, const int n_params_per_combo,
     float* results, const int n_combos
 ) {
@@ -143,18 +143,20 @@ void backtest(
     int use_breakeven = (int)p[43]; float breakeven_trigger = p[44];
     // OBV 能量潮
     int w_obv = (int)p[45]; int obv_days = (int)p[46];
+    // ATR 波動率門檻
+    int w_atr = (int)p[47]; float atr_min = p[48];
     // 漸進式最低報酬
-    int use_time_decay = (int)p[47]; float ret_per_day = p[48];
+    int use_time_decay = (int)p[49]; float ret_per_day = p[50];
     // 鎖利出場
-    int use_profit_lock = (int)p[49]; float lock_trigger = p[50]; float lock_floor = p[51];
+    int use_profit_lock = (int)p[51]; float lock_trigger = p[52]; float lock_floor = p[53];
     // 動量反轉出場
-    int use_mom_exit = (int)p[52]; float mom_exit_th = p[53];
+    int use_mom_exit = (int)p[54]; float mom_exit_th = p[55];
     // 多持倉
-    int max_pos = (int)p[54]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
+    int max_pos = (int)p[56]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[55];
-    int ma_slow_idx = (int)p[56];
-    int mom_idx = (int)p[57];
+    int ma_fast_idx = (int)p[57];
+    int ma_slow_idx = (int)p[58];
+    int mom_idx = (int)p[59];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -268,6 +270,8 @@ void backtest(
                 if (w_adx > 0 && adx[d] >= adx_th) sc += w_adx;
                 if (w_bias > 0 && bias[d] >= 0 && bias[d] <= bias_max_th) sc += w_bias;
                 if (w_obv > 0 && obv_rising[d] > 0.5f) sc += w_obv;
+                // ATR 波動率（過濾低波動金融股）
+                if (w_atr > 0 && atr_pct[d] >= atr_min) sc += w_atr;
 
                 if (consec_green >= 1) {
                     bool ok = true;
@@ -376,6 +380,8 @@ PARAMS_SPACE = {
     "w_obv": [0,1,2,3], "obv_rising_days": [3,5,10],
     # ====== 漸進式最低報酬 ======
     "use_time_decay": [0,1], "ret_per_day": [0.1,0.2,0.3,0.5,0.8,1.0,1.5],
+    # ====== ATR 波動率門檻（過濾低波動股）======
+    "w_atr": [0,1,2,3], "atr_min": [1.0,1.5,2.0,2.5,3.0,4.0],
     # ====== 鎖利出場 ======
     "use_profit_lock": [0,1], "lock_trigger": [15,20,30,40,50], "lock_floor": [3,5,8,10,15],
     # ====== 動量反轉出場 ======
@@ -402,6 +408,7 @@ PARAM_ORDER = [
     "use_stagnation_exit","stagnation_days","stagnation_min_ret",
     "use_breakeven","breakeven_trigger",
     "w_obv","obv_rising_days",
+    "w_atr","atr_min",
     "use_time_decay","ret_per_day",
     "use_profit_lock","lock_trigger","lock_floor",
     "use_mom_exit","mom_exit_th",
@@ -555,6 +562,9 @@ def precompute(data):
         else:
             adx[:, i] = (adx[:, i-1] * 13 + dx[:, i]) / 14
 
+    # ATR% = ATR / close * 100（波動率，用於過濾低波動股）
+    atr_pct = np.where(close > 0, atr / close * 100, 0).astype(np.float32)
+
     # BIAS 乖離率 = (close - MA20) / MA20 * 100
     bias = np.where(ma_d[20] > 0, (close - ma_d[20]) / ma_d[20] * 100, 0).astype(np.float32)
 
@@ -579,7 +589,7 @@ def precompute(data):
         "d_val":dv.astype(np.float32),"is_green":ig,"gap":gp.astype(np.float32),
         "williams_r":wr,"near_high":nh,"vol_prev":vol_prev.astype(np.float32),
         "squeeze_fire":squeeze_fire,"new_high_60":new_high_60,
-        "adx":adx.astype(np.float32),"bias":bias,"obv_rising":obv_rising,
+        "adx":adx.astype(np.float32),"bias":bias,"obv_rising":obv_rising,"atr_pct":atr_pct,
         "bb_std":bb_std.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
@@ -594,7 +604,7 @@ def cpu_replay(pre, p):
     k_val=pre["k_val"]; d_val=pre["d_val"]; williams_r=pre["williams_r"]
     is_green=pre["is_green"]; gap=pre["gap"]; near_high=pre["near_high"]
     vol_prev=pre["vol_prev"]
-    squeeze_fire=pre["squeeze_fire"]; new_high_60=pre["new_high_60"]; adx_arr=pre["adx"]; bias_arr=pre["bias"]; obv_rising_arr=pre["obv_rising"]
+    squeeze_fire=pre["squeeze_fire"]; new_high_60=pre["new_high_60"]; adx_arr=pre["adx"]; bias_arr=pre["bias"]; obv_rising_arr=pre["obv_rising"]; atr_pct_arr=pre["atr_pct"]
     maf=pre["ma_d"].get(int(p.get("ma_fast_w",5)), pre["ma_d"][5])
     mas=pre["ma_d"].get(int(p.get("ma_slow_w",20)), pre["ma_d"][20])
     ma60=pre["ma60"]
@@ -655,6 +665,7 @@ def cpu_replay(pre, p):
             w_adx=int(p.get("w_adx",0)); adx_threshold=p.get("adx_th",25)
             w_bias=int(p.get("w_bias",0)); bias_max_val=p.get("bias_max",15)
             w_obv=int(p.get("w_obv",0))
+            w_atr_buy=int(p.get("w_atr",0)); atr_min_val=p.get("atr_min",2.0)
             buy_th=p.get("buy_threshold",5)
             held_set=set(h for h in hold_si if h>=0)
             for si in range(ns):
@@ -683,6 +694,7 @@ def cpu_replay(pre, p):
                 if w_adx>0 and adx_arr[si,day]>=adx_threshold: sc+=w_adx
                 if w_bias>0 and bias_arr[si,day]>=0 and bias_arr[si,day]<=bias_max_val: sc+=w_bias
                 if w_obv>0 and obv_rising_arr[si,day]>0.5: sc+=w_obv
+                if w_atr_buy>0 and atr_pct_arr[si,day]>=atr_min_val: sc+=w_atr_buy
                 cg=int(p.get("consecutive_green",0))
                 if cg>=1:
                     ok=True
@@ -737,6 +749,7 @@ def main():
     d_adx = cp.asarray(pre["adx"])
     d_bias = cp.asarray(pre["bias"])
     d_obv_rising = cp.asarray(pre["obv_rising"])
+    d_atr_pct = cp.asarray(pre["atr_pct"])
     d_ma60 = cp.asarray(pre["ma60"])
 
     print("[GPU] 開始進化！每批 500,000 組")
@@ -919,7 +932,7 @@ def main():
             d_kv, d_dv, d_mom3, d_mom5, d_mom10,
             d_ig, d_gp, d_nh, d_wr,
             d_ma3, d_ma5, d_ma10, d_ma15, d_ma20, d_ma30, d_ma60,
-            d_vp, d_squeeze, d_newhigh, d_adx, d_bias, d_obv_rising,
+            d_vp, d_squeeze, d_newhigh, d_adx, d_bias, d_obv_rising, d_atr_pct,
             d_params, np.int32(N_PARAMS_FULL),
             d_results, np.int32(BATCH)
         ))
