@@ -143,12 +143,14 @@ void backtest(
     int use_breakeven = (int)p[43]; float breakeven_trigger = p[44];
     // OBV 能量潮
     int w_obv = (int)p[45]; int obv_days = (int)p[46];
+    // 漸進式最低報酬
+    int use_time_decay = (int)p[47]; float ret_per_day = p[48];
     // 多持倉
-    int max_pos = (int)p[47]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
+    int max_pos = (int)p[49]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[48];
-    int ma_slow_idx = (int)p[49];
-    int mom_idx = (int)p[50];
+    int ma_fast_idx = (int)p[50];
+    int ma_slow_idx = (int)p[51];
+    int mom_idx = (int)p[52];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -201,6 +203,7 @@ void backtest(
                 if (ma_check > 0 && cur < ma_check) sell = true;
             }
             if (!sell && use_stagnation == 1 && dh >= stag_days && ret < stag_min_ret) sell = true;
+            if (!sell && use_time_decay == 1 && dh >= 5 && ret < dh * ret_per_day) sell = true;
             if (!sell && dh >= hold_days_max) sell = true;
 
             if (sell && n_trades < 100) {
@@ -362,6 +365,8 @@ PARAMS_SPACE = {
     "use_breakeven": [0,1], "breakeven_trigger": [10,15,20,25,30],
     # ====== OBV 能量潮 ======
     "w_obv": [0,1,2,3], "obv_rising_days": [3,5,10],
+    # ====== 漸進式最低報酬 ======
+    "use_time_decay": [0,1], "ret_per_day": [0.3,0.5,0.8,1.0,1.5],
     # ====== 多持倉 ======
     "max_positions": [1,2],
 }
@@ -384,6 +389,7 @@ PARAM_ORDER = [
     "use_stagnation_exit","stagnation_days","stagnation_min_ret",
     "use_breakeven","breakeven_trigger",
     "w_obv","obv_rising_days",
+    "use_time_decay","ret_per_day",
     "max_positions",
 ]
 
@@ -562,7 +568,7 @@ def precompute(data):
         "bb_std":bb_std.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
-REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線","停滯出場"]
+REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線","停滯出場","漸進停利"]
 
 def cpu_replay(pre, p):
     """用 CPU 重跑一次最佳參數，拿完整交易明細（股票名、日期、價格）"""
@@ -612,6 +618,7 @@ def cpu_replay(pre, p):
                 elif sbm==3: mc=ma60[si,day]
                 if mc>0 and cur<mc: sell=True; reason=8
             if not sell and p.get("use_stagnation_exit",0) and dh>=int(p.get("stagnation_days",10)) and ret<p.get("stagnation_min_ret",5): sell=True; reason=9
+            if not sell and p.get("use_time_decay",0) and dh>=5 and ret<dh*p.get("ret_per_day",0.5): sell=True; reason=10
             if not sell and dh>=int(p["hold_days"]): sell=True; reason=0
             if sell:
                 trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
