@@ -143,41 +143,47 @@ void backtest(
     int use_breakeven = (int)p[43]; float breakeven_trigger = p[44];
     // OBV 能量潮
     int w_obv = (int)p[45]; int obv_days = (int)p[46];
+    // 多持倉
+    int max_pos = (int)p[47]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[47];
-    int ma_slow_idx = (int)p[48];
-    int mom_idx = (int)p[49];
+    int ma_fast_idx = (int)p[48];
+    int ma_slow_idx = (int)p[49];
+    int mom_idx = (int)p[50];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
     const float* momentum = mom_idx==0 ? mom3 : mom_idx==1 ? mom5 : mom10;
 
-    // 交易模擬
-    int holding = -1;
-    float buy_price = 0, peak_price = 0;
-    int buy_day = 0, n_trades = 0;
+    // 交易模擬 — 支援多持倉（max_pos 1-3）
+    int hold_si[3]; hold_si[0]=-1; hold_si[1]=-1; hold_si[2]=-1;
+    float hold_bp[3]; hold_bp[0]=0; hold_bp[1]=0; hold_bp[2]=0;
+    float hold_pk[3]; hold_pk[0]=0; hold_pk[1]=0; hold_pk[2]=0;
+    int hold_bd[3]; hold_bd[0]=0; hold_bd[1]=0; hold_bd[2]=0;
+    int n_holding = 0, n_trades = 0;
     float total_ret = 0, win_count = 0, wasted_count = 0;
     float rets[100];
     int trade_bdays[100];
 
     for (int day = 30; day < n_days - 1; day++) {
-        if (holding >= 0) {
-            int si = holding;
+        // === Phase 1: 檢查所有持倉的賣出條件 ===
+        bool any_sold = false;
+        for (int h = 0; h < max_pos; h++) {
+            if (hold_si[h] < 0) continue;
+            int si = hold_si[h];
             float cur = close[si * n_days + day];
-            int dh = day - buy_day;
-            float ret = (cur / buy_price - 1.0f) * 100.0f;
+            int dh = day - hold_bd[h];
+            float ret = (cur / hold_bp[h] - 1.0f) * 100.0f;
             if (dh < 1) continue;
-            if (cur > peak_price) peak_price = cur;
+            if (cur > hold_pk[h]) hold_pk[h] = cur;
             bool sell = false;
 
-            // 保本停損：漲過 trigger% 後停損拉到 0%
             float effective_stop = stop_loss;
-            if (use_breakeven == 1 && (peak_price / buy_price - 1.0f) * 100.0f >= breakeven_trigger)
+            if (use_breakeven == 1 && (hold_pk[h] / hold_bp[h] - 1.0f) * 100.0f >= breakeven_trigger)
                 effective_stop = 0;
             if (ret <= effective_stop) sell = true;
             if (!sell && use_tp == 1 && ret >= take_profit) sell = true;
-            if (!sell && trailing_stop > 0 && peak_price > buy_price) {
-                if ((cur / peak_price - 1.0f) * 100.0f <= -trailing_stop) sell = true;
+            if (!sell && trailing_stop > 0 && hold_pk[h] > hold_bp[h]) {
+                if ((cur / hold_pk[h] - 1.0f) * 100.0f <= -trailing_stop) sell = true;
             }
             if (!sell && use_rsi_sell == 1 && rsi[si * n_days + day] >= rsi_sell_th) sell = true;
             if (!sell && use_macd_sell == 1 && day >= 1) {
@@ -199,77 +205,85 @@ void backtest(
 
             if (sell && n_trades < 100) {
                 rets[n_trades] = ret;
-                trade_bdays[n_trades] = buy_day;
+                trade_bdays[n_trades] = hold_bd[h];
                 total_ret += ret;
                 if (ret > 0) win_count += 1;
                 if (ret < 10) wasted_count += 1;
                 n_trades++;
-                holding = -1;
+                hold_si[h] = -1;
+                n_holding--;
+                any_sold = true;
             }
-            continue;
         }
 
-        // === 評分制買入 ===
-        int best_si = -1;
-        float best_buy_score = 0;
-        for (int si = 0; si < n_stocks; si++) {
-            int d = si * n_days + day;
-            float sc = 0.0f;
-
-            // 7 大核心指標評分（權重 0-3）
-            if (w_rsi > 0 && rsi[d] >= rsi_th) sc += w_rsi;
-            if (w_bb > 0 && bb_pos[d] >= bb_th) sc += w_bb;
-            if (w_vol > 0 && vol_ratio[d] >= vol_th) sc += w_vol;
-            if (w_ma > 0 && close[d] > ma_fast_arr[d]) sc += w_ma;
-            if (w_macd > 0) {
-                bool ok = false;
-                if (macd_mode == 0 && day >= 1 && macd_hist[d] > 0 && macd_hist[d-1] <= 0) ok = true;
-                else if (macd_mode == 1 && macd_line[d] > 0) ok = true;
-                else if (macd_mode == 2 && macd_hist[d] > 0) ok = true;
-                if (ok) sc += w_macd;
-            }
-            if (w_kd > 0) {
-                bool ok = k_val[d] >= kd_th;
-                if (ok && kd_cross == 1 && day >= 1)
-                    ok = k_val[d] > d_val[d] && k_val[d-1] <= d_val[d-1];
-                if (ok) sc += w_kd;
-            }
-            if (w_wr > 0 && williams_r[d] >= wr_th) sc += w_wr;
-            if (w_mom > 0 && momentum[d] >= mom_th) sc += w_mom;
-            if (w_near_high > 0 && fabsf(near_high[d]) <= near_high_pct) sc += w_near_high;
-            // TTM Squeeze 爆發
-            if (w_squeeze > 0 && squeeze_fire[d] > 0.5f) sc += w_squeeze;
-            // 60 天新高突破（台灣散戶效應）
-            if (w_new_high > 0 && new_high_60[d] > 0.5f) sc += w_new_high;
-            // ADX 趨勢強度
-            if (w_adx > 0 && adx[d] >= adx_th) sc += w_adx;
-            // BIAS 乖離率（在均線上方但不過度延伸 = 甜蜜點）
-            if (w_bias > 0 && bias[d] >= 0 && bias[d] <= bias_max_th) sc += w_bias;
-            // OBV 能量潮（量價同步確認）
-            if (w_obv > 0 && obv_rising[d] > 0.5f) sc += w_obv;
-
-            // 輔助加分（各 +1）
-            if (consec_green >= 1) {
-                bool ok = true;
-                for (int g = 0; g < consec_green; g++) {
-                    if (day-g < 0 || is_green[si*n_days+day-g] != 1) { ok = false; break; }
+        // === Phase 2: 有空位且今天沒賣出 → 買入最高分 ===
+        if (n_holding < max_pos && !any_sold) {
+            int best_si = -1;
+            float best_buy_score = 0;
+            for (int si = 0; si < n_stocks; si++) {
+                // 跳過已持有的股票
+                bool already = false;
+                for (int h = 0; h < max_pos; h++) {
+                    if (hold_si[h] == si) { already = true; break; }
                 }
-                if (ok) sc += 1.0f;
-            }
-            if (use_gap == 1 && gap[d] >= 1.0f) sc += 1.0f;
-            if (above_ma60 == 1 && close[d] >= ma60[d]) sc += 1.0f;
-            if (vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] > vol_prev[d]) sc += 1.0f;
+                if (already) continue;
 
-            // 選分數最高且超過門檻的
-            if (sc >= buy_threshold && sc > best_buy_score) {
-                best_si = si; best_buy_score = sc;
+                int d = si * n_days + day;
+                float sc = 0.0f;
+
+                if (w_rsi > 0 && rsi[d] >= rsi_th) sc += w_rsi;
+                if (w_bb > 0 && bb_pos[d] >= bb_th) sc += w_bb;
+                if (w_vol > 0 && vol_ratio[d] >= vol_th) sc += w_vol;
+                if (w_ma > 0 && close[d] > ma_fast_arr[d]) sc += w_ma;
+                if (w_macd > 0) {
+                    bool ok = false;
+                    if (macd_mode == 0 && day >= 1 && macd_hist[d] > 0 && macd_hist[d-1] <= 0) ok = true;
+                    else if (macd_mode == 1 && macd_line[d] > 0) ok = true;
+                    else if (macd_mode == 2 && macd_hist[d] > 0) ok = true;
+                    if (ok) sc += w_macd;
+                }
+                if (w_kd > 0) {
+                    bool ok = k_val[d] >= kd_th;
+                    if (ok && kd_cross == 1 && day >= 1)
+                        ok = k_val[d] > d_val[d] && k_val[d-1] <= d_val[d-1];
+                    if (ok) sc += w_kd;
+                }
+                if (w_wr > 0 && williams_r[d] >= wr_th) sc += w_wr;
+                if (w_mom > 0 && momentum[d] >= mom_th) sc += w_mom;
+                if (w_near_high > 0 && fabsf(near_high[d]) <= near_high_pct) sc += w_near_high;
+                if (w_squeeze > 0 && squeeze_fire[d] > 0.5f) sc += w_squeeze;
+                if (w_new_high > 0 && new_high_60[d] > 0.5f) sc += w_new_high;
+                if (w_adx > 0 && adx[d] >= adx_th) sc += w_adx;
+                if (w_bias > 0 && bias[d] >= 0 && bias[d] <= bias_max_th) sc += w_bias;
+                if (w_obv > 0 && obv_rising[d] > 0.5f) sc += w_obv;
+
+                if (consec_green >= 1) {
+                    bool ok = true;
+                    for (int g = 0; g < consec_green; g++) {
+                        if (day-g < 0 || is_green[si*n_days+day-g] != 1) { ok = false; break; }
+                    }
+                    if (ok) sc += 1.0f;
+                }
+                if (use_gap == 1 && gap[d] >= 1.0f) sc += 1.0f;
+                if (above_ma60 == 1 && close[d] >= ma60[d]) sc += 1.0f;
+                if (vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] > vol_prev[d]) sc += 1.0f;
+
+                if (sc >= buy_threshold && sc > best_buy_score) {
+                    best_si = si; best_buy_score = sc;
+                }
             }
-        }
-        if (best_si >= 0 && day + 1 < n_days) {
-            holding = best_si;
-            buy_price = close[best_si * n_days + day + 1];
-            peak_price = buy_price;
-            buy_day = day + 1;
+            if (best_si >= 0 && day + 1 < n_days) {
+                for (int h = 0; h < max_pos; h++) {
+                    if (hold_si[h] < 0) {
+                        hold_si[h] = best_si;
+                        hold_bp[h] = close[best_si * n_days + day + 1];
+                        hold_pk[h] = hold_bp[h];
+                        hold_bd[h] = day + 1;
+                        n_holding++;
+                        break;
+                    }
+                }
+            }
         }
     }
 
@@ -348,6 +362,8 @@ PARAMS_SPACE = {
     "use_breakeven": [0,1], "breakeven_trigger": [10,15,20,25,30],
     # ====== OBV 能量潮 ======
     "w_obv": [0,1,2,3], "obv_rising_days": [3,5,10],
+    # ====== 多持倉 ======
+    "max_positions": [1,2,3],
 }
 
 PARAM_ORDER = [
@@ -368,6 +384,7 @@ PARAM_ORDER = [
     "use_stagnation_exit","stagnation_days","stagnation_min_ret",
     "use_breakeven","breakeven_trigger",
     "w_obv","obv_rising_days",
+    "max_positions",
 ]
 
 MA_FAST_OPTS = [3,5,10]
@@ -562,20 +579,25 @@ def cpu_replay(pre, p):
     ma60=pre["ma60"]
     mom=pre["mom_d"].get(int(p.get("momentum_days",5)), pre["mom_d"][5])
 
-    holding=-1; bp=0.0; pk=0.0; bd=0; trades=[]
+    max_pos=int(p.get("max_positions",1))
+    if max_pos<1: max_pos=1
+    if max_pos>3: max_pos=3
+    hold_si=[-1]*3; hold_bp=[0]*3; hold_pk=[0]*3; hold_bd=[0]*3; n_holding=0; trades=[]
     for day in range(30, nd-1):
-        if holding >= 0:
-            si=holding; cur=float(close[si,day]); dh=day-bd
-            ret=(cur/bp-1)*100
+        any_sold=False
+        for h in range(max_pos):
+            if hold_si[h]<0: continue
+            si=hold_si[h]; cur=float(close[si,day]); dh=day-hold_bd[h]
+            ret=(cur/hold_bp[h]-1)*100
             if dh<1: continue
-            if cur>pk: pk=cur
+            if cur>hold_pk[h]: hold_pk[h]=cur
             sell=False; reason=0
-            eff_stop = p["stop_loss"]
-            if p.get("use_breakeven",0) and (pk/bp-1)*100>=p.get("breakeven_trigger",20): eff_stop=0
+            eff_stop=p["stop_loss"]
+            if p.get("use_breakeven",0) and (hold_pk[h]/hold_bp[h]-1)*100>=p.get("breakeven_trigger",20): eff_stop=0
             if ret<=eff_stop: sell=True; reason=2
             if not sell and p.get("use_take_profit",1) and ret>=p["take_profit"]: sell=True; reason=1
-            if not sell and p.get("trailing_stop",0)>0 and pk>bp:
-                if (cur/pk-1)*100<=-p["trailing_stop"]: sell=True; reason=4
+            if not sell and p.get("trailing_stop",0)>0 and hold_pk[h]>hold_bp[h]:
+                if (cur/hold_pk[h]-1)*100<=-p["trailing_stop"]: sell=True; reason=4
             if not sell and p.get("use_rsi_sell",1) and rsi[si,day]>=p.get("rsi_sell",90): sell=True; reason=3
             if not sell and p.get("use_macd_sell",0) and day>=1:
                 if macd_hist[si,day]<0 and macd_hist[si,day-1]>=0: sell=True; reason=5
@@ -593,58 +615,62 @@ def cpu_replay(pre, p):
             if not sell and dh>=int(p["hold_days"]): sell=True; reason=0
             if sell:
                 trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
-                    "buy_date":str(dates[bd].date()),"sell_date":str(dates[day].date()),
-                    "buy_price":round(bp,2),"sell_price":round(cur,2),
+                    "buy_date":str(dates[hold_bd[h]].date()),"sell_date":str(dates[day].date()),
+                    "buy_price":round(hold_bp[h],2),"sell_price":round(cur,2),
                     "return":round(ret,2),"days":dh,"reason":REASON_NAMES[min(reason,len(REASON_NAMES)-1)]})
-                holding=-1
-            continue
-        best_si=-1; best_sc=0
-        w_rsi=int(p.get("w_rsi",0)); w_bb=int(p.get("w_bb",0)); w_vol=int(p.get("w_vol",0))
-        w_ma=int(p.get("w_ma",0)); w_macd=int(p.get("w_macd",0)); w_kd=int(p.get("w_kd",0))
-        w_wr=int(p.get("w_wr",0)); w_mom=int(p.get("w_mom",0)); w_nh=int(p.get("w_near_high",0))
-        w_sq=int(p.get("w_squeeze",0)); w_newh=int(p.get("w_new_high",0))
-        w_adx=int(p.get("w_adx",0)); adx_threshold=p.get("adx_th",25)
-        w_bias=int(p.get("w_bias",0)); bias_max_val=p.get("bias_max",15)
-        w_obv=int(p.get("w_obv",0))
-        buy_th=p.get("buy_threshold",5)
-        for si in range(ns):
-            sc=0.0
-            if w_rsi>0 and rsi[si,day]>=p.get("rsi_th",55): sc+=w_rsi
-            if w_bb>0 and bb_pos[si,day]>=p.get("bb_th",0.7): sc+=w_bb
-            if w_vol>0 and vol_ratio[si,day]>=p.get("vol_th",3): sc+=w_vol
-            if w_ma>0 and close[si,day]>maf[si,day]: sc+=w_ma
-            if w_macd>0:
-                mm=int(p.get("macd_mode",2))
-                ok=False
-                if mm==0 and day>=1 and macd_hist[si,day]>0 and macd_hist[si,day-1]<=0: ok=True
-                elif mm==1 and macd_line[si,day]>0: ok=True
-                elif mm==2 and macd_hist[si,day]>0: ok=True
-                if ok: sc+=w_macd
-            if w_kd>0:
-                ok=k_val[si,day]>=p.get("kd_th",50)
-                if ok and p.get("kd_cross",0) and day>=1:
-                    ok=k_val[si,day]>d_val[si,day] and k_val[si,day-1]<=d_val[si,day-1]
-                if ok: sc+=w_kd
-            if w_wr>0 and williams_r[si,day]>=p.get("wr_th",-30): sc+=w_wr
-            if w_mom>0 and mom[si,day]>=p.get("mom_th",3): sc+=w_mom
-            if w_nh>0 and abs(near_high[si,day])<=p.get("near_high_pct",10): sc+=w_nh
-            if w_sq>0 and squeeze_fire[si,day]>0.5: sc+=w_sq
-            if w_newh>0 and new_high_60[si,day]>0.5: sc+=w_newh
-            if w_adx>0 and adx_arr[si,day]>=adx_threshold: sc+=w_adx
-            if w_bias>0 and bias_arr[si,day]>=0 and bias_arr[si,day]<=bias_max_val: sc+=w_bias
-            if w_obv>0 and obv_rising_arr[si,day]>0.5: sc+=w_obv
-            cg=int(p.get("consecutive_green",0))
-            if cg>=1:
-                ok=True
-                for g in range(cg):
-                    if day-g<0 or is_green[si,day-g]!=1: ok=False; break
-                if ok: sc+=1
-            if p.get("gap_up",0) and gap[si,day]>=1.0: sc+=1
-            if p.get("above_ma60",0) and close[si,day]>=ma60[si,day]: sc+=1
-            if p.get("vol_gt_yesterday",0) and day>=1 and vol_ratio[si,day]>vol_prev[si,day]: sc+=1
-            if sc>=buy_th and sc>best_sc: best_si=si; best_sc=sc
-        if best_si>=0 and day+1<nd:
-            holding=best_si; bp=float(close[best_si,day+1]); pk=bp; bd=day+1
+                hold_si[h]=-1; n_holding-=1; any_sold=True
+        if n_holding<max_pos and not any_sold:
+            best_si=-1; best_sc=0
+            w_rsi=int(p.get("w_rsi",0)); w_bb=int(p.get("w_bb",0)); w_vol=int(p.get("w_vol",0))
+            w_ma=int(p.get("w_ma",0)); w_macd=int(p.get("w_macd",0)); w_kd=int(p.get("w_kd",0))
+            w_wr=int(p.get("w_wr",0)); w_mom=int(p.get("w_mom",0)); w_nh=int(p.get("w_near_high",0))
+            w_sq=int(p.get("w_squeeze",0)); w_newh=int(p.get("w_new_high",0))
+            w_adx=int(p.get("w_adx",0)); adx_threshold=p.get("adx_th",25)
+            w_bias=int(p.get("w_bias",0)); bias_max_val=p.get("bias_max",15)
+            w_obv=int(p.get("w_obv",0))
+            buy_th=p.get("buy_threshold",5)
+            held_set=set(h for h in hold_si if h>=0)
+            for si in range(ns):
+                if si in held_set: continue
+                sc=0.0
+                if w_rsi>0 and rsi[si,day]>=p.get("rsi_th",55): sc+=w_rsi
+                if w_bb>0 and bb_pos[si,day]>=p.get("bb_th",0.7): sc+=w_bb
+                if w_vol>0 and vol_ratio[si,day]>=p.get("vol_th",3): sc+=w_vol
+                if w_ma>0 and close[si,day]>maf[si,day]: sc+=w_ma
+                if w_macd>0:
+                    mm=int(p.get("macd_mode",2)); ok=False
+                    if mm==0 and day>=1 and macd_hist[si,day]>0 and macd_hist[si,day-1]<=0: ok=True
+                    elif mm==1 and macd_line[si,day]>0: ok=True
+                    elif mm==2 and macd_hist[si,day]>0: ok=True
+                    if ok: sc+=w_macd
+                if w_kd>0:
+                    ok=k_val[si,day]>=p.get("kd_th",50)
+                    if ok and p.get("kd_cross",0) and day>=1:
+                        ok=k_val[si,day]>d_val[si,day] and k_val[si,day-1]<=d_val[si,day-1]
+                    if ok: sc+=w_kd
+                if w_wr>0 and williams_r[si,day]>=p.get("wr_th",-30): sc+=w_wr
+                if w_mom>0 and mom[si,day]>=p.get("mom_th",3): sc+=w_mom
+                if w_nh>0 and abs(near_high[si,day])<=p.get("near_high_pct",10): sc+=w_nh
+                if w_sq>0 and squeeze_fire[si,day]>0.5: sc+=w_sq
+                if w_newh>0 and new_high_60[si,day]>0.5: sc+=w_newh
+                if w_adx>0 and adx_arr[si,day]>=adx_threshold: sc+=w_adx
+                if w_bias>0 and bias_arr[si,day]>=0 and bias_arr[si,day]<=bias_max_val: sc+=w_bias
+                if w_obv>0 and obv_rising_arr[si,day]>0.5: sc+=w_obv
+                cg=int(p.get("consecutive_green",0))
+                if cg>=1:
+                    ok=True
+                    for g in range(cg):
+                        if day-g<0 or is_green[si,day-g]!=1: ok=False; break
+                    if ok: sc+=1
+                if p.get("gap_up",0) and gap[si,day]>=1.0: sc+=1
+                if p.get("above_ma60",0) and close[si,day]>=ma60[si,day]: sc+=1
+                if p.get("vol_gt_yesterday",0) and day>=1 and vol_ratio[si,day]>vol_prev[si,day]: sc+=1
+                if sc>=buy_th and sc>best_sc: best_si=si; best_sc=sc
+            if best_si>=0 and day+1<nd:
+                for h in range(max_pos):
+                    if hold_si[h]<0:
+                        hold_si[h]=best_si; hold_bp[h]=float(close[best_si,day+1])
+                        hold_pk[h]=hold_bp[h]; hold_bd[h]=day+1; n_holding+=1; break
     return sorted(trades, key=lambda x: x["buy_date"])
 
 def main():
