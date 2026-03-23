@@ -806,7 +806,7 @@ def main():
                 vals[keep] = opts[base_idx]
                 params_np[n_random:n_random+n_climb, i] = vals
 
-        # === 交叉配種（完全向量化）===
+        # === 真正的雙親交叉配種（向量化）===
         if len(hall_of_fame) >= 2:
             n_hof = len(hall_of_fame)
             breed_size = n_breed
@@ -818,17 +818,21 @@ def main():
                     val = float(hall_of_fame[h][1].get(key, opts[0]))
                     diffs = [abs(float(o) - val) for o in opts]
                     hof_matrix[h, i] = float(opts[diffs.index(min(diffs))])
-            # 隨機選親代
-            parent_idx = np.random.randint(n_hof, size=breed_size)
-            parent_vals = hof_matrix[parent_idx]  # (breed_size, n_params)
+            # 選兩個不同親代
+            parent_a = np.random.randint(n_hof, size=breed_size)
+            parent_b = np.random.randint(n_hof, size=breed_size)
+            same = parent_a == parent_b
+            parent_b[same] = (parent_b[same] + 1) % n_hof
+            # 每個參數 50/50 從親代 A 或 B 選
+            from_a = np.random.random((breed_size, len(PARAM_ORDER))) < 0.5
+            offspring = np.where(from_a, hof_matrix[parent_a], hof_matrix[parent_b])
             # 10% 突變
             mutate_mask = np.random.random((breed_size, len(PARAM_ORDER))) < 0.1
             for i, key in enumerate(PARAM_ORDER):
                 opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
                 random_vals = opts[np.random.randint(len(opts), size=breed_size)]
-                col = parent_vals[:, i].copy()
-                col[mutate_mask[:, i]] = random_vals[mutate_mask[:, i]]
-                params_np[n_random+n_climb:, i] = col
+                offspring[:, i] = np.where(mutate_mask[:, i], random_vals, offspring[:, i])
+                params_np[n_random+n_climb:, i] = offspring[:, i]
 
         # MA/MOM 選擇（向量化）
         mf_choices = np.random.choice(MA_FAST_OPTS, BATCH)
