@@ -905,15 +905,28 @@ def main():
             if mutate_rate >= 0.50:
                 hall_of_fame = []
                 no_improve_rounds = 0
+                # 從最佳策略的「遠親」開始爬（打亂 60% 參數，保留 40% 骨架）
+                anchor = best_params if best_params else gist_best_params
                 explore_bases = []
                 for _eb in range(5):
-                    rb = {key: float(np.random.choice(PARAMS_SPACE[key])) for key in PARAM_ORDER}
-                    rb["ma_fast_w"] = int(np.random.choice(MA_FAST_OPTS))
-                    rb["ma_slow_w"] = int(np.random.choice(MA_SLOW_OPTS))
-                    rb["momentum_days"] = int(np.random.choice(MOM_DAYS_OPTS))
+                    if anchor:
+                        rb = {}
+                        for key in PARAM_ORDER:
+                            if np.random.random() < 0.6:  # 60% 打亂
+                                rb[key] = float(np.random.choice(PARAMS_SPACE[key]))
+                            else:  # 40% 保留
+                                rb[key] = float(anchor.get(key, np.random.choice(PARAMS_SPACE[key])))
+                        rb["ma_fast_w"] = anchor.get("ma_fast_w", 5) if np.random.random() < 0.4 else int(np.random.choice(MA_FAST_OPTS))
+                        rb["ma_slow_w"] = anchor.get("ma_slow_w", 20) if np.random.random() < 0.4 else int(np.random.choice(MA_SLOW_OPTS))
+                        rb["momentum_days"] = anchor.get("momentum_days", 5) if np.random.random() < 0.4 else int(np.random.choice(MOM_DAYS_OPTS))
+                    else:
+                        rb = {key: float(np.random.choice(PARAMS_SPACE[key])) for key in PARAM_ORDER}
+                        rb["ma_fast_w"] = int(np.random.choice(MA_FAST_OPTS))
+                        rb["ma_slow_w"] = int(np.random.choice(MA_SLOW_OPTS))
+                        rb["momentum_days"] = int(np.random.choice(MOM_DAYS_OPTS))
                     explore_bases.append(rb)
                 explore_round = 0
-                print(f"  [GPU] 🔄 多起點爬山！5 個隨機起點各爬 3 輪")
+                print(f"  [GPU] 🔄 多起點爬山！5 個遠親起點（60%打亂+40%骨架）各爬 3 輪")
 
         # 多起點爬山進度
         if explore_bases is not None:
