@@ -145,12 +145,16 @@ void backtest(
     int w_obv = (int)p[45]; int obv_days = (int)p[46];
     // 漸進式最低報酬
     int use_time_decay = (int)p[47]; float ret_per_day = p[48];
+    // 鎖利出場
+    int use_profit_lock = (int)p[49]; float lock_trigger = p[50]; float lock_floor = p[51];
+    // 動量反轉出場
+    int use_mom_exit = (int)p[52]; float mom_exit_th = p[53];
     // 多持倉
-    int max_pos = (int)p[49]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
+    int max_pos = (int)p[54]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[50];
-    int ma_slow_idx = (int)p[51];
-    int mom_idx = (int)p[52];
+    int ma_fast_idx = (int)p[55];
+    int ma_slow_idx = (int)p[56];
+    int mom_idx = (int)p[57];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -204,6 +208,11 @@ void backtest(
             }
             if (!sell && use_stagnation == 1 && dh >= stag_days && ret < stag_min_ret) sell = true;
             if (!sell && use_time_decay == 1 && dh >= hold_days_max / 2 && ret < (dh - hold_days_max / 2) * ret_per_day) sell = true;
+            if (!sell && use_profit_lock == 1) {
+                float peak_gain = (hold_pk[h] / hold_bp[h] - 1.0f) * 100.0f;
+                if (peak_gain >= lock_trigger && ret < lock_floor) sell = true;
+            }
+            if (!sell && use_mom_exit == 1 && dh >= 10 && momentum[hold_si[h] * n_days + day] < -mom_exit_th) sell = true;
             if (!sell && dh >= hold_days_max) sell = true;
 
             if (sell && n_trades < 100) {
@@ -367,6 +376,10 @@ PARAMS_SPACE = {
     "w_obv": [0,1,2,3], "obv_rising_days": [3,5,10],
     # ====== 漸進式最低報酬 ======
     "use_time_decay": [0,1], "ret_per_day": [0.1,0.2,0.3,0.5,0.8,1.0,1.5],
+    # ====== 鎖利出場 ======
+    "use_profit_lock": [0,1], "lock_trigger": [15,20,30,40,50], "lock_floor": [3,5,8,10,15],
+    # ====== 動量反轉出場 ======
+    "use_mom_exit": [0,1], "mom_exit_th": [0,1,2,3,5],
     # ====== 多持倉 ======
     "max_positions": [1,2],
 }
@@ -390,6 +403,8 @@ PARAM_ORDER = [
     "use_breakeven","breakeven_trigger",
     "w_obv","obv_rising_days",
     "use_time_decay","ret_per_day",
+    "use_profit_lock","lock_trigger","lock_floor",
+    "use_mom_exit","mom_exit_th",
     "max_positions",
 ]
 
@@ -568,7 +583,7 @@ def precompute(data):
         "bb_std":bb_std.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
-REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線","停滯出場","漸進停利"]
+REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線","停滯出場","漸進停利","鎖利出場","動量反轉"]
 
 def cpu_replay(pre, p):
     """用 CPU 重跑一次最佳參數，拿完整交易明細（股票名、日期、價格）"""
@@ -620,6 +635,10 @@ def cpu_replay(pre, p):
             if not sell and p.get("use_stagnation_exit",0) and dh>=int(p.get("stagnation_days",10)) and ret<p.get("stagnation_min_ret",5): sell=True; reason=9
             hd_half=int(p["hold_days"])//2
             if not sell and p.get("use_time_decay",0) and dh>=hd_half and ret<(dh-hd_half)*p.get("ret_per_day",0.5): sell=True; reason=10
+            if not sell and p.get("use_profit_lock",0):
+                pg=(hold_pk[h]/hold_bp[h]-1)*100
+                if pg>=p.get("lock_trigger",30) and ret<p.get("lock_floor",10): sell=True; reason=11
+            if not sell and p.get("use_mom_exit",0) and dh>=10 and mom[si,day]<-p.get("mom_exit_th",2): sell=True; reason=12
             if not sell and dh>=int(p["hold_days"]): sell=True; reason=0
             if sell:
                 trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
