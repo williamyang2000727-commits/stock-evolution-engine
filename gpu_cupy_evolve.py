@@ -363,7 +363,7 @@ PARAMS_SPACE = {
     # ====== OBV 能量潮 ======
     "w_obv": [0,1,2,3], "obv_rising_days": [3,5,10],
     # ====== 多持倉 ======
-    "max_positions": [1,2,3],
+    "max_positions": [1,2],
 }
 
 PARAM_ORDER = [
