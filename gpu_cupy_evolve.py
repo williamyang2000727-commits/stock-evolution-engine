@@ -363,7 +363,7 @@ PARAMS_SPACE = {
     "w_adx": [0,1,2,3], "adx_th": [15,20,25,30,35,40],
     "consecutive_green": [0,1,2,3], "gap_up": [0,1],
     "above_ma60": [0,1], "vol_gt_yesterday": [0,1],
-    "buy_threshold": [3,4,5,6,7,8,9,10],
+    "buy_threshold": [10],
     # ====== 賣出 ======
     "stop_loss": [-3,-5,-7,-10,-12,-15,-20],
     "use_take_profit": [0,1], "take_profit": [20,30,40,50,60,80,100,150],
