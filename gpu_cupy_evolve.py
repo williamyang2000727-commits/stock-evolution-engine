@@ -974,7 +974,8 @@ def main():
             best_params["momentum_days"] = int(md_choices[bi])
             total_improved += 1
             no_improve_rounds = 0
-            print(f"  [GPU] 新紀錄！{best_score:.1f} | 勝率{best_wr:.0f}% | 平均{best_avg:.1f}% | {best_nt}筆 | 名人堂Top:{hall_of_fame[0][0]:.1f}")
+            hof_top = hall_of_fame[0][0] if hall_of_fame else best_score
+            print(f"  [GPU] 新紀錄！{best_score:.1f} | 勝率{best_wr:.0f}% | 平均{best_avg:.1f}% | {best_nt}筆 | 名人堂Top:{hof_top:.1f}")
         else:
             no_improve_rounds += 1
             # 變異率到頂 = 爬山已退化成亂射，啟動多起點爬山
