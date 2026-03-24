@@ -333,7 +333,7 @@ void backtest(
                     if (pf > 5) pf = 5;
                     score = total_ret*0.10f + avg_ret*0.50f + win_rate*0.10f
                           + pf*3*0.05f + consistency*20*0.10f
-                          + n_trades*0.5f*0.10f - wasted*0.80f;
+                          + n_trades*0.5f*0.10f - wasted*0.60f;
                 }
             }
         }
@@ -363,7 +363,7 @@ PARAMS_SPACE = {
     "w_adx": [0,1,2,3], "adx_th": [25,30,35,40],
     "consecutive_green": [0,1,2,3], "gap_up": [0,1],
     "above_ma60": [0,1], "vol_gt_yesterday": [0,1],
-    "buy_threshold": [15],
+    "buy_threshold": [10],
     # ====== 賣出 ======
     "stop_loss": [-3,-5,-7,-10,-12,-15,-20],
     "use_take_profit": [0,1], "take_profit": [20,30,40,50,60,80,100,150],
