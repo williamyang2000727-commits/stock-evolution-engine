@@ -215,17 +215,14 @@ void backtest(
                 if (peak_gain >= lock_trigger && ret < lock_floor) sell = true;
             }
             if (!sell && use_mom_exit == 1 && dh >= 10 && momentum[hold_si[h] * n_days + day] < -mom_exit_th) sell = true;
-            if (!sell && dh >= hold_days_max - 1) sell = true;
+            if (!sell && dh >= hold_days_max) sell = true;
 
-            if (sell && day + 1 < n_days && n_trades < 100) {
-                // D+1 收盤賣出（跟買入一致：信號 D 天，執行 D+1 收盤）
-                float sell_price = close[si * n_days + day + 1];
-                float actual_ret = (sell_price / hold_bp[h] - 1.0f) * 100.0f;
-                rets[n_trades] = actual_ret;
+            if (sell && n_trades < 100) {
+                rets[n_trades] = ret;
                 trade_bdays[n_trades] = hold_bd[h];
-                total_ret += actual_ret;
-                if (actual_ret > 0) win_count += 1;
-                if (actual_ret < 10) wasted_count += 1;
+                total_ret += ret;
+                if (ret > 0) win_count += 1;
+                if (ret < 10) wasted_count += 1;
                 n_trades++;
                 hold_si[h] = -1;
                 n_holding--;
@@ -652,16 +649,12 @@ def cpu_replay(pre, p):
                 pg=(hold_pk[h]/hold_bp[h]-1)*100
                 if pg>=p.get("lock_trigger",30) and ret<p.get("lock_floor",10): sell=True; reason=11
             if not sell and p.get("use_mom_exit",0) and dh>=10 and mom[si,day]<-p.get("mom_exit_th",2): sell=True; reason=12
-            if not sell and dh>=int(p["hold_days"])-1: sell=True; reason=0
-            if sell and day+1<nd:
-                # D+1 收盤賣出（跟買入一致）
-                sell_price=float(close[si,day+1])
-                actual_ret=(sell_price/hold_bp[h]-1)*100
-                actual_days=day+1-hold_bd[h]
+            if not sell and dh>=int(p["hold_days"]): sell=True; reason=0
+            if sell:
                 trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
-                    "buy_date":str(dates[hold_bd[h]].date()),"sell_date":str(dates[day+1].date()),
-                    "buy_price":round(hold_bp[h],2),"sell_price":round(sell_price,2),
-                    "return":round(actual_ret,2),"days":actual_days,"reason":REASON_NAMES[min(reason,len(REASON_NAMES)-1)]})
+                    "buy_date":str(dates[hold_bd[h]].date()),"sell_date":str(dates[day].date()),
+                    "buy_price":round(hold_bp[h],2),"sell_price":round(cur,2),
+                    "return":round(ret,2),"days":dh,"reason":REASON_NAMES[min(reason,len(REASON_NAMES)-1)]})
                 hold_si[h]=-1; n_holding-=1; any_sold=True
         if n_holding<max_pos and not any_sold:
             best_si=-1; best_sc=0
