@@ -105,6 +105,7 @@ void backtest(
     const float* vol_prev,
     const float* squeeze_fire, const float* new_high_60, const float* adx,
     const float* bias, const float* obv_rising, const float* atr_pct,
+    const float* top100_mask,
     const float* params, const int n_params_per_combo,
     float* results, const int n_combos
 ) {
@@ -235,6 +236,8 @@ void backtest(
             int best_si = -1;
             float best_buy_score = 0;
             for (int si = 0; si < n_stocks; si++) {
+                // 只從當天成交量前 100 名買（跟實戰一致）
+                if (top100_mask[si * n_days + day] < 0.5f) continue;
                 // 跳過已持有的股票
                 bool already = false;
                 for (int h = 0; h < max_pos; h++) {
@@ -583,6 +586,16 @@ def precompute(data):
     # 只要任一週期上升就算（簡化：用最寬鬆標準）
     obv_rising = (obv_rising > 0).astype(np.float32)
 
+    # 動態成交量前 100 名 mask（每天用當天成交量排名，跟實戰 intraday_monitor 一致）
+    top100_mask = np.zeros_like(close)
+    for day in range(ml):
+        day_vol = volume[:, day]
+        if np.sum(day_vol > 0) >= 100:
+            top_idx = np.argsort(day_vol)[-100:]
+            top100_mask[top_idx, day] = 1.0
+        else:
+            top100_mask[:, day] = 1.0  # 資料不足就全部放行
+
     return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,
         "close":close,"rsi":rsi,"bb_pos":bb_pos,"vol_ratio":vol_ratio,
         "macd_line":ml_arr,"macd_hist":mh,"k_val":kv.astype(np.float32),
@@ -590,6 +603,7 @@ def precompute(data):
         "williams_r":wr,"near_high":nh,"vol_prev":vol_prev.astype(np.float32),
         "squeeze_fire":squeeze_fire,"new_high_60":new_high_60,
         "adx":adx.astype(np.float32),"bias":bias,"obv_rising":obv_rising,"atr_pct":atr_pct,
+        "top100_mask":top100_mask.astype(np.float32),
         "bb_std":bb_std.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
@@ -599,6 +613,7 @@ def cpu_replay(pre, p):
     """用 CPU 重跑一次最佳參數，拿完整交易明細（股票名、日期、價格）"""
     ns, nd = pre["n_stocks"], pre["n_days"]
     tickers = pre["tickers"]; dates = pre["dates"]; close = pre["close"]
+    top100_mask=pre.get("top100_mask")
     rsi=pre["rsi"]; bb_pos=pre["bb_pos"]; vol_ratio=pre["vol_ratio"]
     macd_hist=pre["macd_hist"]; macd_line=pre["macd_line"]
     k_val=pre["k_val"]; d_val=pre["d_val"]; williams_r=pre["williams_r"]
@@ -669,6 +684,7 @@ def cpu_replay(pre, p):
             buy_th=p.get("buy_threshold",5)
             held_set=set(h for h in hold_si if h>=0)
             for si in range(ns):
+                if top100_mask is not None and top100_mask[si,day]<0.5: continue
                 if si in held_set: continue
                 sc=0.0
                 if w_rsi>0 and rsi[si,day]>=p.get("rsi_th",55): sc+=w_rsi
@@ -715,16 +731,9 @@ def cpu_replay(pre, p):
 def main():
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     raw = download_data()
-    # 過濾掉資料太短的（至少 200 天），避免拖累整體天數
-    # 過濾資料太短的，再取成交量前 300 名（平衡速度和覆蓋率）
-    valid = {k:v for k,v in raw.items() if len(v) >= 400}
-    vol_rank = {}
-    for t, h in valid.items():
-        if "Volume" in h.columns and len(h) >= 20:
-            vol_rank[t] = h["Volume"].tail(20).mean()
-    top = sorted(vol_rank, key=vol_rank.get, reverse=True)[:300]
-    data = {k: valid[k] for k in top}
-    print(f"[過濾] {len(raw)} → {len(valid)} (>=400天) → {len(data)} 檔 (成交量前300)")
+    # 只過濾資料太短的，保留全部股票（動態 top100 mask 在 precompute 裡算）
+    data = {k:v for k,v in raw.items() if len(v) >= 400}
+    print(f"[過濾] {len(raw)} → {len(data)} 檔 (>=400天，動態前100名mask)")
     if len(data) < 10: print("資料不足"); return
     pre = precompute(data)
     ns, nd = pre["n_stocks"], pre["n_days"]
@@ -750,6 +759,7 @@ def main():
     d_bias = cp.asarray(pre["bias"])
     d_obv_rising = cp.asarray(pre["obv_rising"])
     d_atr_pct = cp.asarray(pre["atr_pct"])
+    d_top100 = cp.asarray(pre["top100_mask"])
     d_ma60 = cp.asarray(pre["ma60"])
 
     print("[GPU] 開始進化！每批 500,000 組")
@@ -803,14 +813,8 @@ def main():
             try:
                 if os.path.exists(CACHE_PATH): os.remove(CACHE_PATH)
                 raw = download_data()
-                valid = {k:v for k,v in raw.items() if len(v) >= 400}
-                vol_rank = {}
-                for t, h in valid.items():
-                    if "Volume" in h.columns and len(h) >= 20:
-                        vol_rank[t] = h["Volume"].tail(20).mean()
-                top = sorted(vol_rank, key=vol_rank.get, reverse=True)[:300]
-                data = {k: valid[k] for k in top}
-                print(f"[GPU] 刷新完成：{len(data)} 檔")
+                data = {k:v for k,v in raw.items() if len(v) >= 400}
+                print(f"[GPU] 刷新完成：{len(data)} 檔（動態前100名mask）")
                 pre = precompute(data)
                 ns, nd = pre["n_stocks"], pre["n_days"]
                 d_close = cp.asarray(pre["close"]); d_rsi = cp.asarray(pre["rsi"])
@@ -822,6 +826,7 @@ def main():
                 d_vp = cp.asarray(pre["vol_prev"])
                 d_squeeze = cp.asarray(pre["squeeze_fire"]); d_newhigh = cp.asarray(pre["new_high_60"])
                 d_adx = cp.asarray(pre["adx"]); d_bias = cp.asarray(pre["bias"])
+                d_top100 = cp.asarray(pre["top100_mask"])
                 d_ma60 = cp.asarray(pre["ma60"])
                 d_ma3 = cp.asarray(pre["ma_d"][3]); d_ma5 = cp.asarray(pre["ma_d"][5])
                 d_ma10 = cp.asarray(pre["ma_d"][10]); d_ma15 = cp.asarray(pre["ma_d"][15])
@@ -933,6 +938,7 @@ def main():
             d_ig, d_gp, d_nh, d_wr,
             d_ma3, d_ma5, d_ma10, d_ma15, d_ma20, d_ma30, d_ma60,
             d_vp, d_squeeze, d_newhigh, d_adx, d_bias, d_obv_rising, d_atr_pct,
+            d_top100,
             d_params, np.int32(N_PARAMS_FULL),
             d_results, np.int32(BATCH)
         ))
