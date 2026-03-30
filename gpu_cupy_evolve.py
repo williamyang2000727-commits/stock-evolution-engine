@@ -222,7 +222,7 @@ void backtest(
             // 賣出用 D+1 開盤價（跟實戰一致：收到訊號隔天一開盤賣）
             if (sell && day + 1 < n_days && n_trades < 100) {
                 float sell_price = open_price[si * n_days + day + 1];
-                float actual_ret = (sell_price / hold_bp[h] - 1.0f) * 100.0f;
+                float actual_ret = (sell_price / hold_bp[h] - 1.0f) * 100.0f - 0.585f;  // 扣手續費+證交稅
                 rets[n_trades] = actual_ret;
                 trade_bdays[n_trades] = hold_bd[h];
                 total_ret += actual_ret;
@@ -314,7 +314,7 @@ void backtest(
                 if (weakest_h >= 0 && cand_sc - weakest_sc >= upgrade_margin && n_trades < 100) {
                     int si = hold_si[weakest_h];
                     float sell_price = open_price[si * n_days + day + 1];
-                    float actual_ret = (sell_price / hold_bp[weakest_h] - 1.0f) * 100.0f;
+                    float actual_ret = (sell_price / hold_bp[weakest_h] - 1.0f) * 100.0f - 0.585f;  // 扣手續費+證交稅
                     rets[n_trades] = actual_ret;
                     trade_bdays[n_trades] = hold_bd[weakest_h];
                     total_ret += actual_ret;
@@ -400,36 +400,67 @@ void backtest(
         }
     }
 
-    // 計算分數
+    // 計算分數 — v2 大改版
     float score = -999999.0f;
-    if (n_trades >= 10) {
+    if (n_trades >= 8) {
         float avg_ret = total_ret / n_trades;
         float win_rate = win_count / n_trades * 100.0f;
         float wasted = wasted_count / n_trades * 100.0f;
 
-        if (avg_ret >= 15 && win_rate >= 50 && wasted <= 60) {
-            // 雙段驗證
-            int mid_day = n_days / 2;
-            float f_sum=0, s_sum=0; int f_n=0, s_n=0;
+        if (avg_ret >= 10 && win_rate >= 45) {
+            // Sharpe ratio（報酬/波動比）
+            float sum_sq = 0;
             for (int i=0; i<n_trades; i++) {
-                if (trade_bdays[i] < mid_day) { f_sum += rets[i]; f_n++; }
-                else { s_sum += rets[i]; s_n++; }
+                float diff = rets[i] - avg_ret;
+                sum_sq += diff * diff;
             }
-            if (f_n >= 2 && s_n >= 2) {
-                float f_avg = f_sum/f_n, s_avg = s_sum/s_n;
-                if (f_avg > 0 && s_avg > 0) {
-                    float consistency = fminf(f_avg,s_avg) / fmaxf(f_avg,s_avg);
-                    float w_sum=0, l_sum=0;
-                    for (int i=0; i<n_trades; i++) {
-                        if (rets[i]>0) w_sum+=rets[i]; else l_sum+=fabsf(rets[i]);
-                    }
-                    float pf = l_sum>0 ? w_sum/l_sum : 999.0f;
-                    if (pf > 5) pf = 5;
-                    score = total_ret*0.10f + avg_ret*0.50f + win_rate*0.10f
-                          + pf*3*0.05f + consistency*20*0.10f
-                          + n_trades*0.5f*0.10f - wasted*0.60f;
+            float std_ret = sqrtf(sum_sq / n_trades);
+            float sharpe = std_ret > 1 ? avg_ret / std_ret : avg_ret;
+            if (sharpe > 10) sharpe = 10;
+
+            // 最大連續虧損
+            float max_dd = 0, running_dd = 0;
+            for (int i=0; i<n_trades; i++) {
+                if (rets[i] < 0) running_dd += rets[i];
+                else running_dd = 0;
+                if (running_dd < max_dd) max_dd = running_dd;
+            }
+
+            // 3 段一致性驗證（比 2 段更嚴格）
+            int seg_size = n_days / 3;
+            float seg_sum[3] = {0,0,0}; int seg_n[3] = {0,0,0};
+            for (int i=0; i<n_trades; i++) {
+                int seg = trade_bdays[i] / seg_size;
+                if (seg > 2) seg = 2;
+                seg_sum[seg] += rets[i]; seg_n[seg]++;
+            }
+            float consistency = 0;
+            int active_segs = 0;
+            float seg_min = 9999, seg_max = -9999;
+            for (int s=0; s<3; s++) {
+                if (seg_n[s] >= 2) {
+                    float sa = seg_sum[s] / seg_n[s];
+                    if (sa < seg_min) seg_min = sa;
+                    if (sa > seg_max) seg_max = sa;
+                    active_segs++;
                 }
             }
+            if (active_segs >= 2 && seg_max > 0 && seg_min > 0)
+                consistency = seg_min / seg_max;
+
+            // Profit factor
+            float w_sum=0, l_sum=0;
+            for (int i=0; i<n_trades; i++) {
+                if (rets[i]>0) w_sum+=rets[i]; else l_sum+=fabsf(rets[i]);
+            }
+            float pf = l_sum>0 ? w_sum/l_sum : 999.0f;
+            if (pf > 5) pf = 5;
+
+            // v2 評分公式：更均衡，加入 Sharpe + 最大回撤
+            score = avg_ret*0.30f + sharpe*10*0.15f + win_rate*0.10f
+                  + pf*3*0.10f + consistency*20*0.10f
+                  + n_trades*0.5f*0.05f + total_ret*0.05f
+                  - wasted*0.50f - fabsf(max_dd)*0.15f;
         }
     }
 
@@ -457,7 +488,7 @@ PARAMS_SPACE = {
     "w_adx": [0,1,2,3], "adx_th": [25,30,35,40],
     "consecutive_green": [0,1,2,3], "gap_up": [0,1],
     "above_ma60": [0,1], "vol_gt_yesterday": [0,1],
-    "buy_threshold": [10],
+    "buy_threshold": [6,8,10,12,14,16],
     # ====== 賣出 ======
     "stop_loss": [-3,-5,-7,-10,-12,-15,-20],
     "use_take_profit": [0,1], "take_profit": [20,30,40,50,60,80,100,150],
@@ -683,15 +714,9 @@ def precompute(data):
     # 只要任一週期上升就算（簡化：用最寬鬆標準）
     obv_rising = (obv_rising > 0).astype(np.float32)
 
-    # 動態成交量前 100 名 mask（每天用當天成交量排名，跟實戰 intraday_monitor 一致）
-    top100_mask = np.zeros_like(close)
-    for day in range(ml):
-        day_vol = volume[:, day]
-        if np.sum(day_vol > 0) >= 100:
-            top_idx = np.argsort(day_vol)[-100:]
-            top100_mask[top_idx, day] = 1.0
-        else:
-            top100_mask[:, day] = 1.0  # 資料不足就全部放行
+    # 動態成交量前 100 名 mask（向量化，跟實戰 intraday_monitor 一致）
+    ranks = np.argsort(np.argsort(-volume, axis=0), axis=0)  # 每天的排名（0=最大）
+    top100_mask = (ranks < 100).astype(np.float32)
 
     return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,
         "close":close,"rsi":rsi,"bb_pos":bb_pos,"vol_ratio":vol_ratio,
@@ -1002,10 +1027,20 @@ def main():
             n_random = BATCH // 5
             n_climb = BATCH - n_random
             n_breed = 0
+        elif len(hall_of_fame) < 3:
+            # 早期：50% 隨機 + 50% 爬山（名人堂不夠，不配種）
+            n_random = BATCH // 2
+            n_climb = BATCH - n_random
+            n_breed = 0
+        elif no_improve_rounds < 5:
+            # 正常：15% 隨機 / 45% 爬山 / 40% 配種
+            n_random = int(BATCH * 0.15)
+            n_climb = int(BATCH * 0.45)
+            n_breed = BATCH - n_random - n_climb
         else:
-            # 正常模式：20% 隨機 / 50% 爬山 / 30% 配種
-            n_random = BATCH // 5
-            n_climb = BATCH // 2
+            # 停滯：30% 隨機 / 30% 爬山 / 40% 配種（加強探索）
+            n_random = int(BATCH * 0.30)
+            n_climb = int(BATCH * 0.30)
             n_breed = BATCH - n_random - n_climb
         third = n_random  # 相容舊變數名
 
@@ -1025,8 +1060,9 @@ def main():
                 diffs = np.abs(opts - base_val)
                 base_idx = int(np.argmin(diffs))
                 keep = np.random.random(n_climb) >= mutate_rate
-                lo = max(0, base_idx - 2)
-                hi = min(len(opts) - 1, base_idx + 2)
+                radius = 2 + min(no_improve_rounds // 3, 4)  # 越久沒突破鄰域越大
+                lo = max(0, base_idx - radius)
+                hi = min(len(opts) - 1, base_idx + radius)
                 nearby = np.random.randint(lo, hi + 1, n_climb)
                 vals = opts[nearby]
                 vals[keep] = opts[base_idx]
@@ -1053,7 +1089,8 @@ def main():
             from_a = np.random.random((breed_size, len(PARAM_ORDER))) < 0.5
             offspring = np.where(from_a, hof_matrix[parent_a], hof_matrix[parent_b])
             # 10% 突變
-            mutate_mask = np.random.random((breed_size, len(PARAM_ORDER))) < 0.1
+            breed_mut_rate = min(0.3, 0.1 + no_improve_rounds * 0.01)  # 動態突變率
+            mutate_mask = np.random.random((breed_size, len(PARAM_ORDER))) < breed_mut_rate
             for i, key in enumerate(PARAM_ORDER):
                 opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
                 random_vals = opts[np.random.randint(len(opts), size=breed_size)]
@@ -1113,7 +1150,7 @@ def main():
                 tp_dict["momentum_days"] = int(md_choices[ti])
                 hall_of_fame.append((sc, tp_dict))
         hall_of_fame.sort(key=lambda x: -x[0])
-        hall_of_fame = hall_of_fame[:5]
+        hall_of_fame = hall_of_fame[:15]
 
         bi = np.argmax(results[:, 0])
         if results[bi, 0] > best_score:
@@ -1137,17 +1174,26 @@ def main():
             if mutate_rate >= 0.50:
                 hall_of_fame = []
                 no_improve_rounds = 0
-                # 從最佳策略的「遠親」開始爬（打亂 60% 參數，保留 40% 骨架）
+                # 從最佳策略的「遠親」開始爬（核心參數保留80%，微調參數打亂80%）
                 anchor = best_params if best_params else gist_best_params
+                core_keys = {"stop_loss","hold_days","buy_threshold","max_positions","sell_below_ma","trailing_stop","use_breakeven","breakeven_trigger"}
                 explore_bases = []
                 for _eb in range(5):
                     if anchor:
                         rb = {}
                         for key in PARAM_ORDER:
-                            if np.random.random() < 0.6:  # 60% 打亂
-                                rb[key] = float(np.random.choice(PARAMS_SPACE[key]))
-                            else:  # 40% 保留
-                                rb[key] = float(anchor.get(key, np.random.choice(PARAMS_SPACE[key])))
+                            if key in core_keys:
+                                # 核心參數：80% 保留，20% 打亂
+                                if np.random.random() < 0.2:
+                                    rb[key] = float(np.random.choice(PARAMS_SPACE[key]))
+                                else:
+                                    rb[key] = float(anchor.get(key, np.random.choice(PARAMS_SPACE[key])))
+                            else:
+                                # 微調參數：80% 打亂，20% 保留
+                                if np.random.random() < 0.8:
+                                    rb[key] = float(np.random.choice(PARAMS_SPACE[key]))
+                                else:
+                                    rb[key] = float(anchor.get(key, np.random.choice(PARAMS_SPACE[key])))
                         rb["ma_fast_w"] = anchor.get("ma_fast_w", 5) if np.random.random() < 0.4 else int(np.random.choice(MA_FAST_OPTS))
                         rb["ma_slow_w"] = anchor.get("ma_slow_w", 20) if np.random.random() < 0.4 else int(np.random.choice(MA_SLOW_OPTS))
                         rb["momentum_days"] = anchor.get("momentum_days", 5) if np.random.random() < 0.4 else int(np.random.choice(MOM_DAYS_OPTS))
