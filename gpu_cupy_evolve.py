@@ -60,7 +60,7 @@ def download_data():
     print(f"[下載] {total} 檔股票資料（首次需 10-20 分鐘）...")
     for i, t in enumerate(TW_TICKERS):
         try:
-            h = yf.Ticker(t).history(period="2y")
+            h = yf.Ticker(t).history(period="4y")
             if len(h) >= 40: data[t] = h
             if i % 10 == 9: time.sleep(1)
             if i % 50 == 49: print(f"  進度 {i+1}/{total} | 成功 {len(data)} 檔")
@@ -105,7 +105,7 @@ void backtest(
     const float* vol_prev,
     const float* squeeze_fire, const float* new_high_60, const float* adx,
     const float* bias, const float* obv_rising, const float* atr_pct,
-    const float* open_price, const float* top100_mask,
+    const float* open_price, const float* top100_mask, const float* market_bull,
     const float* params, const int n_params_per_combo,
     float* results, const int n_combos
 ) {
@@ -235,7 +235,7 @@ void backtest(
         }
 
         // === Phase 1.5: 換股 — 持倉滿且有更強候選，賣弱換強 ===
-        if (upgrade_margin > 0 && n_holding >= max_pos && day + 1 < n_days) {
+        if (upgrade_margin > 0 && n_holding >= max_pos && day + 1 < n_days && market_bull[day] > 0.5f) {
             // 找候選最高分
             int cand_si = -1; float cand_sc = 0;
             for (int si = 0; si < n_stocks; si++) {
@@ -327,7 +327,8 @@ void backtest(
             }
         }
 
-        // === Phase 2: 有空位就買（可同天買賣，填滿所有空位）===
+        // === Phase 2: 有空位就買（大盤在 MA20 之上才買）===
+        if (market_bull[day] < 0.5f) continue;  // 大盤弱勢，跳過買入
         while (n_holding < max_pos && day + 1 < n_days) {
             int best_si = -1;
             float best_buy_score = 0;
@@ -718,6 +719,16 @@ def precompute(data):
     ranks = np.argsort(np.argsort(-volume, axis=0), axis=0)  # 每天的排名（0=最大）
     top100_mask = (ranks < 100).astype(np.float32)
 
+    # 大盤過濾：用所有股票的等權平均收盤價模擬大盤，跌破 MA20 不買
+    market_avg = np.mean(close, axis=0)  # 每天所有股票的平均收盤價
+    market_ma20 = np.zeros(ml, dtype=np.float32)
+    for i in range(20, ml):
+        market_ma20[i] = np.mean(market_avg[i-20:i])
+    market_bull = np.zeros(ml, dtype=np.float32)
+    market_bull[20:] = (market_avg[20:] > market_ma20[20:]).astype(np.float32)
+    market_bull[:20] = 1.0  # 前 20 天預設允許
+    print(f"  大盤過濾：{np.sum(market_bull > 0.5)}/{ml} 天為多頭（{np.sum(market_bull > 0.5)/ml*100:.0f}%）")
+
     return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,
         "close":close,"rsi":rsi,"bb_pos":bb_pos,"vol_ratio":vol_ratio,
         "macd_line":ml_arr,"macd_hist":mh,"k_val":kv.astype(np.float32),
@@ -726,6 +737,7 @@ def precompute(data):
         "squeeze_fire":squeeze_fire,"new_high_60":new_high_60,
         "adx":adx.astype(np.float32),"bias":bias,"obv_rising":obv_rising,"atr_pct":atr_pct,
         "top100_mask":top100_mask.astype(np.float32),
+        "market_bull":market_bull,
         "open":opn.astype(np.float32),
         "bb_std":bb_std.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
@@ -744,6 +756,7 @@ def cpu_replay(pre, p):
     vol_prev=pre["vol_prev"]
     squeeze_fire=pre["squeeze_fire"]; new_high_60=pre["new_high_60"]; adx_arr=pre["adx"]; bias_arr=pre["bias"]; obv_rising_arr=pre["obv_rising"]; atr_pct_arr=pre["atr_pct"]
     opn=pre.get("open")
+    market_bull=pre.get("market_bull")
     maf=pre["ma_d"].get(int(p.get("ma_fast_w",5)), pre["ma_d"][5])
     mas=pre["ma_d"].get(int(p.get("ma_slow_w",20)), pre["ma_d"][20])
     ma60=pre["ma60"]
@@ -800,7 +813,7 @@ def cpu_replay(pre, p):
                 hold_si[h]=-1; n_holding-=1
         # Phase 1.5: 換股 — 持倉滿且有更強候選，賣弱換強
         um=int(p.get("upgrade_margin",0))
-        if um>0 and n_holding>=max_pos and day+1<nd:
+        if um>0 and n_holding>=max_pos and day+1<nd and (market_bull is None or market_bull[day]>0.5):
             def _score_stock(si,day):
                 d=day; sc=0.0
                 if int(p.get("w_rsi",0))>0 and rsi[si,d]>=p.get("rsi_th",55): sc+=int(p["w_rsi"])
@@ -848,7 +861,8 @@ def cpu_replay(pre, p):
                         "buy_price":round(hold_bp[weakest_h],2),"sell_price":round(sell_price,2),
                         "return":round(actual_ret,2),"days":actual_days,"reason":"換股"})
                     hold_si[weakest_h]=-1; n_holding-=1
-        # Phase 2: 買入（可同天買賣，填滿空位）
+        # Phase 2: 買入（大盤在 MA20 之上才買）
+        if market_bull is not None and market_bull[day] < 0.5: continue
         while n_holding<max_pos and day+1<nd:
             best_si=-1; best_sc=0
             w_rsi=int(p.get("w_rsi",0)); w_bb=int(p.get("w_bb",0)); w_vol=int(p.get("w_vol",0))
@@ -939,6 +953,7 @@ def main():
     d_atr_pct = cp.asarray(pre["atr_pct"])
     d_open = cp.asarray(pre["open"])
     d_top100 = cp.asarray(pre["top100_mask"])
+    d_market = cp.asarray(pre["market_bull"])
     d_ma60 = cp.asarray(pre["ma60"])
 
     print("[GPU] 開始進化！每批 500,000 組")
@@ -1007,6 +1022,7 @@ def main():
                 d_adx = cp.asarray(pre["adx"]); d_bias = cp.asarray(pre["bias"])
                 d_open = cp.asarray(pre["open"])
                 d_top100 = cp.asarray(pre["top100_mask"])
+                d_market = cp.asarray(pre["market_bull"])
                 d_ma60 = cp.asarray(pre["ma60"])
                 d_ma3 = cp.asarray(pre["ma_d"][3]); d_ma5 = cp.asarray(pre["ma_d"][5])
                 d_ma10 = cp.asarray(pre["ma_d"][10]); d_ma15 = cp.asarray(pre["ma_d"][15])
@@ -1130,7 +1146,7 @@ def main():
             d_ig, d_gp, d_nh, d_wr,
             d_ma3, d_ma5, d_ma10, d_ma15, d_ma20, d_ma30, d_ma60,
             d_vp, d_squeeze, d_newhigh, d_adx, d_bias, d_obv_rising, d_atr_pct,
-            d_open, d_top100,
+            d_open, d_top100, d_market,
             d_params, np.int32(N_PARAMS_FULL),
             d_results, np.int32(BATCH)
         ))
