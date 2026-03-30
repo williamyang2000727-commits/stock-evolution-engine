@@ -152,12 +152,14 @@ void backtest(
     int use_profit_lock = (int)p[51]; float lock_trigger = p[52]; float lock_floor = p[53];
     // 動量反轉出場
     int use_mom_exit = (int)p[54]; float mom_exit_th = p[55];
+    // 換股（持倉滿時，候選分數 - 持股分數 >= margin → 賣弱換強）
+    int upgrade_margin = (int)p[56];
     // 多持倉
-    int max_pos = (int)p[56]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
+    int max_pos = (int)p[57]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[57];
-    int ma_slow_idx = (int)p[58];
-    int mom_idx = (int)p[59];
+    int ma_fast_idx = (int)p[58];
+    int ma_slow_idx = (int)p[59];
+    int mom_idx = (int)p[60];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -229,6 +231,99 @@ void backtest(
                 n_trades++;
                 hold_si[h] = -1;
                 n_holding--;
+            }
+        }
+
+        // === Phase 1.5: 換股 — 持倉滿且有更強候選，賣弱換強 ===
+        if (upgrade_margin > 0 && n_holding >= max_pos && day + 1 < n_days) {
+            // 找候選最高分
+            int cand_si = -1; float cand_sc = 0;
+            for (int si = 0; si < n_stocks; si++) {
+                if (top100_mask[si * n_days + day] < 0.5f) continue;
+                bool already = false;
+                for (int h = 0; h < max_pos; h++) {
+                    if (hold_si[h] == si) { already = true; break; }
+                }
+                if (already) continue;
+                int d = si * n_days + day;
+                float sc = 0.0f;
+                if (w_rsi > 0 && rsi[d] >= rsi_th) sc += w_rsi;
+                if (w_bb > 0 && bb_pos[d] >= bb_th) sc += w_bb;
+                if (w_vol > 0 && vol_ratio[d] >= vol_th) sc += w_vol;
+                if (w_ma > 0 && close[d] > ma_fast_arr[d]) sc += w_ma;
+                if (w_macd > 0) {
+                    bool ok = false;
+                    if (macd_mode == 0 && day >= 1 && macd_hist[d] > 0 && macd_hist[d-1] <= 0) ok = true;
+                    else if (macd_mode == 1 && macd_line[d] > 0) ok = true;
+                    else if (macd_mode == 2 && macd_hist[d] > 0) ok = true;
+                    if (ok) sc += w_macd;
+                }
+                if (w_kd > 0 && k_val[d] >= kd_th) sc += w_kd;
+                if (w_wr > 0 && williams_r[d] >= wr_th) sc += w_wr;
+                if (w_mom > 0 && momentum[d] >= mom_th) sc += w_mom;
+                if (w_near_high > 0 && fabsf(near_high[d]) <= near_high_pct) sc += w_near_high;
+                if (w_squeeze > 0 && squeeze_fire[d] > 0.5f) sc += w_squeeze;
+                if (w_new_high > 0 && new_high_60[d] > 0.5f) sc += w_new_high;
+                if (w_adx > 0 && adx[d] >= adx_th) sc += w_adx;
+                if (w_bias > 0 && bias[d] >= 0 && bias[d] <= bias_max_th) sc += w_bias;
+                if (w_obv > 0 && obv_rising[d] > 0.5f) sc += w_obv;
+                if (w_atr > 0 && atr_pct[d] >= atr_min) sc += w_atr;
+                if (consec_green >= 1) {
+                    bool ok = true;
+                    for (int g = 0; g < consec_green; g++) {
+                        if (day-g < 0 || is_green[si*n_days+day-g] != 1) { ok = false; break; }
+                    }
+                    if (ok) sc += 1.0f;
+                }
+                if (use_gap == 1 && gap[d] >= 1.0f) sc += 1.0f;
+                if (above_ma60 == 1 && close[d] >= ma60[d]) sc += 1.0f;
+                if (vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] > vol_prev[d]) sc += 1.0f;
+                if (sc >= buy_threshold && sc > cand_sc) { cand_si = si; cand_sc = sc; }
+            }
+            // 對每檔持股重新評分，找最弱的
+            if (cand_si >= 0) {
+                int weakest_h = -1; float weakest_sc = 9999;
+                for (int h = 0; h < max_pos; h++) {
+                    if (hold_si[h] < 0) continue;
+                    int si = hold_si[h]; int d = si * n_days + day;
+                    float sc = 0.0f;
+                    if (w_rsi > 0 && rsi[d] >= rsi_th) sc += w_rsi;
+                    if (w_bb > 0 && bb_pos[d] >= bb_th) sc += w_bb;
+                    if (w_vol > 0 && vol_ratio[d] >= vol_th) sc += w_vol;
+                    if (w_ma > 0 && close[d] > ma_fast_arr[d]) sc += w_ma;
+                    if (w_macd > 0) {
+                        bool ok = false;
+                        if (macd_mode == 0 && day >= 1 && macd_hist[d] > 0 && macd_hist[d-1] <= 0) ok = true;
+                        else if (macd_mode == 1 && macd_line[d] > 0) ok = true;
+                        else if (macd_mode == 2 && macd_hist[d] > 0) ok = true;
+                        if (ok) sc += w_macd;
+                    }
+                    if (w_kd > 0 && k_val[d] >= kd_th) sc += w_kd;
+                    if (w_wr > 0 && williams_r[d] >= wr_th) sc += w_wr;
+                    if (w_mom > 0 && momentum[d] >= mom_th) sc += w_mom;
+                    if (w_near_high > 0 && fabsf(near_high[d]) <= near_high_pct) sc += w_near_high;
+                    if (w_squeeze > 0 && squeeze_fire[d] > 0.5f) sc += w_squeeze;
+                    if (w_new_high > 0 && new_high_60[d] > 0.5f) sc += w_new_high;
+                    if (w_adx > 0 && adx[d] >= adx_th) sc += w_adx;
+                    if (w_bias > 0 && bias[d] >= 0 && bias[d] <= bias_max_th) sc += w_bias;
+                    if (w_obv > 0 && obv_rising[d] > 0.5f) sc += w_obv;
+                    if (w_atr > 0 && atr_pct[d] >= atr_min) sc += w_atr;
+                    if (sc < weakest_sc) { weakest_sc = sc; weakest_h = h; }
+                }
+                // 候選分數 - 最弱持股分數 >= margin → 賣弱換強
+                if (weakest_h >= 0 && cand_sc - weakest_sc >= upgrade_margin && n_trades < 100) {
+                    int si = hold_si[weakest_h];
+                    float sell_price = open_price[si * n_days + day + 1];
+                    float actual_ret = (sell_price / hold_bp[weakest_h] - 1.0f) * 100.0f;
+                    rets[n_trades] = actual_ret;
+                    trade_bdays[n_trades] = hold_bd[weakest_h];
+                    total_ret += actual_ret;
+                    if (actual_ret > 0) win_count += 1;
+                    if (actual_ret < 10) wasted_count += 1;
+                    n_trades++;
+                    hold_si[weakest_h] = -1;
+                    n_holding--;
+                }
             }
         }
 
@@ -388,6 +483,8 @@ PARAMS_SPACE = {
     "use_profit_lock": [0,1], "lock_trigger": [15,20,30,40,50], "lock_floor": [3,5,8,10,15],
     # ====== 動量反轉出場 ======
     "use_mom_exit": [0,1], "mom_exit_th": [0,1,2,3,5],
+    # ====== 換股（賣弱換強）======
+    "upgrade_margin": [0,3,5,7,10],
     # ====== 多持倉 ======
     "max_positions": [1,2],
 }
@@ -414,6 +511,7 @@ PARAM_ORDER = [
     "use_time_decay","ret_per_day",
     "use_profit_lock","lock_trigger","lock_floor",
     "use_mom_exit","mom_exit_th",
+    "upgrade_margin",
     "max_positions",
 ]
 
@@ -607,7 +705,7 @@ def precompute(data):
         "bb_std":bb_std.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
-REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線","停滯出場","漸進停利","鎖利出場","動量反轉"]
+REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線","停滯出場","漸進停利","鎖利出場","動量反轉","換股"]
 
 def cpu_replay(pre, p):
     """用 CPU 重跑一次最佳參數，拿完整交易明細（股票名、日期、價格）"""
@@ -675,6 +773,56 @@ def cpu_replay(pre, p):
                     "buy_price":round(hold_bp[h],2),"sell_price":round(sell_price,2),
                     "return":round(actual_ret,2),"days":actual_days,"reason":REASON_NAMES[min(reason,len(REASON_NAMES)-1)]})
                 hold_si[h]=-1; n_holding-=1
+        # Phase 1.5: 換股 — 持倉滿且有更強候選，賣弱換強
+        um=int(p.get("upgrade_margin",0))
+        if um>0 and n_holding>=max_pos and day+1<nd:
+            def _score_stock(si,day):
+                d=day; sc=0.0
+                if int(p.get("w_rsi",0))>0 and rsi[si,d]>=p.get("rsi_th",55): sc+=int(p["w_rsi"])
+                if int(p.get("w_bb",0))>0 and bb_pos[si,d]>=p.get("bb_th",0.7): sc+=int(p["w_bb"])
+                if int(p.get("w_vol",0))>0 and vol_ratio[si,d]>=p.get("vol_th",3): sc+=int(p["w_vol"])
+                if int(p.get("w_ma",0))>0 and close[si,d]>maf[si,d]: sc+=int(p["w_ma"])
+                if int(p.get("w_macd",0))>0:
+                    mm=int(p.get("macd_mode",2)); ok=False
+                    if mm==0 and d>=1 and macd_hist[si,d]>0 and macd_hist[si,d-1]<=0: ok=True
+                    elif mm==1 and macd_line[si,d]>0: ok=True
+                    elif mm==2 and macd_hist[si,d]>0: ok=True
+                    if ok: sc+=int(p["w_macd"])
+                if int(p.get("w_kd",0))>0 and k_val[si,d]>=p.get("kd_th",50): sc+=int(p["w_kd"])
+                if int(p.get("w_wr",0))>0 and williams_r[si,d]>=p.get("wr_th",-30): sc+=int(p["w_wr"])
+                if int(p.get("w_mom",0))>0 and mom[si,d]>=p.get("mom_th",3): sc+=int(p["w_mom"])
+                if int(p.get("w_near_high",0))>0 and abs(near_high[si,d])<=p.get("near_high_pct",10): sc+=int(p["w_near_high"])
+                if int(p.get("w_squeeze",0))>0 and squeeze_fire[si,d]>0.5: sc+=int(p["w_squeeze"])
+                if int(p.get("w_new_high",0))>0 and new_high_60[si,d]>0.5: sc+=int(p["w_new_high"])
+                if int(p.get("w_adx",0))>0 and adx_arr[si,d]>=p.get("adx_th",25): sc+=int(p["w_adx"])
+                if int(p.get("w_bias",0))>0 and bias_arr[si,d]>=0 and bias_arr[si,d]<=p.get("bias_max",15): sc+=int(p["w_bias"])
+                if int(p.get("w_obv",0))>0 and obv_rising_arr[si,d]>0.5: sc+=int(p["w_obv"])
+                if int(p.get("w_atr",0))>0 and atr_pct_arr[si,d]>=p.get("atr_min",2): sc+=int(p["w_atr"])
+                return sc
+            # 找候選最高分
+            cand_si=-1; cand_sc=0
+            held_set=set(hh for hh in hold_si if hh>=0)
+            for si in range(ns):
+                if top100_mask is not None and top100_mask[si,day]<0.5: continue
+                if si in held_set: continue
+                sc=_score_stock(si,day)
+                if sc>=p.get("buy_threshold",5) and sc>cand_sc: cand_si=si; cand_sc=sc
+            if cand_si>=0:
+                weakest_h=-1; weakest_sc=9999
+                for h in range(max_pos):
+                    if hold_si[h]<0: continue
+                    sc=_score_stock(hold_si[h],day)
+                    if sc<weakest_sc: weakest_sc=sc; weakest_h=h
+                if weakest_h>=0 and cand_sc-weakest_sc>=um:
+                    si=hold_si[weakest_h]
+                    sell_price=float(opn[si,day+1]) if opn is not None else float(close[si,day])
+                    actual_ret=(sell_price/hold_bp[weakest_h]-1)*100
+                    actual_days=day+1-hold_bd[weakest_h]
+                    trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
+                        "buy_date":str(dates[hold_bd[weakest_h]].date()),"sell_date":str(dates[day+1].date()),
+                        "buy_price":round(hold_bp[weakest_h],2),"sell_price":round(sell_price,2),
+                        "return":round(actual_ret,2),"days":actual_days,"reason":"換股"})
+                    hold_si[weakest_h]=-1; n_holding-=1
         # Phase 2: 買入（可同天買賣，填滿空位）
         while n_holding<max_pos and day+1<nd:
             best_si=-1; best_sc=0
