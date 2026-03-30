@@ -152,12 +152,14 @@ void backtest(
     int use_profit_lock = (int)p[51]; float lock_trigger = p[52]; float lock_floor = p[53];
     // 動量反轉出場
     int use_mom_exit = (int)p[54]; float mom_exit_th = p[55];
+    // 動量高但沒新高 = 扣分（已漲一段但沒突破，危險）
+    int mom_no_high_pen = (int)p[56];
     // 多持倉
-    int max_pos = (int)p[56]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
+    int max_pos = (int)p[57]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[57];
-    int ma_slow_idx = (int)p[58];
-    int mom_idx = (int)p[59];
+    int ma_fast_idx = (int)p[58];
+    int ma_slow_idx = (int)p[59];
+    int mom_idx = (int)p[60];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -287,6 +289,11 @@ void backtest(
                 if (above_ma60 == 1 && close[d] >= ma60[d]) sc += 1.0f;
                 if (vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] > vol_prev[d]) sc += 1.0f;
 
+                // 動量高但沒新高 = 扣分（已漲一段沒突破，回檔風險高）
+                if (mom_no_high_pen > 0 && w_mom > 0 && momentum[d] >= mom_th && new_high_60[d] < 0.5f) {
+                    sc -= mom_no_high_pen;
+                }
+
                 if (sc >= buy_threshold && sc > best_buy_score) {
                     best_si = si; best_buy_score = sc;
                 }
@@ -389,6 +396,8 @@ PARAMS_SPACE = {
     "use_profit_lock": [0,1], "lock_trigger": [15,20,30,40,50], "lock_floor": [3,5,8,10,15],
     # ====== 動量反轉出場 ======
     "use_mom_exit": [0,1], "mom_exit_th": [0,1,2,3,5],
+    # ====== 動量高但沒新高扣分 ======
+    "mom_no_high_pen": [0,1,2,3],
     # ====== 多持倉 ======
     "max_positions": [1,2],
 }
@@ -415,6 +424,7 @@ PARAM_ORDER = [
     "use_time_decay","ret_per_day",
     "use_profit_lock","lock_trigger","lock_floor",
     "use_mom_exit","mom_exit_th",
+    "mom_no_high_pen",
     "max_positions",
 ]
 
@@ -720,6 +730,8 @@ def cpu_replay(pre, p):
                 if p.get("gap_up",0) and gap[si,day]>=1.0: sc+=1
                 if p.get("above_ma60",0) and close[si,day]>=ma60[si,day]: sc+=1
                 if p.get("vol_gt_yesterday",0) and day>=1 and vol_ratio[si,day]>vol_prev[si,day]: sc+=1
+                mnhp=int(p.get("mom_no_high_pen",0))
+                if mnhp>0 and w_mom>0 and mom[si,day]>=p.get("mom_th",3) and new_high_60[si,day]<0.5: sc-=mnhp
                 if sc>=buy_th and sc>best_sc: best_si=si; best_sc=sc
             if best_si>=0 and day+1<nd:
                 for h in range(max_pos):
