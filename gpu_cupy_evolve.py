@@ -235,7 +235,7 @@ void backtest(
         }
 
         // === Phase 1.5: 換股 — 持倉滿且有更強候選，賣弱換強 ===
-        if (upgrade_margin > 0 && n_holding >= max_pos && day + 1 < n_days && market_bull[day] > 0.5f) {
+        if (upgrade_margin > 0 && n_holding >= max_pos && day + 1 < n_days) {
             // 找候選最高分
             int cand_si = -1; float cand_sc = 0;
             for (int si = 0; si < n_stocks; si++) {
@@ -327,8 +327,7 @@ void backtest(
             }
         }
 
-        // === Phase 2: 有空位就買一檔（大盤在 MA20 之上才買）===
-        if (market_bull[day] < 0.5f) continue;  // 大盤弱勢，跳過買入
+        // === Phase 2: 有空位就買一檔 ===
         if (n_holding < max_pos && day + 1 < n_days) {
             int best_si = -1;
             float best_buy_score = 0;
@@ -812,7 +811,7 @@ def cpu_replay(pre, p):
                 hold_si[h]=-1; n_holding-=1
         # Phase 1.5: 換股 — 持倉滿且有更強候選，賣弱換強
         um=int(p.get("upgrade_margin",0))
-        if um>0 and n_holding>=max_pos and day+1<nd and (market_bull is None or market_bull[day]>0.5):
+        if um>0 and n_holding>=max_pos and day+1<nd:
             def _score_stock(si,day):
                 d=day; sc=0.0
                 if int(p.get("w_rsi",0))>0 and rsi[si,d]>=p.get("rsi_th",55): sc+=int(p["w_rsi"])
@@ -860,8 +859,7 @@ def cpu_replay(pre, p):
                         "buy_price":round(hold_bp[weakest_h],2),"sell_price":round(sell_price,2),
                         "return":round(actual_ret,2),"days":actual_days,"reason":"換股"})
                     hold_si[weakest_h]=-1; n_holding-=1
-        # Phase 2: 買入一檔（大盤在 MA20 之上才買）
-        if market_bull is not None and market_bull[day] < 0.5: continue
+        # Phase 2: 買入一檔
         if n_holding<max_pos and day+1<nd:
             best_si=-1; best_sc=0
             w_rsi=int(p.get("w_rsi",0)); w_bb=int(p.get("w_bb",0)); w_vol=int(p.get("w_vol",0))
