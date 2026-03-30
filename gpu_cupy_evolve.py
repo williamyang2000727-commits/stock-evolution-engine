@@ -402,7 +402,7 @@ void backtest(
 
     // 計算分數 — v2 大改版
     float score = -999999.0f;
-    if (n_trades >= 8) {
+    if (n_trades >= 15) {
         float avg_ret = total_ret / n_trades;
         float win_rate = win_count / n_trades * 100.0f;
         float wasted = wasted_count / n_trades * 100.0f;
@@ -459,7 +459,7 @@ void backtest(
             // v2 評分公式：更均衡，加入 Sharpe + 最大回撤
             score = avg_ret*0.30f + sharpe*10*0.15f + win_rate*0.10f
                   + pf*3*0.10f + consistency*20*0.10f
-                  + n_trades*0.5f*0.05f + total_ret*0.05f
+                  + n_trades*0.5f*0.15f + total_ret*0.05f
                   - wasted*0.50f - fabsf(max_dd)*0.15f;
         }
     }
