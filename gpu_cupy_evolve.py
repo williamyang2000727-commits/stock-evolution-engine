@@ -327,9 +327,9 @@ void backtest(
             }
         }
 
-        // === Phase 2: 有空位就買（大盤在 MA20 之上才買）===
+        // === Phase 2: 有空位就買一檔（大盤在 MA20 之上才買）===
         if (market_bull[day] < 0.5f) continue;  // 大盤弱勢，跳過買入
-        while (n_holding < max_pos && day + 1 < n_days) {
+        if (n_holding < max_pos && day + 1 < n_days) {
             int best_si = -1;
             float best_buy_score = 0;
             for (int si = 0; si < n_stocks; si++) {
@@ -387,8 +387,7 @@ void backtest(
                     best_si = si; best_buy_score = sc;
                 }
             }
-            if (best_si < 0) break;  // 沒有符合的就停
-            for (int h = 0; h < max_pos; h++) {
+            if (best_si >= 0) for (int h = 0; h < max_pos; h++) {
                 if (hold_si[h] < 0) {
                     hold_si[h] = best_si;
                     hold_bp[h] = close[best_si * n_days + day + 1];  // 買入 D+1 收盤
@@ -861,9 +860,9 @@ def cpu_replay(pre, p):
                         "buy_price":round(hold_bp[weakest_h],2),"sell_price":round(sell_price,2),
                         "return":round(actual_ret,2),"days":actual_days,"reason":"換股"})
                     hold_si[weakest_h]=-1; n_holding-=1
-        # Phase 2: 買入（大盤在 MA20 之上才買）
+        # Phase 2: 買入一檔（大盤在 MA20 之上才買）
         if market_bull is not None and market_bull[day] < 0.5: continue
-        while n_holding<max_pos and day+1<nd:
+        if n_holding<max_pos and day+1<nd:
             best_si=-1; best_sc=0
             w_rsi=int(p.get("w_rsi",0)); w_bb=int(p.get("w_bb",0)); w_vol=int(p.get("w_vol",0))
             w_ma=int(p.get("w_ma",0)); w_macd=int(p.get("w_macd",0)); w_kd=int(p.get("w_kd",0))
@@ -913,11 +912,11 @@ def cpu_replay(pre, p):
                 if p.get("above_ma60",0) and close[si,day]>=ma60[si,day]: sc+=1
                 if p.get("vol_gt_yesterday",0) and day>=1 and vol_ratio[si,day]>vol_prev[si,day]: sc+=1
                 if sc>=buy_th and sc>best_sc: best_si=si; best_sc=sc
-            if best_si<0: break
-            for h in range(max_pos):
-                if hold_si[h]<0:
-                    hold_si[h]=best_si; hold_bp[h]=float(close[best_si,day+1])
-                    hold_pk[h]=hold_bp[h]; hold_bd[h]=day+1; n_holding+=1; break
+            if best_si>=0:
+                for h in range(max_pos):
+                    if hold_si[h]<0:
+                        hold_si[h]=best_si; hold_bp[h]=float(close[best_si,day+1])
+                        hold_pk[h]=hold_bp[h]; hold_bd[h]=day+1; n_holding+=1; break
     return sorted(trades, key=lambda x: x["buy_date"])
 
 def main():
