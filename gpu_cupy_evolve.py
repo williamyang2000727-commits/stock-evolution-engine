@@ -398,63 +398,7 @@ void backtest(
             }
         }
 
-        // === Phase 3: 特例第三檔 — 分數 >= 20 且持倉已滿才觸發 ===
-        if (n_holding >= max_pos && n_holding < 3 && day + 1 < n_days) {
-            int best_si3 = -1;
-            float best_sc3 = 0;
-            for (int si = 0; si < n_stocks; si++) {
-                if (top100_mask[si * n_days + day] < 0.5f) continue;
-                bool already = false;
-                for (int h = 0; h < 3; h++) {
-                    if (hold_si[h] == si) { already = true; break; }
-                }
-                if (already) continue;
-                int d = si * n_days + day;
-                float sc = 0.0f;
-                if (w_rsi > 0 && rsi[d] >= rsi_th) sc += w_rsi;
-                if (w_bb > 0 && bb_pos[d] >= bb_th) sc += w_bb;
-                if (w_vol > 0 && vol_ratio[d] >= vol_th) sc += w_vol;
-                if (w_ma > 0 && close[d] > ma_fast_arr[d]) sc += w_ma;
-                if (w_macd > 0) {
-                    bool ok = false;
-                    if (macd_mode == 0 && day >= 1 && macd_hist[d] > 0 && macd_hist[d-1] <= 0) ok = true;
-                    else if (macd_mode == 1 && macd_line[d] > 0) ok = true;
-                    else if (macd_mode == 2 && macd_hist[d] > 0) ok = true;
-                    if (ok) sc += w_macd;
-                }
-                if (w_kd > 0 && k_val[d] >= kd_th) sc += w_kd;
-                if (w_wr > 0 && williams_r[d] >= wr_th) sc += w_wr;
-                if (w_mom > 0 && momentum[d] >= mom_th) sc += w_mom;
-                if (w_near_high > 0 && fabsf(near_high[d]) <= near_high_pct) sc += w_near_high;
-                if (w_squeeze > 0 && squeeze_fire[d] > 0.5f) sc += w_squeeze;
-                if (w_new_high > 0 && new_high_60[d] > 0.5f) sc += w_new_high;
-                if (w_adx > 0 && adx[d] >= adx_th) sc += w_adx;
-                if (w_bias > 0 && bias[d] >= 0 && bias[d] <= bias_max_th) sc += w_bias;
-                if (w_obv > 0 && obv_rising[d] > 0.5f) sc += w_obv;
-                if (w_atr > 0 && atr_pct[d] >= atr_min) sc += w_atr;
-                if (consec_green >= 1) {
-                    bool ok = true;
-                    for (int g = 0; g < consec_green; g++) {
-                        if (day-g < 0 || is_green[si*n_days+day-g] != 1) { ok = false; break; }
-                    }
-                    if (ok) sc += 1.0f;
-                }
-                if (use_gap == 1 && gap[d] >= 1.0f) sc += 1.0f;
-                if (above_ma60 == 1 && close[d] >= ma60[d]) sc += 1.0f;
-                if (vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] > vol_prev[d]) sc += 1.0f;
-                if (sc >= 20 && sc > best_sc3) { best_si3 = si; best_sc3 = sc; }
-            }
-            if (best_si3 >= 0) for (int h = 0; h < 3; h++) {
-                if (hold_si[h] < 0) {
-                    hold_si[h] = best_si3;
-                    hold_bp[h] = close[best_si3 * n_days + day + 1];
-                    hold_pk[h] = hold_bp[h];
-                    hold_bd[h] = day + 1;
-                    n_holding++;
-                    break;
-                }
-            }
-        }
+        // Phase 3 已移除（第三檔回測表現不佳）
     }
 
     // 計算分數 — v2 大改版
@@ -973,46 +917,7 @@ def cpu_replay(pre, p):
                     if hold_si[h]<0:
                         hold_si[h]=best_si; hold_bp[h]=float(close[best_si,day+1])
                         hold_pk[h]=hold_bp[h]; hold_bd[h]=day+1; n_holding+=1; break
-        # Phase 3: 特例第三檔（分數 >= 20 且持倉已滿）
-        if n_holding>=max_pos and n_holding<3 and day+1<nd:
-            best_si3=-1; best_sc3=0
-            held_set3=set(hh for hh in hold_si if hh>=0)
-            for si in range(ns):
-                if top100_mask is not None and top100_mask[si,day]<0.5: continue
-                if si in held_set3: continue
-                sc=0.0
-                if w_rsi>0 and rsi[si,day]>=p.get("rsi_th",55): sc+=w_rsi
-                if w_bb>0 and bb_pos[si,day]>=p.get("bb_th",0.7): sc+=w_bb
-                if w_vol>0 and vol_ratio[si,day]>=p.get("vol_th",3): sc+=w_vol
-                if w_ma>0 and close[si,day]>maf[si,day]: sc+=w_ma
-                if w_macd>0:
-                    mm=int(p.get("macd_mode",2)); ok=False
-                    if mm==0 and day>=1 and macd_hist[si,day]>0 and macd_hist[si,day-1]<=0: ok=True
-                    elif mm==1 and macd_line[si,day]>0: ok=True
-                    elif mm==2 and macd_hist[si,day]>0: ok=True
-                    if ok: sc+=w_macd
-                if w_kd>0:
-                    ok=k_val[si,day]>=p.get("kd_th",50)
-                    if ok and p.get("kd_cross",0) and day>=1: ok=k_val[si,day]>d_val[si,day] and k_val[si,day-1]<=d_val[si,day-1]
-                    if ok: sc+=w_kd
-                if w_wr>0 and williams_r[si,day]>=p.get("wr_th",-30): sc+=w_wr
-                if w_mom>0 and mom[si,day]>=p.get("mom_th",3): sc+=w_mom
-                if w_nh>0 and abs(near_high[si,day])<=p.get("near_high_pct",10): sc+=w_nh
-                if w_sq>0 and squeeze_fire[si,day]>0.5: sc+=w_sq
-                if w_newh>0 and new_high_60[si,day]>0.5: sc+=w_newh
-                if w_adx>0 and adx_arr[si,day]>=adx_threshold: sc+=w_adx
-                if w_bias>0 and bias_arr[si,day]>=0 and bias_arr[si,day]<=bias_max_val: sc+=w_bias
-                if w_obv>0 and obv_rising_arr[si,day]>0.5: sc+=w_obv
-                if w_atr_buy>0 and atr_pct_arr[si,day]>=atr_min_val: sc+=w_atr_buy
-                if p.get("gap_up",0) and gap[si,day]>=1.0: sc+=1
-                if p.get("above_ma60",0) and close[si,day]>=ma60[si,day]: sc+=1
-                if p.get("vol_gt_yesterday",0) and day>=1 and vol_ratio[si,day]>vol_prev[si,day]: sc+=1
-                if sc>=20 and sc>best_sc3: best_si3=si; best_sc3=sc
-            if best_si3>=0:
-                for h in range(3):
-                    if hold_si[h]<0:
-                        hold_si[h]=best_si3; hold_bp[h]=float(close[best_si3,day+1])
-                        hold_pk[h]=hold_bp[h]; hold_bd[h]=day+1; n_holding+=1; break
+        # Phase 3 已移除（第三檔回測表現不佳）
     return sorted(trades, key=lambda x: x["buy_date"])
 
 def main():
