@@ -105,7 +105,7 @@ void backtest(
     const float* vol_prev,
     const float* squeeze_fire, const float* new_high_60, const float* adx,
     const float* bias, const float* obv_rising, const float* atr_pct,
-    const float* top100_mask,
+    const float* open_price, const float* top100_mask,
     const float* params, const int n_params_per_combo,
     float* results, const int n_combos
 ) {
@@ -152,14 +152,12 @@ void backtest(
     int use_profit_lock = (int)p[51]; float lock_trigger = p[52]; float lock_floor = p[53];
     // 動量反轉出場
     int use_mom_exit = (int)p[54]; float mom_exit_th = p[55];
-    // 動量高但沒新高 = 扣分（已漲一段但沒突破，危險）
-    int mom_no_high_pen = (int)p[56];
     // 多持倉
-    int max_pos = (int)p[57]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
+    int max_pos = (int)p[56]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[58];
-    int ma_slow_idx = (int)p[59];
-    int mom_idx = (int)p[60];
+    int ma_fast_idx = (int)p[57];
+    int ma_slow_idx = (int)p[58];
+    int mom_idx = (int)p[59];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -176,8 +174,7 @@ void backtest(
     int trade_bdays[100];
 
     for (int day = 30; day < n_days - 1; day++) {
-        // === Phase 1: 檢查所有持倉的賣出條件 ===
-        bool any_sold = false;
+        // === Phase 1: 檢查所有持倉的賣出條件（用 day 收盤價判斷）===
         for (int h = 0; h < max_pos; h++) {
             if (hold_si[h] < 0) continue;
             int si = hold_si[h];
@@ -220,21 +217,23 @@ void backtest(
             if (!sell && use_mom_exit == 1 && dh >= 10 && momentum[hold_si[h] * n_days + day] < -mom_exit_th) sell = true;
             if (!sell && dh >= hold_days_max) sell = true;
 
-            if (sell && n_trades < 100) {
-                rets[n_trades] = ret;
+            // 賣出用 D+1 開盤價（跟實戰一致：收到訊號隔天一開盤賣）
+            if (sell && day + 1 < n_days && n_trades < 100) {
+                float sell_price = open_price[si * n_days + day + 1];
+                float actual_ret = (sell_price / hold_bp[h] - 1.0f) * 100.0f;
+                rets[n_trades] = actual_ret;
                 trade_bdays[n_trades] = hold_bd[h];
-                total_ret += ret;
-                if (ret > 0) win_count += 1;
-                if (ret < 10) wasted_count += 1;
+                total_ret += actual_ret;
+                if (actual_ret > 0) win_count += 1;
+                if (actual_ret < 10) wasted_count += 1;
                 n_trades++;
                 hold_si[h] = -1;
                 n_holding--;
-                any_sold = true;
             }
         }
 
-        // === Phase 2: 有空位且今天沒賣出 → 買入最高分 ===
-        if (n_holding < max_pos && !any_sold) {
+        // === Phase 2: 有空位就買（可同天買賣，填滿所有空位）===
+        while (n_holding < max_pos && day + 1 < n_days) {
             int best_si = -1;
             float best_buy_score = 0;
             for (int si = 0; si < n_stocks; si++) {
@@ -275,7 +274,6 @@ void backtest(
                 if (w_adx > 0 && adx[d] >= adx_th) sc += w_adx;
                 if (w_bias > 0 && bias[d] >= 0 && bias[d] <= bias_max_th) sc += w_bias;
                 if (w_obv > 0 && obv_rising[d] > 0.5f) sc += w_obv;
-                // ATR 波動率（過濾低波動金融股）
                 if (w_atr > 0 && atr_pct[d] >= atr_min) sc += w_atr;
 
                 if (consec_green >= 1) {
@@ -289,25 +287,19 @@ void backtest(
                 if (above_ma60 == 1 && close[d] >= ma60[d]) sc += 1.0f;
                 if (vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] > vol_prev[d]) sc += 1.0f;
 
-                // 動量高但沒新高 = 扣分（已漲一段沒突破，回檔風險高）
-                if (mom_no_high_pen > 0 && w_mom > 0 && momentum[d] >= mom_th && new_high_60[d] < 0.5f) {
-                    sc -= mom_no_high_pen;
-                }
-
                 if (sc >= buy_threshold && sc > best_buy_score) {
                     best_si = si; best_buy_score = sc;
                 }
             }
-            if (best_si >= 0 && day + 1 < n_days) {
-                for (int h = 0; h < max_pos; h++) {
-                    if (hold_si[h] < 0) {
-                        hold_si[h] = best_si;
-                        hold_bp[h] = close[best_si * n_days + day + 1];
-                        hold_pk[h] = hold_bp[h];
-                        hold_bd[h] = day + 1;
-                        n_holding++;
-                        break;
-                    }
+            if (best_si < 0) break;  // 沒有符合的就停
+            for (int h = 0; h < max_pos; h++) {
+                if (hold_si[h] < 0) {
+                    hold_si[h] = best_si;
+                    hold_bp[h] = close[best_si * n_days + day + 1];  // 買入 D+1 收盤
+                    hold_pk[h] = hold_bp[h];
+                    hold_bd[h] = day + 1;
+                    n_holding++;
+                    break;
                 }
             }
         }
@@ -359,14 +351,14 @@ PARAMS_SPACE = {
     # ====== 評分制買入（權重 0-3 + 門檻）======
     "w_rsi": [0,1,2,3], "rsi_th": [60,63,65,68,70,72,75,80],
     "w_bb": [0,1,2,3], "bb_th": [0.7,0.75,0.8,0.85,0.9,0.95,1.0],
-    "w_vol": [1,2,3], "vol_th": [2.0,2.5,3.0,3.5,4.0,5.0,6.0],
+    "w_vol": [0,1,2,3], "vol_th": [2.0,2.5,3.0,3.5,4.0,5.0,6.0],
     "w_ma": [0,1,2,3],
     "w_macd": [0,1,2,3], "macd_mode": [0,1,2],
     "w_kd": [0,1,2,3], "kd_th": [60,65,70,75,80,85], "kd_cross": [0,1],
     "w_wr": [0,1,2,3], "wr_th": [-25,-30,-35,-40,-50],
     "w_mom": [0,1,2,3], "mom_th": [5,8,10,12,15],
     "w_near_high": [0,1,2], "near_high_pct": [3,5,10],
-    "w_squeeze": [0,1,2,3], "w_new_high": [2,3],
+    "w_squeeze": [0,1,2,3], "w_new_high": [0,1,2,3],
     "w_adx": [0,1,2,3], "adx_th": [25,30,35,40],
     "consecutive_green": [0,1,2,3], "gap_up": [0,1],
     "above_ma60": [0,1], "vol_gt_yesterday": [0,1],
@@ -396,8 +388,6 @@ PARAMS_SPACE = {
     "use_profit_lock": [0,1], "lock_trigger": [15,20,30,40,50], "lock_floor": [3,5,8,10,15],
     # ====== 動量反轉出場 ======
     "use_mom_exit": [0,1], "mom_exit_th": [0,1,2,3,5],
-    # ====== 動量高但沒新高扣分 ======
-    "mom_no_high_pen": [0,1,2,3],
     # ====== 多持倉 ======
     "max_positions": [1,2],
 }
@@ -424,7 +414,6 @@ PARAM_ORDER = [
     "use_time_decay","ret_per_day",
     "use_profit_lock","lock_trigger","lock_floor",
     "use_mom_exit","mom_exit_th",
-    "mom_no_high_pen",
     "max_positions",
 ]
 
@@ -614,6 +603,7 @@ def precompute(data):
         "squeeze_fire":squeeze_fire,"new_high_60":new_high_60,
         "adx":adx.astype(np.float32),"bias":bias,"obv_rising":obv_rising,"atr_pct":atr_pct,
         "top100_mask":top100_mask.astype(np.float32),
+        "open":opn.astype(np.float32),
         "bb_std":bb_std.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
@@ -630,6 +620,7 @@ def cpu_replay(pre, p):
     is_green=pre["is_green"]; gap=pre["gap"]; near_high=pre["near_high"]
     vol_prev=pre["vol_prev"]
     squeeze_fire=pre["squeeze_fire"]; new_high_60=pre["new_high_60"]; adx_arr=pre["adx"]; bias_arr=pre["bias"]; obv_rising_arr=pre["obv_rising"]; atr_pct_arr=pre["atr_pct"]
+    opn=pre.get("open")
     maf=pre["ma_d"].get(int(p.get("ma_fast_w",5)), pre["ma_d"][5])
     mas=pre["ma_d"].get(int(p.get("ma_slow_w",20)), pre["ma_d"][20])
     ma60=pre["ma60"]
@@ -640,7 +631,7 @@ def cpu_replay(pre, p):
     if max_pos>3: max_pos=3
     hold_si=[-1]*3; hold_bp=[0]*3; hold_pk=[0]*3; hold_bd=[0]*3; n_holding=0; trades=[]
     for day in range(30, nd-1):
-        any_sold=False
+        # Phase 1: 賣出（D+1 開盤價）
         for h in range(max_pos):
             if hold_si[h]<0: continue
             si=hold_si[h]; cur=float(close[si,day]); dh=day-hold_bd[h]
@@ -675,13 +666,17 @@ def cpu_replay(pre, p):
                 if pg>=p.get("lock_trigger",30) and ret<p.get("lock_floor",10): sell=True; reason=11
             if not sell and p.get("use_mom_exit",0) and dh>=10 and mom[si,day]<-p.get("mom_exit_th",2): sell=True; reason=12
             if not sell and dh>=int(p["hold_days"]): sell=True; reason=0
-            if sell:
+            if sell and day+1<nd:
+                sell_price=float(opn[si,day+1]) if opn is not None else float(close[si,day])
+                actual_ret=(sell_price/hold_bp[h]-1)*100
+                actual_days=day+1-hold_bd[h]
                 trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
-                    "buy_date":str(dates[hold_bd[h]].date()),"sell_date":str(dates[day].date()),
-                    "buy_price":round(hold_bp[h],2),"sell_price":round(cur,2),
-                    "return":round(ret,2),"days":dh,"reason":REASON_NAMES[min(reason,len(REASON_NAMES)-1)]})
-                hold_si[h]=-1; n_holding-=1; any_sold=True
-        if n_holding<max_pos and not any_sold:
+                    "buy_date":str(dates[hold_bd[h]].date()),"sell_date":str(dates[day+1].date()),
+                    "buy_price":round(hold_bp[h],2),"sell_price":round(sell_price,2),
+                    "return":round(actual_ret,2),"days":actual_days,"reason":REASON_NAMES[min(reason,len(REASON_NAMES)-1)]})
+                hold_si[h]=-1; n_holding-=1
+        # Phase 2: 買入（可同天買賣，填滿空位）
+        while n_holding<max_pos and day+1<nd:
             best_si=-1; best_sc=0
             w_rsi=int(p.get("w_rsi",0)); w_bb=int(p.get("w_bb",0)); w_vol=int(p.get("w_vol",0))
             w_ma=int(p.get("w_ma",0)); w_macd=int(p.get("w_macd",0)); w_kd=int(p.get("w_kd",0))
@@ -692,7 +687,7 @@ def cpu_replay(pre, p):
             w_obv=int(p.get("w_obv",0))
             w_atr_buy=int(p.get("w_atr",0)); atr_min_val=p.get("atr_min",2.0)
             buy_th=p.get("buy_threshold",5)
-            held_set=set(h for h in hold_si if h>=0)
+            held_set=set(hh for hh in hold_si if hh>=0)
             for si in range(ns):
                 if top100_mask is not None and top100_mask[si,day]<0.5: continue
                 if si in held_set: continue
@@ -730,14 +725,12 @@ def cpu_replay(pre, p):
                 if p.get("gap_up",0) and gap[si,day]>=1.0: sc+=1
                 if p.get("above_ma60",0) and close[si,day]>=ma60[si,day]: sc+=1
                 if p.get("vol_gt_yesterday",0) and day>=1 and vol_ratio[si,day]>vol_prev[si,day]: sc+=1
-                mnhp=int(p.get("mom_no_high_pen",0))
-                if mnhp>0 and w_mom>0 and mom[si,day]>=p.get("mom_th",3) and new_high_60[si,day]<0.5: sc-=mnhp
                 if sc>=buy_th and sc>best_sc: best_si=si; best_sc=sc
-            if best_si>=0 and day+1<nd:
-                for h in range(max_pos):
-                    if hold_si[h]<0:
-                        hold_si[h]=best_si; hold_bp[h]=float(close[best_si,day+1])
-                        hold_pk[h]=hold_bp[h]; hold_bd[h]=day+1; n_holding+=1; break
+            if best_si<0: break
+            for h in range(max_pos):
+                if hold_si[h]<0:
+                    hold_si[h]=best_si; hold_bp[h]=float(close[best_si,day+1])
+                    hold_pk[h]=hold_bp[h]; hold_bd[h]=day+1; n_holding+=1; break
     return sorted(trades, key=lambda x: x["buy_date"])
 
 def main():
@@ -771,6 +764,7 @@ def main():
     d_bias = cp.asarray(pre["bias"])
     d_obv_rising = cp.asarray(pre["obv_rising"])
     d_atr_pct = cp.asarray(pre["atr_pct"])
+    d_open = cp.asarray(pre["open"])
     d_top100 = cp.asarray(pre["top100_mask"])
     d_ma60 = cp.asarray(pre["ma60"])
 
@@ -838,6 +832,7 @@ def main():
                 d_vp = cp.asarray(pre["vol_prev"])
                 d_squeeze = cp.asarray(pre["squeeze_fire"]); d_newhigh = cp.asarray(pre["new_high_60"])
                 d_adx = cp.asarray(pre["adx"]); d_bias = cp.asarray(pre["bias"])
+                d_open = cp.asarray(pre["open"])
                 d_top100 = cp.asarray(pre["top100_mask"])
                 d_ma60 = cp.asarray(pre["ma60"])
                 d_ma3 = cp.asarray(pre["ma_d"][3]); d_ma5 = cp.asarray(pre["ma_d"][5])
@@ -950,7 +945,7 @@ def main():
             d_ig, d_gp, d_nh, d_wr,
             d_ma3, d_ma5, d_ma10, d_ma15, d_ma20, d_ma30, d_ma60,
             d_vp, d_squeeze, d_newhigh, d_adx, d_bias, d_obv_rising, d_atr_pct,
-            d_top100,
+            d_open, d_top100,
             d_params, np.int32(N_PARAMS_FULL),
             d_results, np.int32(BATCH)
         ))
