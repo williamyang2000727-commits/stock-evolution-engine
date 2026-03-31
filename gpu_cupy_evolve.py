@@ -327,8 +327,8 @@ void backtest(
             }
         }
 
-        // === Phase 2: 有空位就買一檔 ===
-        if (n_holding < max_pos && day + 1 < n_days) {
+        // === Phase 2: 有空位就買（一天可買多檔）===
+        while (n_holding < max_pos && day + 1 < n_days) {
             int best_si = -1;
             float best_buy_score = 0;
             for (int si = 0; si < n_stocks; si++) {
@@ -386,15 +386,19 @@ void backtest(
                     best_si = si; best_buy_score = sc;
                 }
             }
-            if (best_si >= 0) for (int h = 0; h < max_pos; h++) {
-                if (hold_si[h] < 0) {
-                    hold_si[h] = best_si;
-                    hold_bp[h] = close[best_si * n_days + day + 1];  // 買入 D+1 收盤
-                    hold_pk[h] = hold_bp[h];
-                    hold_bd[h] = day + 1;
-                    n_holding++;
-                    break;
+            if (best_si >= 0) {
+                for (int h = 0; h < max_pos; h++) {
+                    if (hold_si[h] < 0) {
+                        hold_si[h] = best_si;
+                        hold_bp[h] = close[best_si * n_days + day + 1];  // 買入 D+1 收盤
+                        hold_pk[h] = hold_bp[h];
+                        hold_bd[h] = day + 1;
+                        n_holding++;
+                        break;
+                    }
                 }
+            } else {
+                break;  // 沒有達標的了，跳出 while
             }
         }
 
@@ -861,8 +865,8 @@ def cpu_replay(pre, p):
                         "buy_price":round(hold_bp[weakest_h],2),"sell_price":round(sell_price,2),
                         "return":round(actual_ret,2),"days":actual_days,"reason":"換股"})
                     hold_si[weakest_h]=-1; n_holding-=1
-        # Phase 2: 買入一檔
-        if n_holding<max_pos and day+1<nd:
+        # Phase 2: 買入（一天可買多檔）
+        while n_holding<max_pos and day+1<nd:
             best_si=-1; best_sc=0
             w_rsi=int(p.get("w_rsi",0)); w_bb=int(p.get("w_bb",0)); w_vol=int(p.get("w_vol",0))
             w_ma=int(p.get("w_ma",0)); w_macd=int(p.get("w_macd",0)); w_kd=int(p.get("w_kd",0))
@@ -917,6 +921,8 @@ def cpu_replay(pre, p):
                     if hold_si[h]<0:
                         hold_si[h]=best_si; hold_bp[h]=float(close[best_si,day+1])
                         hold_pk[h]=hold_bp[h]; hold_bd[h]=day+1; n_holding+=1; break
+            else:
+                break  # 沒有達標的了，跳出 while
         # Phase 3 已移除（第三檔回測表現不佳）
     return sorted(trades, key=lambda x: x["buy_date"])
 

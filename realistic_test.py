@@ -284,8 +284,8 @@ for day in range(60, nd - 1):
                     "return":round(actual_ret,2),"days":actual_days,"reason":"換股"})
                 hold_si[weakest_h]=-1; n_holding-=1
 
-    # Phase 2: 買入一檔
-    if n_holding < max_pos and day+1 < nd:
+    # Phase 2: 買入（一天可買多檔）
+    while n_holding < max_pos and day+1 < nd:
         best_si=-1; best_sc=0
         held_set=set(hh for hh in hold_si if hh>=0)
         for si in top100_idx:
@@ -297,6 +297,8 @@ for day in range(60, nd - 1):
                 if hold_si[h]<0:
                     hold_si[h]=best_si; hold_bp[h]=float(close[best_si,day+1])
                     hold_pk[h]=hold_bp[h]; hold_bd[h]=day+1; n_holding+=1; break
+        else:
+            break  # 沒有達標的了，跳出 while
 
 trades.sort(key=lambda x: x["buy_date"])
 n = len(trades)
