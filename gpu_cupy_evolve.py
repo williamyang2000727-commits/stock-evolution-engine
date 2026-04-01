@@ -408,7 +408,7 @@ void backtest(
 
     // 計算分數 — v3 動態回測指標版
     float score = -999999.0f;
-    if (n_trades >= 15) {
+    if (n_trades >= 40) {
         float avg_ret = total_ret / n_trades;
         float win_rate = win_count / n_trades * 100.0f;
 
