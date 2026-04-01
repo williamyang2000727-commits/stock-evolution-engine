@@ -263,7 +263,8 @@ for day in range(60, nd - 1):
     if um > 0 and n_holding >= max_pos and day+1 < nd:
         cand_si=-1; cand_sc=0
         held_set=set(hh for hh in hold_si if hh>=0)
-        for si in top100_idx:
+        for si in range(n_stocks):
+            if si not in top100_idx: continue
             if si in held_set: continue
             sc=_score(si,day)
             if sc>=p.get("buy_threshold",5) and sc>cand_sc: cand_si=si; cand_sc=sc
