@@ -458,9 +458,11 @@ void backtest(
                 else streak = 0;
             }
 
-            // === v3.1 評分：固定金額投入，總報酬最重要 ===
-            // 總報酬：權重最高，無上限
-            float s_total = total_ret * 0.05f;  // 1027% → 51分
+            // === v3.2 評分：年化報酬最重要（不偏袒長時間）===
+            // 年化報酬 = 總報酬 / 年數
+            float n_years = (float)(n_days - 60) / 250.0f;  // 扣掉60天暖身
+            float annual_ret = n_years > 0.5f ? total_ret / n_years : total_ret;
+            float s_total = annual_ret * 0.10f;  // 400%/年 → 40分
             // Sharpe
             float s_sharpe = sharpe * 5.0f;  // 2.0 → 10分
             if (s_sharpe > 20) s_sharpe = 20;
@@ -518,7 +520,7 @@ PARAMS_SPACE = {
     # ====== BIAS 乖離率 ======
     "w_bias": [0,1,2,3], "bias_max": [3,5,8,10,15,20,30],
     # ====== 停滯出場 ======
-    "use_stagnation_exit": [1], "stagnation_days": [5,7,10], "stagnation_min_ret": [0,1,3,5],
+    "use_stagnation_exit": [0,1], "stagnation_days": [5,7,10,15], "stagnation_min_ret": [0,1,3,5],
     # ====== 保本停損 ======
     "use_breakeven": [0,1], "breakeven_trigger": [10,15,20,25,30],
     # ====== OBV 能量潮 ======
