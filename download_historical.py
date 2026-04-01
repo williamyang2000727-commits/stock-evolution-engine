@@ -35,28 +35,25 @@ def fetch_twse_day(date_str):
         if data.get("stat") != "OK":
             return {}
 
-        # 找到包含個股資料的表格（通常是 data9 或最後一個）
-        tables = {}
-        for key in ["data9", "data8", "data7", "data5"]:
-            if key in data and data[key]:
-                tables = data[key]
-                fields = data.get("fields9", data.get("fields8", data.get("fields7", data.get("fields5", []))))
-                break
-
-        if not tables:
-            # 嘗試找任何有資料的 table
-            for key in sorted(data.keys()):
-                if key.startswith("data") and data[key] and len(data[key]) > 100:
-                    tables = data[key]
-                    fkey = key.replace("data", "fields")
-                    fields = data.get(fkey, [])
+        # 新版 API 用 tables 陣列，個股在最大的那個 table
+        rows = []
+        if "tables" in data:
+            for t in data["tables"]:
+                if t.get("data") and len(t["data"]) > 100:
+                    rows = t["data"]
+                    break
+        else:
+            # 舊版 API 用 data9 等 key
+            for key in ["data9", "data8", "data7", "data5"]:
+                if key in data and data[key] and len(data[key]) > 100:
+                    rows = data[key]
                     break
 
-        if not tables:
+        if not rows:
             return {}
 
         result = {}
-        for row in tables:
+        for row in rows:
             try:
                 code = row[0].strip()
                 # 跳過非股票（ETF等）
@@ -91,12 +88,17 @@ def fetch_tpex_day(date_str):
     roc_year = dt.year - 1911
     roc_date = f"{roc_year}/{dt.month:02d}/{dt.day:02d}"
 
-    url = f"https://www.tpex.org.tw/web/stock/aftertrading/otc_quotes_no1430/stk_wn1430_result.php?l=zh-tw&d={roc_date}&se=EW"
+    url = f"https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php?l=zh-tw&o=json&d={roc_date}"
     try:
         r = requests.get(url, timeout=15)
         data = r.json()
 
-        rows = data.get("aaData", [])
+        # 找最大的 table（個股資料）
+        rows = []
+        for t in data.get("tables", []):
+            tdata = t.get("data", [])
+            if len(tdata) > len(rows):
+                rows = tdata
         if not rows:
             return {}
 
@@ -116,7 +118,7 @@ def fetch_tpex_day(date_str):
                 o = parse_num(row[4])    # 開盤
                 h = parse_num(row[5])    # 最高
                 l = parse_num(row[6])    # 最低
-                vol = parse_num(row[7])  # 成交股數
+                vol = parse_num(row[8])  # 成交股數（row[7]是均價）
 
                 if o > 0 and c > 0 and vol > 0:
                     result[ticker] = {"Open": o, "High": h, "Low": l, "Close": c, "Volume": vol}
