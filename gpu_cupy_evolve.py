@@ -443,20 +443,12 @@ void backtest(
             float pl_ratio = avg_loss>0.5f ? avg_win/avg_loss : avg_win;
             if (pl_ratio > 20) pl_ratio = 20;
 
-            // === 複利總報酬（CAGR 代理）===
-            float compound = 1.0f;
+            // === 最大連續虧損（sum）===
+            float max_dd_sum = 0, running_dd = 0;
             for (int i=0; i<n_trades; i++) {
-                compound *= (1.0f + rets[i] / 100.0f * 0.5f);
-            }
-            float compound_ret = (compound - 1.0f) * 100.0f;
-
-            // === 最大回撤（equity curve）===
-            float equity = 100.0f, peak_eq = 100.0f, max_dd_pct = 0;
-            for (int i=0; i<n_trades; i++) {
-                equity *= (1.0f + rets[i] / 100.0f * 0.5f);
-                if (equity > peak_eq) peak_eq = equity;
-                float dd = (equity - peak_eq) / peak_eq * 100.0f;
-                if (dd < max_dd_pct) max_dd_pct = dd;
+                if (rets[i] < 0) running_dd += rets[i];
+                else running_dd = 0;
+                if (running_dd < max_dd_sum) max_dd_sum = running_dd;
             }
 
             // === 最長連虧 ===
@@ -466,27 +458,26 @@ void backtest(
                 else streak = 0;
             }
 
-            // === v3 評分：動態回測實戰指標 ===
-            // CAGR 代理（複利報酬）：權重最高
-            float s_cagr = compound_ret * 0.02f;  // 1000% → 20分
-            if (s_cagr > 30) s_cagr = 30;
-            // MaxDrawdown：越小越好
-            float s_dd = (100.0f + max_dd_pct) * 0.3f;  // -28% → 21.6分, -40% → 18分
+            // === v3.1 評分：固定金額投入，總報酬最重要 ===
+            // 總報酬：權重最高，無上限
+            float s_total = total_ret * 0.05f;  // 1027% → 51分
             // Sharpe
-            float s_sharpe = sharpe * 8.0f;  // 2.0 → 16分
-            if (s_sharpe > 25) s_sharpe = 25;
+            float s_sharpe = sharpe * 5.0f;  // 2.0 → 10分
+            if (s_sharpe > 20) s_sharpe = 20;
             // 勝率
-            float s_wr = win_rate * 0.15f;  // 58% → 8.7分
+            float s_wr = win_rate * 0.10f;  // 58% → 5.8分
             // 盈虧比
-            float s_pl = pl_ratio * 2.0f;  // 5.6 → 11.2分
-            if (s_pl > 15) s_pl = 15;
+            float s_pl = pl_ratio * 1.5f;  // 5.6 → 8.4分
+            if (s_pl > 12) s_pl = 12;
             // Profit Factor
-            float s_pf = pf * 1.5f;  // 7.8 → 11.7分
-            if (s_pf > 15) s_pf = 15;
+            float s_pf = pf * 1.0f;  // 7.8 → 7.8分
+            if (s_pf > 12) s_pf = 12;
             // 連虧懲罰
             float s_streak = max_streak * 2.0f;  // 5連虧 → -10分
+            // 最大連續虧損懲罰
+            float s_dd = fabsf(max_dd_sum) * 0.1f;  // -40% → -4分
 
-            score = s_cagr + s_dd + s_sharpe + s_wr + s_pl + s_pf - s_streak;
+            score = s_total + s_sharpe + s_wr + s_pl + s_pf - s_streak - s_dd;
         }
     }
 
