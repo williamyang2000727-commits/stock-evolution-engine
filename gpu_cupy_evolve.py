@@ -401,67 +401,87 @@ void backtest(
         // Phase 3 已移除（第三檔回測表現不佳）
     }
 
-    // 計算分數 — v2 大改版
+    // 計算分數 — v3 動態回測指標版
     float score = -999999.0f;
     if (n_trades >= 15) {
         float avg_ret = total_ret / n_trades;
         float win_rate = win_count / n_trades * 100.0f;
-        float wasted = wasted_count / n_trades * 100.0f;
 
-        if (avg_ret >= 10 && win_rate >= 45) {
-            // Sharpe ratio（報酬/波動比）
+        if (avg_ret >= 5 && win_rate >= 35) {
+            // === Sharpe ratio ===
             float sum_sq = 0;
             for (int i=0; i<n_trades; i++) {
                 float diff = rets[i] - avg_ret;
                 sum_sq += diff * diff;
             }
             float std_ret = sqrtf(sum_sq / n_trades);
-            float sharpe = std_ret > 1 ? avg_ret / std_ret : avg_ret;
+            float sharpe = std_ret > 0.5f ? avg_ret / std_ret : avg_ret;
             if (sharpe > 10) sharpe = 10;
 
-            // 最大連續虧損
-            float max_dd = 0, running_dd = 0;
-            for (int i=0; i<n_trades; i++) {
-                if (rets[i] < 0) running_dd += rets[i];
-                else running_dd = 0;
-                if (running_dd < max_dd) max_dd = running_dd;
-            }
-
-            // 3 段一致性驗證（比 2 段更嚴格）
-            int seg_size = n_days / 3;
-            float seg_sum[3] = {0,0,0}; int seg_n[3] = {0,0,0};
-            for (int i=0; i<n_trades; i++) {
-                int seg = trade_bdays[i] / seg_size;
-                if (seg > 2) seg = 2;
-                seg_sum[seg] += rets[i]; seg_n[seg]++;
-            }
-            float consistency = 0;
-            int active_segs = 0;
-            float seg_min = 9999, seg_max = -9999;
-            for (int s=0; s<3; s++) {
-                if (seg_n[s] >= 2) {
-                    float sa = seg_sum[s] / seg_n[s];
-                    if (sa < seg_min) seg_min = sa;
-                    if (sa > seg_max) seg_max = sa;
-                    active_segs++;
-                }
-            }
-            if (active_segs >= 2 && seg_max > 0 && seg_min > 0)
-                consistency = seg_min / seg_max;
-
-            // Profit factor
+            // === Profit Factor ===
             float w_sum=0, l_sum=0;
             for (int i=0; i<n_trades; i++) {
                 if (rets[i]>0) w_sum+=rets[i]; else l_sum+=fabsf(rets[i]);
             }
-            float pf = l_sum>0 ? w_sum/l_sum : 999.0f;
-            if (pf > 5) pf = 5;
+            float pf = l_sum>0 ? w_sum/l_sum : 20.0f;
+            if (pf > 20) pf = 20;
 
-            // v2 評分公式：更均衡，加入 Sharpe + 最大回撤
-            score = avg_ret*0.30f + sharpe*10*0.15f + win_rate*0.10f
-                  + pf*3*0.10f + consistency*20*0.10f
-                  + n_trades*0.5f*0.15f + total_ret*0.05f
-                  - wasted*0.50f - fabsf(max_dd)*0.15f;
+            // === 盈虧比 (P/L ratio) ===
+            float avg_win=0, avg_loss=0;
+            int n_win=0, n_loss=0;
+            for (int i=0; i<n_trades; i++) {
+                if (rets[i]>0) { avg_win+=rets[i]; n_win++; }
+                else { avg_loss+=fabsf(rets[i]); n_loss++; }
+            }
+            if (n_win>0) avg_win /= n_win;
+            if (n_loss>0) avg_loss /= n_loss;
+            float pl_ratio = avg_loss>0.5f ? avg_win/avg_loss : avg_win;
+            if (pl_ratio > 20) pl_ratio = 20;
+
+            // === 複利總報酬（CAGR 代理）===
+            float compound = 1.0f;
+            for (int i=0; i<n_trades; i++) {
+                compound *= (1.0f + rets[i] / 100.0f * 0.5f);
+            }
+            float compound_ret = (compound - 1.0f) * 100.0f;
+
+            // === 最大回撤（equity curve）===
+            float equity = 100.0f, peak_eq = 100.0f, max_dd_pct = 0;
+            for (int i=0; i<n_trades; i++) {
+                equity *= (1.0f + rets[i] / 100.0f * 0.5f);
+                if (equity > peak_eq) peak_eq = equity;
+                float dd = (equity - peak_eq) / peak_eq * 100.0f;
+                if (dd < max_dd_pct) max_dd_pct = dd;
+            }
+
+            // === 最長連虧 ===
+            int max_streak = 0, streak = 0;
+            for (int i=0; i<n_trades; i++) {
+                if (rets[i] <= 0) { streak++; if (streak > max_streak) max_streak = streak; }
+                else streak = 0;
+            }
+
+            // === v3 評分：動態回測實戰指標 ===
+            // CAGR 代理（複利報酬）：權重最高
+            float s_cagr = compound_ret * 0.02f;  // 1000% → 20分
+            if (s_cagr > 30) s_cagr = 30;
+            // MaxDrawdown：越小越好
+            float s_dd = (100.0f + max_dd_pct) * 0.3f;  // -28% → 21.6分, -40% → 18分
+            // Sharpe
+            float s_sharpe = sharpe * 8.0f;  // 2.0 → 16分
+            if (s_sharpe > 25) s_sharpe = 25;
+            // 勝率
+            float s_wr = win_rate * 0.15f;  // 58% → 8.7分
+            // 盈虧比
+            float s_pl = pl_ratio * 2.0f;  // 5.6 → 11.2分
+            if (s_pl > 15) s_pl = 15;
+            // Profit Factor
+            float s_pf = pf * 1.5f;  // 7.8 → 11.7分
+            if (s_pf > 15) s_pf = 15;
+            // 連虧懲罰
+            float s_streak = max_streak * 2.0f;  // 5連虧 → -10分
+
+            score = s_cagr + s_dd + s_sharpe + s_wr + s_pl + s_pf - s_streak;
         }
     }
 
