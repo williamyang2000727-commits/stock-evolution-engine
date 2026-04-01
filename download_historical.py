@@ -157,6 +157,8 @@ def main():
             skip += 1
             continue
 
+        print(f"  下載 {date_str} ...", end=" ", flush=True)
+
         # TWSE 上市
         twse = fetch_twse_day(date_str)
         time.sleep(0.5)  # 避免被擋
@@ -190,7 +192,7 @@ def main():
         elapsed_days = success
         total_days = len(trading_days) - skip
         pct = elapsed_days / max(total_days, 1) * 100
-        print(f"  {date_str} | 上市{len(twse)} 上櫃{len(tpex)} | 進度 {elapsed_days}/{total_days} ({pct:.0f}%) | {len(all_data)}檔", end="\r")
+        print(f"上市{len(twse)} 上櫃{len(tpex)} | {elapsed_days}/{total_days} ({pct:.0f}%) | {len(all_data)}檔")
 
     print(f"\n\n下載完成！{len(all_data)} 檔股票")
 
