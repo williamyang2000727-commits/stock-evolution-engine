@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 
 CACHE_PATH = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_data_cache.pkl")
 START_DATE = datetime(2022, 1, 1)
-END_DATE = datetime(2025, 5, 31)
+END_DATE = datetime(2026, 4, 1)
 
 def get_trading_days(start, end):
     """生成所有可能的交易日（週一到週五）"""
