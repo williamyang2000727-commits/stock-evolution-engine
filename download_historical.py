@@ -8,6 +8,8 @@ import pickle
 import time
 import os
 import sys
+import warnings
+warnings.filterwarnings("ignore", message="Unverified HTTPS")
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -30,7 +32,7 @@ def fetch_twse_day(date_str):
     """抓 TWSE 上市股票某一天的全市場資料"""
     url = f"https://www.twse.com.tw/exchangeReport/MI_INDEX?response=json&date={date_str}&type=ALLBUT0999"
     try:
-        r = requests.get(url, timeout=15)
+        r = requests.get(url, timeout=15, verify=False)
         data = r.json()
         if data.get("stat") != "OK":
             return {}
@@ -90,7 +92,7 @@ def fetch_tpex_day(date_str):
 
     url = f"https://www.tpex.org.tw/web/stock/aftertrading/daily_close_quotes/stk_quote_result.php?l=zh-tw&o=json&d={roc_date}"
     try:
-        r = requests.get(url, timeout=15)
+        r = requests.get(url, timeout=15, verify=False)
         data = r.json()
 
         # 找最大的 table（個股資料）
