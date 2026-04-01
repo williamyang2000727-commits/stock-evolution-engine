@@ -24,6 +24,8 @@ print(f"股票：{n_stocks} 檔 | 天數：{min_len}")
 
 # === 方法 A: cpu_replay ===
 pre = precompute(data)
+print(f"precompute keys: {sorted(pre.keys())}")
+print(f"n_stocks={pre.get('n_stocks','MISSING')}, n_days={pre.get('n_days','MISSING')}")
 trades_a = cpu_replay(p, pre)
 trades_a.sort(key=lambda x: x["buy_date"])
 
