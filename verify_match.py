@@ -17,7 +17,7 @@ with open("best_strategy.json", encoding="utf-8") as f:
     strategy = json.load(f)
 p = strategy["params"]
 
-all_tickers = sorted(data.keys())
+all_tickers = list(data.keys())  # 跟 precompute 一樣用 dict 順序
 min_len = min(len(data[t]) for t in all_tickers)
 n_stocks = len(all_tickers)
 print(f"股票：{n_stocks} 檔 | 天數：{min_len}")
