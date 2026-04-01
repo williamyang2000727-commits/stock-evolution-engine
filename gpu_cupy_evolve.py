@@ -175,7 +175,7 @@ void backtest(
     float rets[100];
     int trade_bdays[100];
 
-    for (int day = 30; day < n_days - 1; day++) {
+    for (int day = 60; day < n_days - 1; day++) {
         // === Phase 1: 檢查所有持倉的賣出條件（用 day 收盤價判斷）===
         for (int h = 0; h < max_pos; h++) {
             if (hold_si[h] < 0) continue;
@@ -258,7 +258,12 @@ void backtest(
                     else if (macd_mode == 2 && macd_hist[d] > 0) ok = true;
                     if (ok) sc += w_macd;
                 }
-                if (w_kd > 0 && k_val[d] >= kd_th) sc += w_kd;
+                if (w_kd > 0) {
+                    bool ok = k_val[d] >= kd_th;
+                    if (ok && kd_cross == 1 && day >= 1)
+                        ok = k_val[d] > d_val[d] && k_val[d-1] <= d_val[d-1];
+                    if (ok) sc += w_kd;
+                }
                 if (w_wr > 0 && williams_r[d] >= wr_th) sc += w_wr;
                 if (w_mom > 0 && momentum[d] >= mom_th) sc += w_mom;
                 if (w_near_high > 0 && fabsf(near_high[d]) <= near_high_pct) sc += w_near_high;
@@ -786,7 +791,7 @@ def cpu_replay(pre, p):
     if max_pos<1: max_pos=1
     if max_pos>3: max_pos=3
     hold_si=[-1]*3; hold_bp=[0]*3; hold_pk=[0]*3; hold_bd=[0]*3; n_holding=0; trades=[]
-    for day in range(30, nd-1):
+    for day in range(60, nd-1):
         # Phase 1: 賣出（D+1 開盤價）
         for h in range(max_pos):
             if hold_si[h]<0: continue
@@ -824,7 +829,7 @@ def cpu_replay(pre, p):
             if not sell and dh>=int(p["hold_days"]): sell=True; reason=0
             if sell and day+1<nd:
                 sell_price=float(opn[si,day+1]) if opn is not None else float(close[si,day])
-                actual_ret=(sell_price/hold_bp[h]-1)*100
+                actual_ret=(sell_price/hold_bp[h]-1)*100 - 0.585
                 actual_days=day+1-hold_bd[h]
                 trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
                     "buy_date":str(dates[hold_bd[h]].date()),"sell_date":str(dates[day+1].date()),
@@ -846,7 +851,10 @@ def cpu_replay(pre, p):
                     elif mm==1 and macd_line[si,d]>0: ok=True
                     elif mm==2 and macd_hist[si,d]>0: ok=True
                     if ok: sc+=int(p["w_macd"])
-                if int(p.get("w_kd",0))>0 and k_val[si,d]>=p.get("kd_th",50): sc+=int(p["w_kd"])
+                if int(p.get("w_kd",0))>0:
+                    ok=k_val[si,d]>=p.get("kd_th",50)
+                    if ok and p.get("kd_cross",0) and d>=1: ok=k_val[si,d]>d_val[si,d] and k_val[si,d-1]<=d_val[si,d-1]
+                    if ok: sc+=int(p["w_kd"])
                 if int(p.get("w_wr",0))>0 and williams_r[si,d]>=p.get("wr_th",-30): sc+=int(p["w_wr"])
                 if int(p.get("w_mom",0))>0 and mom[si,d]>=p.get("mom_th",3): sc+=int(p["w_mom"])
                 if int(p.get("w_near_high",0))>0 and abs(near_high[si,d])<=p.get("near_high_pct",10): sc+=int(p["w_near_high"])
@@ -874,7 +882,7 @@ def cpu_replay(pre, p):
                 if weakest_h>=0 and cand_sc-weakest_sc>=um:
                     si=hold_si[weakest_h]
                     sell_price=float(opn[si,day+1]) if opn is not None else float(close[si,day])
-                    actual_ret=(sell_price/hold_bp[weakest_h]-1)*100
+                    actual_ret=(sell_price/hold_bp[weakest_h]-1)*100 - 0.585
                     actual_days=day+1-hold_bd[weakest_h]
                     trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
                         "buy_date":str(dates[hold_bd[weakest_h]].date()),"sell_date":str(dates[day+1].date()),
