@@ -943,7 +943,7 @@ def main():
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     raw = download_data()
     # 只過濾資料太短的，保留全部股票（動態 top100 mask 在 precompute 裡算）
-    data = {k:v for k,v in raw.items() if len(v) >= 700}
+    data = {k:v for k,v in raw.items() if len(v) >= 900}
     print(f"[過濾] {len(raw)} → {len(data)} 檔 (>=400天，動態前100名mask)")
     if len(data) < 10: print("資料不足"); return
     pre = precompute(data)
@@ -1026,7 +1026,7 @@ def main():
             try:
                 if os.path.exists(CACHE_PATH): os.remove(CACHE_PATH)
                 raw = download_data()
-                data = {k:v for k,v in raw.items() if len(v) >= 700}
+                data = {k:v for k,v in raw.items() if len(v) >= 900}
                 print(f"[GPU] 刷新完成：{len(data)} 檔（動態前100名mask）")
                 pre = precompute(data)
                 ns, nd = pre["n_stocks"], pre["n_days"]
