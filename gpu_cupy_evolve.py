@@ -458,20 +458,47 @@ void backtest(
                 else streak = 0;
             }
 
-            // === v3.3 評分：年化報酬壓倒性重要 ===
+            // === v3.4 評分：年化報酬 + 3段一致性 ===
             float n_years = (float)(n_days - 60) / 250.0f;
             float annual_ret = n_years > 0.5f ? total_ret / n_years : total_ret;
-            // 年化報酬：60% 權重，無上限
-            float s_total = annual_ret * 0.20f;  // 400%/年 → 80分
-            // Sharpe：15% 權重
+
+            // 3 段一致性（每段都要賺錢）
+            int seg_size = n_days / 3;
+            float seg_ret[3] = {0,0,0}; int seg_n[3] = {0,0,0};
+            for (int i=0; i<n_trades; i++) {
+                int seg = trade_bdays[i] / seg_size;
+                if (seg > 2) seg = 2;
+                seg_ret[seg] += rets[i]; seg_n[seg]++;
+            }
+            float min_seg_annual = 9999;
+            int active_segs = 0;
+            for (int s=0; s<3; s++) {
+                if (seg_n[s] >= 5) {
+                    float sa = seg_ret[s] / (n_years / 3.0f);  // 每段年化
+                    if (sa < min_seg_annual) min_seg_annual = sa;
+                    active_segs++;
+                }
+            }
+            // 如果有任一段虧錢，重罰
+            float s_consistency = 0;
+            if (active_segs >= 2 && min_seg_annual > 0) {
+                s_consistency = min_seg_annual * 0.05f;  // 最弱段的年化也加分
+                if (s_consistency > 15) s_consistency = 15;
+            } else if (active_segs >= 2 && min_seg_annual < 0) {
+                s_consistency = min_seg_annual * 0.10f;  // 虧錢段重罰
+            }
+
+            // 年化報酬
+            float s_total = annual_ret * 0.15f;
+            // Sharpe
             float s_sharpe = sharpe * 4.0f;
             if (s_sharpe > 15) s_sharpe = 15;
-            // 勝率：5% 權重（防止 GPU 為了勝率犧牲報酬）
-            float s_wr = win_rate * 0.05f;  // 60% → 3分
-            // 盈虧比：5%
+            // 勝率
+            float s_wr = win_rate * 0.05f;
+            // 盈虧比
             float s_pl = pl_ratio * 1.0f;
             if (s_pl > 8) s_pl = 8;
-            // Profit Factor：5%
+            // Profit Factor
             float s_pf = pf * 0.8f;
             if (s_pf > 8) s_pf = 8;
             // 連虧懲罰
@@ -479,7 +506,7 @@ void backtest(
             // 最大連續虧損懲罰
             float s_dd = fabsf(max_dd_sum) * 0.1f;
 
-            score = s_total + s_sharpe + s_wr + s_pl + s_pf - s_streak - s_dd;
+            score = s_total + s_sharpe + s_wr + s_pl + s_pf + s_consistency - s_streak - s_dd;
         }
     }
 
@@ -536,7 +563,7 @@ PARAMS_SPACE = {
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10],
     # ====== 多持倉 ======
-    "max_positions": [1,2],
+    "max_positions": [2],
 }
 
 PARAM_ORDER = [
