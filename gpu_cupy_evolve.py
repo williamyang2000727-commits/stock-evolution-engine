@@ -458,26 +458,26 @@ void backtest(
                 else streak = 0;
             }
 
-            // === v3.2 評分：年化報酬最重要（不偏袒長時間）===
-            // 年化報酬 = 總報酬 / 年數
-            float n_years = (float)(n_days - 60) / 250.0f;  // 扣掉60天暖身
+            // === v3.3 評分：年化報酬壓倒性重要 ===
+            float n_years = (float)(n_days - 60) / 250.0f;
             float annual_ret = n_years > 0.5f ? total_ret / n_years : total_ret;
-            float s_total = annual_ret * 0.10f;  // 400%/年 → 40分
-            // Sharpe
-            float s_sharpe = sharpe * 5.0f;  // 2.0 → 10分
-            if (s_sharpe > 20) s_sharpe = 20;
-            // 勝率
-            float s_wr = win_rate * 0.10f;  // 58% → 5.8分
-            // 盈虧比
-            float s_pl = pl_ratio * 1.5f;  // 5.6 → 8.4分
-            if (s_pl > 12) s_pl = 12;
-            // Profit Factor
-            float s_pf = pf * 1.0f;  // 7.8 → 7.8分
-            if (s_pf > 12) s_pf = 12;
+            // 年化報酬：60% 權重，無上限
+            float s_total = annual_ret * 0.20f;  // 400%/年 → 80分
+            // Sharpe：15% 權重
+            float s_sharpe = sharpe * 4.0f;
+            if (s_sharpe > 15) s_sharpe = 15;
+            // 勝率：5% 權重（防止 GPU 為了勝率犧牲報酬）
+            float s_wr = win_rate * 0.05f;  // 60% → 3分
+            // 盈虧比：5%
+            float s_pl = pl_ratio * 1.0f;
+            if (s_pl > 8) s_pl = 8;
+            // Profit Factor：5%
+            float s_pf = pf * 0.8f;
+            if (s_pf > 8) s_pf = 8;
             // 連虧懲罰
-            float s_streak = max_streak * 2.0f;  // 5連虧 → -10分
+            float s_streak = max_streak * 1.5f;
             // 最大連續虧損懲罰
-            float s_dd = fabsf(max_dd_sum) * 0.1f;  // -40% → -4分
+            float s_dd = fabsf(max_dd_sum) * 0.1f;
 
             score = s_total + s_sharpe + s_wr + s_pl + s_pf - s_streak - s_dd;
         }
