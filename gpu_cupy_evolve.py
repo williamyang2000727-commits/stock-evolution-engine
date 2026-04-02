@@ -237,7 +237,7 @@ void backtest(
         // === Phase 1.5: 換股 — 持倉滿且有更強候選，賣弱換強 ===
         if (upgrade_margin > 0 && n_holding >= max_pos && day + 1 < n_days) {
             // 找候選最高分
-            int cand_si = -1; float cand_sc = 0; float cand_vol = 0;
+            int cand_si = -1; float cand_sc = 0;
             for (int si = 0; si < n_stocks; si++) {
                 if (top100_mask[si * n_days + day] < 0.5f) continue;
                 bool already = false;
@@ -283,7 +283,7 @@ void backtest(
                 if (use_gap == 1 && gap[d] >= 1.0f) sc += 1.0f;
                 if (above_ma60 == 1 && close[d] >= ma60[d]) sc += 1.0f;
                 if (vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] > vol_prev[d]) sc += 1.0f;
-                if (sc >= buy_threshold && (sc > cand_sc || (sc == cand_sc && vol_ratio[d] > cand_vol))) { cand_si = si; cand_sc = sc; cand_vol = vol_ratio[d]; }
+                if (sc >= buy_threshold && sc > cand_sc) { cand_si = si; cand_sc = sc; }
             }
             // 對每檔持股重新評分，找最弱的
             if (cand_si >= 0) {
@@ -336,7 +336,6 @@ void backtest(
         if (n_holding < max_pos && day + 1 < n_days) {
             int best_si = -1;
             float best_buy_score = 0;
-            float best_buy_vol = 0;
             for (int si = 0; si < n_stocks; si++) {
                 // 只從當天成交量前 100 名買（跟實戰一致）
                 if (top100_mask[si * n_days + day] < 0.5f) continue;
@@ -388,8 +387,8 @@ void backtest(
                 if (above_ma60 == 1 && close[d] >= ma60[d]) sc += 1.0f;
                 if (vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] > vol_prev[d]) sc += 1.0f;
 
-                if (sc >= buy_threshold && (sc > best_buy_score || (sc == best_buy_score && vol_ratio[d] > best_buy_vol))) {
-                    best_si = si; best_buy_score = sc; best_buy_vol = vol_ratio[d];
+                if (sc >= buy_threshold && sc > best_buy_score) {
+                    best_si = si; best_buy_score = sc;
                 }
             }
             if (best_si >= 0) for (int h = 0; h < max_pos; h++) {
@@ -887,14 +886,13 @@ def cpu_replay(pre, p):
                 if int(p.get("w_atr",0))>0 and atr_pct_arr[si,d]>=p.get("atr_min",2): sc+=int(p["w_atr"])
                 return sc
             # 找候選最高分
-            cand_si=-1; cand_sc=0; cand_vol=0
+            cand_si=-1; cand_sc=0
             held_set=set(hh for hh in hold_si if hh>=0)
             for si in range(ns):
                 if top100_mask is not None and top100_mask[si,day]<0.5: continue
                 if si in held_set: continue
                 sc=_score_stock(si,day)
-                vr=vol_ratio[si,day] if vol_ratio is not None else 0
-                if sc>=p.get("buy_threshold",5) and (sc>cand_sc or (sc==cand_sc and vr>cand_vol)): cand_si=si; cand_sc=sc; cand_vol=vr
+                if sc>=p.get("buy_threshold",5) and sc>cand_sc: cand_si=si; cand_sc=sc
             if cand_si>=0:
                 weakest_h=-1; weakest_sc=9999
                 for h in range(max_pos):
@@ -913,7 +911,7 @@ def cpu_replay(pre, p):
                     hold_si[weakest_h]=-1; n_holding-=1
         # Phase 2: 買入一檔
         if n_holding<max_pos and day+1<nd:
-            best_si=-1; best_sc=0; best_vol=0
+            best_si=-1; best_sc=0
             w_rsi=int(p.get("w_rsi",0)); w_bb=int(p.get("w_bb",0)); w_vol=int(p.get("w_vol",0))
             w_ma=int(p.get("w_ma",0)); w_macd=int(p.get("w_macd",0)); w_kd=int(p.get("w_kd",0))
             w_wr=int(p.get("w_wr",0)); w_mom=int(p.get("w_mom",0)); w_nh=int(p.get("w_near_high",0))
@@ -961,8 +959,7 @@ def cpu_replay(pre, p):
                 if p.get("gap_up",0) and gap[si,day]>=1.0: sc+=1
                 if p.get("above_ma60",0) and close[si,day]>=ma60[si,day]: sc+=1
                 if p.get("vol_gt_yesterday",0) and day>=1 and vol_ratio[si,day]>vol_prev[si,day]: sc+=1
-                vr=vol_ratio[si,day] if vol_ratio is not None else 0
-                if sc>=buy_th and (sc>best_sc or (sc==best_sc and vr>best_vol)): best_si=si; best_sc=sc; best_vol=vr
+                if sc>=buy_th and sc>best_sc: best_si=si; best_sc=sc
             if best_si>=0:
                 for h in range(max_pos):
                     if hold_si[h]<0:
