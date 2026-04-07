@@ -50,7 +50,7 @@ except:
 def download_data():
     if os.path.exists(CACHE_PATH):
         age = (time.time() - os.path.getmtime(CACHE_PATH)) / 3600
-        if age < 24:
+        if age < 720:
             try:
                 with open(CACHE_PATH, "rb") as f: data = pickle.load(f)
                 if len(data) >= 10: print(f"[快取] {len(data)} 檔"); return data
