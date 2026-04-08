@@ -1359,15 +1359,20 @@ def main():
                         ensure_ascii=False, indent=2)
                     requests.patch(f"https://api.github.com/gists/{GIST_ID}", headers=headers,
                         json={"files":{"best_strategy.json":{"content":content}}}, timeout=10)
+                    # 只顯示驗證期交易（避免超出 Telegram 4096 字元限制）
+                    val_lines = "\n".join([
+                        f"  {t['name']}({t['ticker'].replace('.TWO','').replace('.TW','')}) | {t['buy_date'][5:]}→{t['sell_date'][5:]} | {t['return']:+.1f}% | {t['reason']}"
+                        for t in val_trades[:20]
+                    ]) if val_trades else "（無驗證期交易）"
                     telegram_push(
                         f"🧪 GPU v2 OOS 突破！\n"
                         f"━━━━━━━━━━━━\n"
                         f"分數：{best_score:.2f} > {cs:.2f}\n"
                         f"📊 訓練期(22-24)：{t_n}筆 avg{t_avg:.1f}% 總{t_ret:.0f}% 勝率{t_wr:.0f}%\n"
                         f"🔬 驗證期(25-26)：{v_n}筆 avg{v_avg:.1f}% 總{v_ret:.0f}% 勝率{v_wr:.0f}%\n"
-                        f"全期{len(trade_details)}筆 | 停損{best_params.get('stop_loss',0):.0f}% | 持倉{best_params.get('max_positions',2):.0f}檔\n"
+                        f"停損{best_params.get('stop_loss',0):.0f}% | 持倉{best_params.get('max_positions',2):.0f}檔\n"
                         f"⚡ {total_tested:,}組/{elapsed:.0f}秒\n\n"
-                        f"📋 交易明細：\n{trade_lines}"
+                        f"🔬 驗證期明細：\n{val_lines}"
                     )
                     print(f"  [GPU] ✅ Gist 同步！({best_score:.2f} > {cs:.2f})")
                 last_synced_improved = total_improved
