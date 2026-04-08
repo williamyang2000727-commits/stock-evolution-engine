@@ -1341,6 +1341,9 @@ def main():
                     train_end_date = pre["dates"][pre["train_end"]].date()
                     train_trades = [t for t in trade_details if t["buy_date"] < str(train_end_date)]
                     val_trades = [t for t in trade_details if t["buy_date"] >= str(train_end_date)]
+                    import math
+                    _valid = lambda trades: [t for t in trades if not math.isnan(t.get("return",0))]
+                    train_trades = _valid(train_trades); val_trades = _valid(val_trades)
                     t_n = len(train_trades); t_ret = sum(t["return"] for t in train_trades)
                     t_avg = t_ret/t_n if t_n else 0; t_wr = sum(1 for t in train_trades if t["return"]>0)/t_n*100 if t_n else 0
                     v_n = len(val_trades); v_ret = sum(t["return"] for t in val_trades)
