@@ -891,6 +891,7 @@ def cpu_replay(pre, p):
             if not sell and dh>=int(p["hold_days"]): sell=True; reason=0
             if sell and day+1<nd:
                 sell_price=float(opn[si,day+1]) if opn is not None else float(close[si,day])
+                if np.isnan(sell_price) or sell_price<=0: sell_price=float(close[si,day])  # NaN 防護
                 actual_ret=(sell_price/hold_bp[h]-1)*100 - 0.585
                 actual_days=day+1-hold_bd[h]
                 trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
@@ -945,6 +946,7 @@ def cpu_replay(pre, p):
                 if weakest_h>=0 and cand_sc-weakest_sc>=um:
                     si=hold_si[weakest_h]
                     sell_price=float(opn[si,day+1]) if opn is not None else float(close[si,day])
+                    if np.isnan(sell_price) or sell_price<=0: sell_price=float(close[si,day])  # NaN 防護
                     actual_ret=(sell_price/hold_bp[weakest_h]-1)*100 - 0.585
                     actual_days=day+1-hold_bd[weakest_h]
                     trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
