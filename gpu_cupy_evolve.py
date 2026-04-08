@@ -1276,7 +1276,7 @@ def main():
             total_improved += 1
             no_improve_rounds = 0
             hof_top = hall_of_fame[0][0] if hall_of_fame else best_score
-            print(f"  [GPU] 新紀錄！{best_score:.1f} | 勝率{best_wr:.0f}% | 平均{best_avg:.1f}% | {best_nt}筆 | 名人堂Top:{hof_top:.1f}")
+            print(f"  [GPU] 新紀錄！{best_score:.1f} | 訓練avg{best_avg:.1f}% | 驗證avg{best_wr:.1f}% | {best_nt}筆 | 名人堂Top:{hof_top:.1f}")
         else:
             no_improve_rounds += 1
             # 變異率到頂 = 爬山已退化成亂射，啟動多起點爬山
