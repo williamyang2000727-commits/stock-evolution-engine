@@ -9,7 +9,7 @@ import json, os, sys, time, requests, pickle, base64
 
 # === Telegram / Gist ===
 BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8551169875:AAF48gHaISTcKgAAZ_CXCOFoG0ZT21aN0RI")
-CHAT_IDS = os.environ.get("TELEGRAM_CHAT_IDS", "5785839733").split(",")
+CHAT_IDS = ["5785839733"]  # William only (v2 experimental)
 GIST_ID = os.environ.get("GIST_ID", "")
 GH_TOKEN = os.environ.get("GH_TOKEN", "")
 DATA_GIST_ID = "a300b9e29372ac76f79eda39a2a86321"
@@ -107,7 +107,8 @@ void backtest(
     const float* bias, const float* obv_rising, const float* atr_pct,
     const float* open_price, const float* top100_mask, const float* market_bull,
     const float* params, const int n_params_per_combo,
-    float* results, const int n_combos
+    float* results, const int n_combos,
+    const int train_end
 ) {
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= n_combos) return;
@@ -406,27 +407,40 @@ void backtest(
         // Phase 3 已移除（第三檔回測表現不佳）
     }
 
-    // 計算分數 — v3 動態回測指標版
+    // === OOS 驗證：只用訓練期交易評分（train_end 之前）===
+    // 交易仍跑完整期間，但評分只看訓練期
+    float train_ret = 0, train_win = 0;
+    int train_n = 0;
+    float train_rets[100];
+    for (int i=0; i<n_trades; i++) {
+        if (trade_bdays[i] < train_end) {
+            train_rets[train_n] = rets[i];
+            train_ret += rets[i];
+            if (rets[i] > 0) train_win++;
+            train_n++;
+        }
+    }
+
     float score = -999999.0f;
-    if (n_trades >= 40) {
-        float avg_ret = total_ret / n_trades;
-        float win_rate = win_count / n_trades * 100.0f;
+    if (train_n >= 25) {
+        float avg_ret = train_ret / train_n;
+        float win_rate = train_win / train_n * 100.0f;
 
         if (avg_ret >= 5 && win_rate >= 35) {
             // === Sharpe ratio ===
             float sum_sq = 0;
-            for (int i=0; i<n_trades; i++) {
-                float diff = rets[i] - avg_ret;
+            for (int i=0; i<train_n; i++) {
+                float diff = train_rets[i] - avg_ret;
                 sum_sq += diff * diff;
             }
-            float std_ret = sqrtf(sum_sq / n_trades);
+            float std_ret = sqrtf(sum_sq / train_n);
             float sharpe = std_ret > 0.5f ? avg_ret / std_ret : avg_ret;
             if (sharpe > 10) sharpe = 10;
 
             // === Profit Factor ===
             float w_sum=0, l_sum=0;
-            for (int i=0; i<n_trades; i++) {
-                if (rets[i]>0) w_sum+=rets[i]; else l_sum+=fabsf(rets[i]);
+            for (int i=0; i<train_n; i++) {
+                if (train_rets[i]>0) w_sum+=train_rets[i]; else l_sum+=fabsf(train_rets[i]);
             }
             float pf = l_sum>0 ? w_sum/l_sum : 20.0f;
             if (pf > 20) pf = 20;
@@ -434,9 +448,9 @@ void backtest(
             // === 盈虧比 (P/L ratio) ===
             float avg_win=0, avg_loss=0;
             int n_win=0, n_loss=0;
-            for (int i=0; i<n_trades; i++) {
-                if (rets[i]>0) { avg_win+=rets[i]; n_win++; }
-                else { avg_loss+=fabsf(rets[i]); n_loss++; }
+            for (int i=0; i<train_n; i++) {
+                if (train_rets[i]>0) { avg_win+=train_rets[i]; n_win++; }
+                else { avg_loss+=fabsf(train_rets[i]); n_loss++; }
             }
             if (n_win>0) avg_win /= n_win;
             if (n_loss>0) avg_loss /= n_loss;
@@ -445,77 +459,97 @@ void backtest(
 
             // === 最大連續虧損（sum）===
             float max_dd_sum = 0, running_dd = 0;
-            for (int i=0; i<n_trades; i++) {
-                if (rets[i] < 0) running_dd += rets[i];
+            for (int i=0; i<train_n; i++) {
+                if (train_rets[i] < 0) running_dd += train_rets[i];
                 else running_dd = 0;
                 if (running_dd < max_dd_sum) max_dd_sum = running_dd;
             }
 
             // === 最長連虧 ===
             int max_streak = 0, streak = 0;
-            for (int i=0; i<n_trades; i++) {
-                if (rets[i] <= 0) { streak++; if (streak > max_streak) max_streak = streak; }
+            for (int i=0; i<train_n; i++) {
+                if (train_rets[i] <= 0) { streak++; if (streak > max_streak) max_streak = streak; }
                 else streak = 0;
             }
 
-            // === v3.4 評分：年化報酬 + 3段一致性 ===
-            float n_years = (float)(n_days - 60) / 250.0f;
-            float annual_ret = n_years > 0.5f ? total_ret / n_years : total_ret;
+            // === v4 OOS 評分：只用訓練期 ===
+            float n_years = (float)(train_end - 60) / 250.0f;
+            float annual_ret = n_years > 0.5f ? train_ret / n_years : train_ret;
 
-            // 3 段一致性（每段都要賺錢）
-            int seg_size = n_days / 3;
+            // 3 段一致性（訓練期內分 3 段）
+            int seg_size = train_end / 3;
             float seg_ret[3] = {0,0,0}; int seg_n[3] = {0,0,0};
-            for (int i=0; i<n_trades; i++) {
-                int seg = trade_bdays[i] / seg_size;
+            for (int i=0; i<train_n; i++) {
+                int seg = train_rets[i] >= 0 ? i * 3 / train_n : i * 3 / train_n;
+                // 用 trade index 分段（按時間順序）
+                seg = i * 3 / train_n;
                 if (seg > 2) seg = 2;
-                seg_ret[seg] += rets[i]; seg_n[seg]++;
+                seg_ret[seg] += train_rets[i]; seg_n[seg]++;
             }
             float min_seg_annual = 9999;
             int active_segs = 0;
             for (int s=0; s<3; s++) {
-                if (seg_n[s] >= 5) {
-                    float sa = seg_ret[s] / (n_years / 3.0f);  // 每段年化
+                if (seg_n[s] >= 3) {
+                    float sa = seg_ret[s] / (n_years / 3.0f);
                     if (sa < min_seg_annual) min_seg_annual = sa;
                     active_segs++;
                 }
             }
-            // 如果有任一段虧錢，重罰
             float s_consistency = 0;
             if (active_segs >= 2 && min_seg_annual > 0) {
-                s_consistency = min_seg_annual * 0.05f;  // 最弱段的年化也加分
+                s_consistency = min_seg_annual * 0.05f;
                 if (s_consistency > 15) s_consistency = 15;
             } else if (active_segs >= 2 && min_seg_annual < 0) {
-                s_consistency = min_seg_annual * 0.10f;  // 虧錢段重罰
+                s_consistency = min_seg_annual * 0.10f;
             }
 
-            // 年化報酬
             float s_total = annual_ret * 0.15f;
-            // Sharpe
-            float s_sharpe = sharpe * 4.0f;
-            if (s_sharpe > 15) s_sharpe = 15;
-            // 勝率
+            float s_sharpe = sharpe * 4.0f; if (s_sharpe > 15) s_sharpe = 15;
             float s_wr = win_rate * 0.05f;
-            // 盈虧比
-            float s_pl = pl_ratio * 1.0f;
-            if (s_pl > 8) s_pl = 8;
-            // Profit Factor
-            float s_pf = pf * 0.8f;
-            if (s_pf > 8) s_pf = 8;
-            // 連虧懲罰
+            float s_pl = pl_ratio * 1.0f; if (s_pl > 8) s_pl = 8;
+            float s_pf = pf * 0.8f; if (s_pf > 8) s_pf = 8;
             float s_streak = max_streak * 1.5f;
-            // 最大連續虧損懲罰
             float s_dd = fabsf(max_dd_sum) * 0.1f;
 
             score = s_total + s_sharpe + s_wr + s_pl + s_pf + s_consistency - s_streak - s_dd;
+
+            // === OOS 獎懲：驗證期（2025+）表現 ===
+            float val_ret = 0; int val_n = 0; float val_win = 0;
+            for (int i=0; i<n_trades; i++) {
+                if (trade_bdays[i] >= train_end) {
+                    val_ret += rets[i]; val_n++;
+                    if (rets[i] > 0) val_win++;
+                }
+            }
+            if (val_n >= 3) {
+                float val_avg = val_ret / val_n;
+                float val_wr = val_win / val_n * 100.0f;
+                // 驗證期也賺 → 加分（泛化能力好）
+                if (val_avg > 0) {
+                    float val_bonus = val_avg * 0.3f;  // 驗證期平均報酬的 30%
+                    if (val_bonus > 20) val_bonus = 20;
+                    score += val_bonus;
+                }
+                // 驗證期虧 → 重罰（overfitting 信號）
+                if (val_avg < 0) {
+                    score += val_avg * 0.5f;  // 虧的 50% 扣分
+                }
+                // 驗證期勝率太低 → 扣分
+                if (val_wr < 40) score -= 5.0f;
+            }
         }
     }
 
-    // 寫結果
+    // 寫結果（訓練+驗證分開報）
+    float val_ret2 = 0; int val_n2 = 0;
+    for (int i=0; i<n_trades; i++) {
+        if (trade_bdays[i] >= train_end) { val_ret2 += rets[i]; val_n2++; }
+    }
     results[idx * 5 + 0] = score;
-    results[idx * 5 + 1] = (float)n_trades;
-    results[idx * 5 + 2] = n_trades > 0 ? total_ret / n_trades : 0;
-    results[idx * 5 + 3] = total_ret;
-    results[idx * 5 + 4] = n_trades > 0 ? win_count / n_trades * 100.0f : 0;
+    results[idx * 5 + 1] = (float)n_trades;  // 全期筆數
+    results[idx * 5 + 2] = train_n > 0 ? train_ret / train_n : 0;  // 訓練期平均
+    results[idx * 5 + 3] = train_ret;  // 訓練期總報酬
+    results[idx * 5 + 4] = val_n2 > 0 ? val_ret2 / val_n2 : 0;  // 驗證期平均
 }
 ''', 'backtest')
 
@@ -563,7 +597,7 @@ PARAMS_SPACE = {
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10],
     # ====== 多持倉 ======
-    "max_positions": [2],
+    "max_positions": [2,3],
 }
 
 PARAM_ORDER = [
@@ -764,17 +798,25 @@ def precompute(data):
     ranks = np.argsort(np.argsort(-volume, axis=0), axis=0)  # 每天的排名（0=最大）
     top100_mask = (ranks < 100).astype(np.float32)
 
-    # 大盤過濾：用所有股票的等權平均收盤價模擬大盤，跌破 MA20 不買
+    # 大盤過濾：用所有股票的等權平均收盤價模擬大盤，跌破 MA60 不買（v2 加強版）
     market_avg = np.mean(close, axis=0)  # 每天所有股票的平均收盤價
-    market_ma20 = np.zeros(ml, dtype=np.float32)
-    for i in range(20, ml):
-        market_ma20[i] = np.mean(market_avg[i-20:i])
+    market_ma60 = np.zeros(ml, dtype=np.float32)
+    for i in range(60, ml):
+        market_ma60[i] = np.mean(market_avg[i-60:i])
     market_bull = np.zeros(ml, dtype=np.float32)
-    market_bull[20:] = (market_avg[20:] > market_ma20[20:]).astype(np.float32)
-    market_bull[:20] = 1.0  # 前 20 天預設允許
-    print(f"  大盤過濾：{np.sum(market_bull > 0.5)}/{ml} 天為多頭（{np.sum(market_bull > 0.5)/ml*100:.0f}%）")
+    market_bull[60:] = (market_avg[60:] > market_ma60[60:]).astype(np.float32)
+    market_bull[:60] = 1.0  # 前 60 天預設允許
+    print(f"  大盤過濾(MA60)：{np.sum(market_bull > 0.5)}/{ml} 天為多頭（{np.sum(market_bull > 0.5)/ml*100:.0f}%）")
 
-    return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,
+    # OOS 分割點：2025-01-01
+    from datetime import datetime as _dt
+    train_end = ml  # 預設全期
+    for i, d in enumerate(dates):
+        if d.date() >= _dt(2025, 1, 1).date():
+            train_end = i; break
+    print(f"  OOS 分割：訓練 day 0~{train_end-1}（{dates[0].date()}~{dates[train_end-1].date()}）| 驗證 day {train_end}~{ml-1}（{dates[train_end].date()}~{dates[-1].date()}）")
+
+    return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,"train_end":train_end,
         "close":close,"rsi":rsi,"bb_pos":bb_pos,"vol_ratio":vol_ratio,
         "macd_line":ml_arr,"macd_hist":mh,"k_val":kv.astype(np.float32),
         "d_val":dv.astype(np.float32),"is_green":ig,"gap":gp.astype(np.float32),
@@ -974,8 +1016,8 @@ def main():
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     raw = download_data()
     # 只過濾資料太短的，保留全部股票（動態 top100 mask 在 precompute 裡算）
-    data = {k:v for k,v in raw.items() if len(v) >= 900}
-    print(f"[過濾] {len(raw)} → {len(data)} 檔 (>=400天，動態前100名mask)")
+    data = {k:v for k,v in raw.items() if len(v) >= 900 and v["Close"].mean() >= 15}
+    print(f"[過濾] {len(raw)} → {len(data)} 檔 (>=900天 + 均價>=15元，排除水餃股)")
     if len(data) < 10: print("資料不足"); return
     pre = precompute(data)
     ns, nd = pre["n_stocks"], pre["n_days"]
@@ -1057,8 +1099,8 @@ def main():
             try:
                 if os.path.exists(CACHE_PATH): os.remove(CACHE_PATH)
                 raw = download_data()
-                data = {k:v for k,v in raw.items() if len(v) >= 900}
-                print(f"[GPU] 刷新完成：{len(data)} 檔（動態前100名mask）")
+                data = {k:v for k,v in raw.items() if len(v) >= 900 and v["Close"].mean() >= 15}
+                print(f"[GPU] 刷新完成：{len(data)} 檔（>=900天 + 均價>=15元）")
                 pre = precompute(data)
                 ns, nd = pre["n_stocks"], pre["n_days"]
                 d_close = cp.asarray(pre["close"]); d_rsi = cp.asarray(pre["rsi"])
@@ -1198,7 +1240,8 @@ def main():
             d_vp, d_squeeze, d_newhigh, d_adx, d_bias, d_obv_rising, d_atr_pct,
             d_open, d_top100, d_market,
             d_params, np.int32(N_PARAMS_FULL),
-            d_results, np.int32(BATCH)
+            d_results, np.int32(BATCH),
+            np.int32(pre["train_end"])
         ))
 
         results = d_results.get()
@@ -1221,10 +1264,10 @@ def main():
         bi = np.argmax(results[:, 0])
         if results[bi, 0] > best_score:
             best_score = float(results[bi, 0])
-            best_nt = int(results[bi, 1])
-            best_avg = float(results[bi, 2])
-            best_total = float(results[bi, 3])
-            best_wr = float(results[bi, 4])
+            best_nt = int(results[bi, 1])  # 全期筆數
+            best_avg = float(results[bi, 2])  # 訓練期平均
+            best_total = float(results[bi, 3])  # 訓練期總報酬
+            best_wr = float(results[bi, 4])  # 驗證期平均（用於報告）
             bp = params_np[bi]
             best_params = {PARAM_ORDER[i]: float(bp[i]) for i in range(N_PARAMS)}
             best_params["ma_fast_w"] = int(mf_choices[bi])
@@ -1294,27 +1337,36 @@ def main():
                 if best_score > cs + 0.01:
                     # CPU 重跑一次拿完整交易明細
                     trade_details = cpu_replay(pre, best_params)
+                    # OOS 分析：分開統計訓練期和驗證期
+                    train_end_date = pre["dates"][pre["train_end"]].date()
+                    train_trades = [t for t in trade_details if t["buy_date"] < str(train_end_date)]
+                    val_trades = [t for t in trade_details if t["buy_date"] >= str(train_end_date)]
+                    t_n = len(train_trades); t_ret = sum(t["return"] for t in train_trades)
+                    t_avg = t_ret/t_n if t_n else 0; t_wr = sum(1 for t in train_trades if t["return"]>0)/t_n*100 if t_n else 0
+                    v_n = len(val_trades); v_ret = sum(t["return"] for t in val_trades)
+                    v_avg = v_ret/v_n if v_n else 0; v_wr = sum(1 for t in val_trades if t["return"]>0)/v_n*100 if v_n else 0
                     trade_lines = "\n".join([
                         f"  {t['name']}({t['ticker'].replace('.TWO','').replace('.TW','')}) | {t['buy_date'][5:]}→{t['sell_date'][5:]} | {t['return']:+.1f}% | {t['days']}天 | {t['reason']}"
                         for t in trade_details
                     ])
-                    content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060",
+                    content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060_v2_oos",
                         "updated_at":time.strftime("%Y-%m-%dT%H:%M:%S"),
                         "params":best_params,"backtest":{
-                            "avg_return":round(best_avg,2),"total_return":round(best_total,2),
-                            "win_rate":round(best_wr,2),"total_trades":best_nt},
+                            "train_avg":round(t_avg,2),"train_total":round(t_ret,2),"train_wr":round(t_wr,2),"train_n":t_n,
+                            "val_avg":round(v_avg,2),"val_total":round(v_ret,2),"val_wr":round(v_wr,2),"val_n":v_n,
+                            "total_trades":len(trade_details)},
                         "trade_details":trade_details},
                         ensure_ascii=False, indent=2)
                     requests.patch(f"https://api.github.com/gists/{GIST_ID}", headers=headers,
                         json={"files":{"best_strategy.json":{"content":content}}}, timeout=10)
                     telegram_push(
-                        f"🎮 GPU RTX 3060 突破！\n"
+                        f"🧪 GPU v2 OOS 突破！\n"
                         f"━━━━━━━━━━━━\n"
                         f"分數：{best_score:.2f} > {cs:.2f}\n"
-                        f"平均報酬：{best_avg:.1f}%\n"
-                        f"總報酬：{best_total:.0f}%\n"
-                        f"勝率：{best_wr:.0f}% | {best_nt}筆\n"
-                        f"⚡ {total_tested:,}組/{elapsed:.0f}秒/{speed:,.0f}組/秒\n\n"
+                        f"📊 訓練期(22-24)：{t_n}筆 avg{t_avg:.1f}% 總{t_ret:.0f}% 勝率{t_wr:.0f}%\n"
+                        f"🔬 驗證期(25-26)：{v_n}筆 avg{v_avg:.1f}% 總{v_ret:.0f}% 勝率{v_wr:.0f}%\n"
+                        f"全期{len(trade_details)}筆 | 停損{best_params.get('stop_loss',0):.0f}% | 持倉{best_params.get('max_positions',2):.0f}檔\n"
+                        f"⚡ {total_tested:,}組/{elapsed:.0f}秒\n\n"
                         f"📋 交易明細：\n{trade_lines}"
                     )
                     print(f"  [GPU] ✅ Gist 同步！({best_score:.2f} > {cs:.2f})")
