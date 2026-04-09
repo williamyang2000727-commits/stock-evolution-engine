@@ -536,11 +536,11 @@ PARAMS_SPACE = {
     # ====== 賣出 ======
     "stop_loss": [-3,-5,-7,-10,-12,-15,-20],
     "use_take_profit": [0,1], "take_profit": [20,30,40,50,60,80,100,150],
-    "trailing_stop": [5,7,10,12,15,20],  # 強制至少5%，防止「抱到死」
+    "trailing_stop": [0,3,5,7,10,15,20],  # GPU 自由選擇
     "use_rsi_sell": [0,1], "rsi_sell": [70,75,80,85,90,95],
     "use_macd_sell": [0,1], "use_kd_sell": [0,1],
     "sell_vol_shrink": [0,0.3,0.5,0.7],
-    "sell_below_ma": [1,2,3],  # 強制開啟跌破均線出場，防虧損擴大
+    "sell_below_ma": [0,1,2,3],  # GPU 自由選擇
     "hold_days": [5,7,10,15,20,25,30],
     # ====== BIAS 乖離率 ======
     "w_bias": [0,1,2,3], "bias_max": [3,5,8,10,15,20,30],
@@ -555,13 +555,13 @@ PARAMS_SPACE = {
     # ====== ATR 波動率門檻（過濾低波動股）======
     "w_atr": [0,1,2,3], "atr_min": [1.0,1.5,2.0,2.5,3.0,4.0],
     # ====== 鎖利出場 ======
-    "use_profit_lock": [1], "lock_trigger": [10,15,20,25,30], "lock_floor": [3,5,8,10],  # 強制開啟，觸發降低
+    "use_profit_lock": [0,1], "lock_trigger": [15,20,30,40,50], "lock_floor": [3,5,8,10,15],  # GPU 自由選擇
     # ====== 動量反轉出場 ======
     "use_mom_exit": [0,1], "mom_exit_th": [0,1,2,3,5],
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10],
     # ====== 多持倉 ======
-    "max_positions": [2,3],
+    "max_positions": [2],  # 鎖定 2 檔（v1 框架）
 }
 
 PARAM_ORDER = [
@@ -762,15 +762,9 @@ def precompute(data):
     ranks = np.argsort(np.argsort(-volume, axis=0), axis=0)  # 每天的排名（0=最大）
     top100_mask = (ranks < 100).astype(np.float32)
 
-    # 大盤過濾：用所有股票的等權平均收盤價模擬大盤，跌破 MA60 不買（v2 加強版）
-    market_avg = np.mean(close, axis=0)  # 每天所有股票的平均收盤價
-    market_ma60 = np.zeros(ml, dtype=np.float32)
-    for i in range(60, ml):
-        market_ma60[i] = np.mean(market_avg[i-60:i])
-    market_bull = np.zeros(ml, dtype=np.float32)
-    market_bull[60:] = (market_avg[60:] > market_ma60[60:]).astype(np.float32)
-    market_bull[:60] = 1.0  # 前 60 天預設允許
-    print(f"  大盤過濾(MA60)：{np.sum(market_bull > 0.5)}/{ml} 天為多頭（{np.sum(market_bull > 0.5)/ml*100:.0f}%）")
+    # 無大盤過濾（v1 框架：commit 672bdd8 移除，全部天數允許買入）
+    market_bull = np.ones(ml, dtype=np.float32)
+    print(f"  大盤過濾：無（v1 框架）| {ml}/{ml} 天全部允許")
 
     # train_end 保留給 kernel 參數（v3 不用但 kernel 簽名還需要）
     train_end = ml
@@ -977,8 +971,8 @@ def main():
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     raw = download_data()
     # 只過濾資料太短的，保留全部股票（動態 top100 mask 在 precompute 裡算）
-    data = {k:v for k,v in raw.items() if len(v) >= 900 and v["Close"].mean() >= 15}
-    print(f"[過濾] {len(raw)} → {len(data)} 檔 (>=900天 + 均價>=15元，排除水餃股)")
+    data = {k:v for k,v in raw.items() if len(v) >= 900}
+    print(f"[過濾] {len(raw)} → {len(data)} 檔 (>=900天，v1 框架無均價過濾)")
     if len(data) < 10: print("資料不足"); return
     pre = precompute(data)
     ns, nd = pre["n_stocks"], pre["n_days"]
@@ -1060,8 +1054,8 @@ def main():
             try:
                 if os.path.exists(CACHE_PATH): os.remove(CACHE_PATH)
                 raw = download_data()
-                data = {k:v for k,v in raw.items() if len(v) >= 900 and v["Close"].mean() >= 15}
-                print(f"[GPU] 刷新完成：{len(data)} 檔（>=900天 + 均價>=15元）")
+                data = {k:v for k,v in raw.items() if len(v) >= 900}
+                print(f"[GPU] 刷新完成：{len(data)} 檔（>=900天，v1 框架）")
                 pre = precompute(data)
                 ns, nd = pre["n_stocks"], pre["n_days"]
                 d_close = cp.asarray(pre["close"]); d_rsi = cp.asarray(pre["rsi"])
