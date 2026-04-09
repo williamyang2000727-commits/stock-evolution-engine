@@ -30,18 +30,10 @@ print(f"股票池: {len(data)} 檔（v1 原始：無均價過濾）")
 
 pre = precompute(data)
 
-# 還原 MA20 大盤過濾（覆蓋 precompute 的 MA60）
-close = pre["close"]
+# v1 時代沒有大盤過濾（commit 672bdd8 移除了）→ 全部天數都允許買入
 ml = pre["n_days"]
-market_avg = np.mean(close, axis=0)
-market_ma20 = np.zeros(ml, dtype=np.float32)
-for i in range(20, ml):
-    market_ma20[i] = np.mean(market_avg[i-20:i])
-market_bull = np.zeros(ml, dtype=np.float32)
-market_bull[20:] = (market_avg[20:] > market_ma20[20:]).astype(np.float32)
-market_bull[:20] = 1.0
-pre["market_bull"] = market_bull
-print(f"大盤過濾: MA20（v1 原始）| {np.sum(market_bull > 0.5)}/{ml} 天多頭")
+pre["market_bull"] = np.ones(ml, dtype=np.float32)
+print(f"大盤過濾: 無（v1 原始）| {ml}/{ml} 天全部允許")
 
 ns, nd = pre["n_stocks"], pre["n_days"]
 dates = pre["dates"]
