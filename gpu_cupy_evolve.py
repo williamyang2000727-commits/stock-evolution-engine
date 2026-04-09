@@ -777,13 +777,8 @@ def precompute(data):
     market_bull[:60] = 1.0  # 前 60 天預設允許
     print(f"  大盤過濾(MA60)：{np.sum(market_bull > 0.5)}/{ml} 天為多頭（{np.sum(market_bull > 0.5)/ml*100:.0f}%）")
 
-    # OOS 分割點：2025-01-01
-    from datetime import datetime as _dt
-    train_end = ml  # 預設全期
-    for i, d in enumerate(dates):
-        if d.date() >= _dt(2025, 1, 1).date():
-            train_end = i; break
-    print(f"  OOS 分割：訓練 day 0~{train_end-1}（{dates[0].date()}~{dates[train_end-1].date()}）| 驗證 day {train_end}~{ml-1}（{dates[train_end].date()}~{dates[-1].date()}）")
+    # train_end 保留給 kernel 參數（v3 不用但 kernel 簽名還需要）
+    train_end = ml
 
     return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,"train_end":train_end,
         "close":close,"rsi":rsi,"bb_pos":bb_pos,"vol_ratio":vol_ratio,
