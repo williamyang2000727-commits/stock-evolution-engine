@@ -463,8 +463,7 @@ void backtest(
             float n_years = (float)(n_days - 60) / 250.0f;
             float annual_ret = n_years > 0.5f ? total_ret / n_years : total_ret;
 
-            // === v6 一致性：v1 公式 + 最弱段加重 ===
-            // 2 段賺即可（跟 v1 一樣），但最弱段權重加大防 overfitting
+            // === v3.4 一致性（v1 原版）===
             int seg_size = n_days / 3;
             float seg_ret[3] = {0,0,0}; int seg_n[3] = {0,0,0};
             for (int i=0; i<n_trades; i++) {
@@ -474,27 +473,20 @@ void backtest(
             }
             float min_seg_annual = 9999;
             int active_segs = 0;
-            int neg_segs = 0;
             for (int s=0; s<3; s++) {
                 if (seg_n[s] >= 5) {
                     float sa = seg_ret[s] / (n_years / 3.0f);
                     if (sa < min_seg_annual) min_seg_annual = sa;
-                    if (sa <= 0) neg_segs++;
                     active_segs++;
                 }
             }
-
             float s_consistency = 0;
             if (active_segs >= 2 && min_seg_annual > 0) {
-                // 最弱段也賺 → 加分（比 v1 權重更高）
-                s_consistency = min_seg_annual * 0.10f;
-                if (s_consistency > 20) s_consistency = 20;
+                s_consistency = min_seg_annual * 0.05f;
+                if (s_consistency > 15) s_consistency = 15;
             } else if (active_segs >= 2 && min_seg_annual < 0) {
-                // 有段虧錢 → 重罰（比 v1 更重）
-                s_consistency = min_seg_annual * 0.15f;
+                s_consistency = min_seg_annual * 0.10f;
             }
-            // 額外懲罰：超過 1 段虧錢直接扣 10 分
-            if (neg_segs >= 2) s_consistency -= 10.0f;
 
             float s_total = annual_ret * 0.15f;
             float s_sharpe = sharpe * 4.0f; if (s_sharpe > 15) s_sharpe = 15;
