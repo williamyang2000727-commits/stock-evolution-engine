@@ -463,7 +463,8 @@ void backtest(
             float n_years = (float)(n_days - 60) / 250.0f;
             float annual_ret = n_years > 0.5f ? total_ret / n_years : total_ret;
 
-            // === 強一致性：3 段全部必須賺，最弱段 avg 必須 > 3% ===
+            // === v6 一致性：v1 公式 + 最弱段加重 ===
+            // 2 段賺即可（跟 v1 一樣），但最弱段權重加大防 overfitting
             int seg_size = n_days / 3;
             float seg_ret[3] = {0,0,0}; int seg_n[3] = {0,0,0};
             for (int i=0; i<n_trades; i++) {
@@ -471,35 +472,29 @@ void backtest(
                 if (seg > 2) seg = 2;
                 seg_ret[seg] += rets[i]; seg_n[seg]++;
             }
-            float min_seg_avg = 9999;
+            float min_seg_annual = 9999;
             int active_segs = 0;
-            int all_positive = 1;
+            int neg_segs = 0;
             for (int s=0; s<3; s++) {
                 if (seg_n[s] >= 5) {
-                    float sa = seg_ret[s] / seg_n[s];  // 每段平均報酬
-                    if (sa < min_seg_avg) min_seg_avg = sa;
-                    if (sa <= 0) all_positive = 0;
+                    float sa = seg_ret[s] / (n_years / 3.0f);
+                    if (sa < min_seg_annual) min_seg_annual = sa;
+                    if (sa <= 0) neg_segs++;
                     active_segs++;
                 }
             }
 
-            // 一致性評分：3 段都賺才給分，有任一段虧就重罰
             float s_consistency = 0;
-            if (active_segs >= 3 && all_positive && min_seg_avg >= 3.0f) {
-                // 3 段都賺且最弱段 avg >= 3% → 加分
-                s_consistency = min_seg_avg * 0.8f;  // 最弱段加權更高
+            if (active_segs >= 2 && min_seg_annual > 0) {
+                // 最弱段也賺 → 加分（比 v1 權重更高）
+                s_consistency = min_seg_annual * 0.10f;
                 if (s_consistency > 20) s_consistency = 20;
-            } else if (active_segs >= 3 && all_positive) {
-                // 3 段都賺但最弱段 < 3% → 小加分
-                s_consistency = min_seg_avg * 0.3f;
-            } else if (active_segs >= 2 && min_seg_avg > 0) {
-                // 只有 2 段活躍但都賺 → 微加分
-                s_consistency = min_seg_avg * 0.05f;
-                if (s_consistency > 5) s_consistency = 5;
-            } else {
-                // 有段虧錢 → 重罰（overfitting 信號）
-                s_consistency = min_seg_avg * 0.15f;  // 負數，自動扣分
+            } else if (active_segs >= 2 && min_seg_annual < 0) {
+                // 有段虧錢 → 重罰（比 v1 更重）
+                s_consistency = min_seg_annual * 0.15f;
             }
+            // 額外懲罰：超過 1 段虧錢直接扣 10 分
+            if (neg_segs >= 2) s_consistency -= 10.0f;
 
             float s_total = annual_ret * 0.15f;
             float s_sharpe = sharpe * 4.0f; if (s_sharpe > 15) s_sharpe = 15;
