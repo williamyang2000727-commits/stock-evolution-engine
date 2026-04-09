@@ -407,40 +407,27 @@ void backtest(
         // Phase 3 已移除（第三檔回測表現不佳）
     }
 
-    // === OOS 驗證：只用訓練期交易評分（train_end 之前）===
-    // 交易仍跑完整期間，但評分只看訓練期
-    float train_ret = 0, train_win = 0;
-    int train_n = 0;
-    float train_rets[100];
-    for (int i=0; i<n_trades; i++) {
-        if (trade_bdays[i] < train_end) {
-            train_rets[train_n] = rets[i];
-            train_ret += rets[i];
-            if (rets[i] > 0) train_win++;
-            train_n++;
-        }
-    }
-
+    // === v5 全期評分 + 強一致性防 overfitting ===
     float score = -999999.0f;
-    if (train_n >= 25) {
-        float avg_ret = train_ret / train_n;
-        float win_rate = train_win / train_n * 100.0f;
+    if (n_trades >= 40) {
+        float avg_ret = total_ret / n_trades;
+        float win_rate = win_count / n_trades * 100.0f;
 
         if (avg_ret >= 5 && win_rate >= 35) {
             // === Sharpe ratio ===
             float sum_sq = 0;
-            for (int i=0; i<train_n; i++) {
-                float diff = train_rets[i] - avg_ret;
+            for (int i=0; i<n_trades; i++) {
+                float diff = rets[i] - avg_ret;
                 sum_sq += diff * diff;
             }
-            float std_ret = sqrtf(sum_sq / train_n);
+            float std_ret = sqrtf(sum_sq / n_trades);
             float sharpe = std_ret > 0.5f ? avg_ret / std_ret : avg_ret;
             if (sharpe > 10) sharpe = 10;
 
             // === Profit Factor ===
             float w_sum=0, l_sum=0;
-            for (int i=0; i<train_n; i++) {
-                if (train_rets[i]>0) w_sum+=train_rets[i]; else l_sum+=fabsf(train_rets[i]);
+            for (int i=0; i<n_trades; i++) {
+                if (rets[i]>0) w_sum+=rets[i]; else l_sum+=fabsf(rets[i]);
             }
             float pf = l_sum>0 ? w_sum/l_sum : 20.0f;
             if (pf > 20) pf = 20;
@@ -448,9 +435,9 @@ void backtest(
             // === 盈虧比 (P/L ratio) ===
             float avg_win=0, avg_loss=0;
             int n_win=0, n_loss=0;
-            for (int i=0; i<train_n; i++) {
-                if (train_rets[i]>0) { avg_win+=train_rets[i]; n_win++; }
-                else { avg_loss+=fabsf(train_rets[i]); n_loss++; }
+            for (int i=0; i<n_trades; i++) {
+                if (rets[i]>0) { avg_win+=rets[i]; n_win++; }
+                else { avg_loss+=fabsf(rets[i]); n_loss++; }
             }
             if (n_win>0) avg_win /= n_win;
             if (n_loss>0) avg_loss /= n_loss;
@@ -459,48 +446,59 @@ void backtest(
 
             // === 最大連續虧損（sum）===
             float max_dd_sum = 0, running_dd = 0;
-            for (int i=0; i<train_n; i++) {
-                if (train_rets[i] < 0) running_dd += train_rets[i];
+            for (int i=0; i<n_trades; i++) {
+                if (rets[i] < 0) running_dd += rets[i];
                 else running_dd = 0;
                 if (running_dd < max_dd_sum) max_dd_sum = running_dd;
             }
 
             // === 最長連虧 ===
             int max_streak = 0, streak = 0;
-            for (int i=0; i<train_n; i++) {
-                if (train_rets[i] <= 0) { streak++; if (streak > max_streak) max_streak = streak; }
+            for (int i=0; i<n_trades; i++) {
+                if (rets[i] <= 0) { streak++; if (streak > max_streak) max_streak = streak; }
                 else streak = 0;
             }
 
-            // === v4 OOS 評分：只用訓練期 ===
-            float n_years = (float)(train_end - 60) / 250.0f;
-            float annual_ret = n_years > 0.5f ? train_ret / n_years : train_ret;
+            // === 年化報酬（全期）===
+            float n_years = (float)(n_days - 60) / 250.0f;
+            float annual_ret = n_years > 0.5f ? total_ret / n_years : total_ret;
 
-            // 3 段一致性（訓練期內分 3 段）
-            int seg_size = train_end / 3;
+            // === 強一致性：3 段全部必須賺，最弱段 avg 必須 > 3% ===
+            int seg_size = n_days / 3;
             float seg_ret[3] = {0,0,0}; int seg_n[3] = {0,0,0};
-            for (int i=0; i<train_n; i++) {
-                int seg = train_rets[i] >= 0 ? i * 3 / train_n : i * 3 / train_n;
-                // 用 trade index 分段（按時間順序）
-                seg = i * 3 / train_n;
+            for (int i=0; i<n_trades; i++) {
+                int seg = trade_bdays[i] / seg_size;
                 if (seg > 2) seg = 2;
-                seg_ret[seg] += train_rets[i]; seg_n[seg]++;
+                seg_ret[seg] += rets[i]; seg_n[seg]++;
             }
-            float min_seg_annual = 9999;
+            float min_seg_avg = 9999;
             int active_segs = 0;
+            int all_positive = 1;
             for (int s=0; s<3; s++) {
-                if (seg_n[s] >= 3) {
-                    float sa = seg_ret[s] / (n_years / 3.0f);
-                    if (sa < min_seg_annual) min_seg_annual = sa;
+                if (seg_n[s] >= 5) {
+                    float sa = seg_ret[s] / seg_n[s];  // 每段平均報酬
+                    if (sa < min_seg_avg) min_seg_avg = sa;
+                    if (sa <= 0) all_positive = 0;
                     active_segs++;
                 }
             }
+
+            // 一致性評分：3 段都賺才給分，有任一段虧就重罰
             float s_consistency = 0;
-            if (active_segs >= 2 && min_seg_annual > 0) {
-                s_consistency = min_seg_annual * 0.05f;
-                if (s_consistency > 15) s_consistency = 15;
-            } else if (active_segs >= 2 && min_seg_annual < 0) {
-                s_consistency = min_seg_annual * 0.10f;
+            if (active_segs >= 3 && all_positive && min_seg_avg >= 3.0f) {
+                // 3 段都賺且最弱段 avg >= 3% → 加分
+                s_consistency = min_seg_avg * 0.8f;  // 最弱段加權更高
+                if (s_consistency > 20) s_consistency = 20;
+            } else if (active_segs >= 3 && all_positive) {
+                // 3 段都賺但最弱段 < 3% → 小加分
+                s_consistency = min_seg_avg * 0.3f;
+            } else if (active_segs >= 2 && min_seg_avg > 0) {
+                // 只有 2 段活躍但都賺 → 微加分
+                s_consistency = min_seg_avg * 0.05f;
+                if (s_consistency > 5) s_consistency = 5;
+            } else {
+                // 有段虧錢 → 重罰（overfitting 信號）
+                s_consistency = min_seg_avg * 0.15f;  // 負數，自動扣分
             }
 
             float s_total = annual_ret * 0.15f;
@@ -512,44 +510,15 @@ void backtest(
             float s_dd = fabsf(max_dd_sum) * 0.1f;
 
             score = s_total + s_sharpe + s_wr + s_pl + s_pf + s_consistency - s_streak - s_dd;
-
-            // === OOS 獎懲：驗證期（2025+）表現 ===
-            float val_ret = 0; int val_n = 0; float val_win = 0;
-            for (int i=0; i<n_trades; i++) {
-                if (trade_bdays[i] >= train_end) {
-                    val_ret += rets[i]; val_n++;
-                    if (rets[i] > 0) val_win++;
-                }
-            }
-            if (val_n >= 3) {
-                float val_avg = val_ret / val_n;
-                float val_wr = val_win / val_n * 100.0f;
-                // 驗證期也賺 → 加分（泛化能力好）
-                if (val_avg > 0) {
-                    float val_bonus = val_avg * 0.3f;  // 驗證期平均報酬的 30%
-                    if (val_bonus > 20) val_bonus = 20;
-                    score += val_bonus;
-                }
-                // 驗證期虧 → 重罰（overfitting 信號）
-                if (val_avg < 0) {
-                    score += val_avg * 0.5f;  // 虧的 50% 扣分
-                }
-                // 驗證期勝率太低 → 扣分
-                if (val_wr < 40) score -= 5.0f;
-            }
         }
     }
 
-    // 寫結果（訓練+驗證分開報）
-    float val_ret2 = 0; int val_n2 = 0;
-    for (int i=0; i<n_trades; i++) {
-        if (trade_bdays[i] >= train_end) { val_ret2 += rets[i]; val_n2++; }
-    }
+    // 寫結果
     results[idx * 5 + 0] = score;
-    results[idx * 5 + 1] = (float)n_trades;  // 全期筆數
-    results[idx * 5 + 2] = train_n > 0 ? train_ret / train_n : 0;  // 訓練期平均
-    results[idx * 5 + 3] = train_ret;  // 訓練期總報酬
-    results[idx * 5 + 4] = val_n2 > 0 ? val_ret2 / val_n2 : 0;  // 驗證期平均
+    results[idx * 5 + 1] = (float)n_trades;
+    results[idx * 5 + 2] = n_trades > 0 ? total_ret / n_trades : 0;
+    results[idx * 5 + 3] = total_ret;
+    results[idx * 5 + 4] = n_trades > 0 ? win_count / n_trades * 100.0f : 0;
 }
 ''', 'backtest')
 
@@ -1266,10 +1235,10 @@ def main():
         bi = np.argmax(results[:, 0])
         if results[bi, 0] > best_score:
             best_score = float(results[bi, 0])
-            best_nt = int(results[bi, 1])  # 全期筆數
-            best_avg = float(results[bi, 2])  # 訓練期平均
-            best_total = float(results[bi, 3])  # 訓練期總報酬
-            best_wr = float(results[bi, 4])  # 驗證期平均（用於報告）
+            best_nt = int(results[bi, 1])
+            best_avg = float(results[bi, 2])
+            best_total = float(results[bi, 3])
+            best_wr = float(results[bi, 4])
             bp = params_np[bi]
             best_params = {PARAM_ORDER[i]: float(bp[i]) for i in range(N_PARAMS)}
             best_params["ma_fast_w"] = int(mf_choices[bi])
@@ -1278,7 +1247,7 @@ def main():
             total_improved += 1
             no_improve_rounds = 0
             hof_top = hall_of_fame[0][0] if hall_of_fame else best_score
-            print(f"  [GPU] 新紀錄！{best_score:.1f} | 訓練avg{best_avg:.1f}% | 驗證avg{best_wr:.1f}% | {best_nt}筆 | 名人堂Top:{hof_top:.1f}")
+            print(f"  [GPU] 新紀錄！{best_score:.1f} | avg{best_avg:.1f}% | 總{best_total:.0f}% | 勝率{best_wr:.0f}% | {best_nt}筆")
         else:
             no_improve_rounds += 1
             # 變異率到頂 = 爬山已退化成亂射，啟動多起點爬山
@@ -1339,45 +1308,41 @@ def main():
                 if best_score > cs + 0.01:
                     # CPU 重跑一次拿完整交易明細
                     trade_details = cpu_replay(pre, best_params)
-                    # OOS 分析：分開統計訓練期和驗證期
-                    train_end_date = pre["dates"][pre["train_end"]].date()
-                    train_trades = [t for t in trade_details if t["buy_date"] < str(train_end_date)]
-                    val_trades = [t for t in trade_details if t["buy_date"] >= str(train_end_date)]
                     import math
-                    _valid = lambda trades: [t for t in trades if not math.isnan(t.get("return",0))]
-                    train_trades = _valid(train_trades); val_trades = _valid(val_trades)
-                    t_n = len(train_trades); t_ret = sum(t["return"] for t in train_trades)
-                    t_avg = t_ret/t_n if t_n else 0; t_wr = sum(1 for t in train_trades if t["return"]>0)/t_n*100 if t_n else 0
-                    v_n = len(val_trades); v_ret = sum(t["return"] for t in val_trades)
-                    v_avg = v_ret/v_n if v_n else 0; v_wr = sum(1 for t in val_trades if t["return"]>0)/v_n*100 if v_n else 0
-                    trade_lines = "\n".join([
-                        f"  {t['name']}({t['ticker'].replace('.TWO','').replace('.TW','')}) | {t['buy_date'][5:]}→{t['sell_date'][5:]} | {t['return']:+.1f}% | {t['days']}天 | {t['reason']}"
-                        for t in trade_details
-                    ])
-                    content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060_v2_oos",
+                    trade_details = [t for t in trade_details if not math.isnan(t.get("return",0))]
+                    # 分年統計
+                    yearly = {}
+                    for t in trade_details:
+                        y = t["buy_date"][:4]
+                        if y not in yearly: yearly[y] = {"n":0,"ret":0,"win":0}
+                        yearly[y]["n"] += 1; yearly[y]["ret"] += t["return"]
+                        if t["return"] > 0: yearly[y]["win"] += 1
+                    n_all = len(trade_details)
+                    total_r = sum(t["return"] for t in trade_details)
+                    avg_r = total_r / n_all if n_all else 0
+                    wr_r = sum(1 for t in trade_details if t["return"]>0) / n_all * 100 if n_all else 0
+                    content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060_v3_consistency",
                         "updated_at":time.strftime("%Y-%m-%dT%H:%M:%S"),
                         "params":best_params,"backtest":{
-                            "train_avg":round(t_avg,2),"train_total":round(t_ret,2),"train_wr":round(t_wr,2),"train_n":t_n,
-                            "val_avg":round(v_avg,2),"val_total":round(v_ret,2),"val_wr":round(v_wr,2),"val_n":v_n,
-                            "total_trades":len(trade_details)},
+                            "avg_return":round(avg_r,2),"total_return":round(total_r,2),
+                            "win_rate":round(wr_r,2),"total_trades":n_all},
                         "trade_details":trade_details},
                         ensure_ascii=False, indent=2)
                     requests.patch(f"https://api.github.com/gists/{GIST_ID}", headers=headers,
                         json={"files":{"best_strategy.json":{"content":content}}}, timeout=10)
-                    # 只顯示驗證期交易（避免超出 Telegram 4096 字元限制）
-                    val_lines = "\n".join([
-                        f"  {t['name']}({t['ticker'].replace('.TWO','').replace('.TW','')}) | {t['buy_date'][5:]}→{t['sell_date'][5:]} | {t['return']:+.1f}% | {t['reason']}"
-                        for t in val_trades[:20]
-                    ]) if val_trades else "（無驗證期交易）"
+                    # 分年績效（Telegram 不超過 4096）
+                    year_lines = "\n".join([
+                        f"  {y}: {d['n']}筆 avg{d['ret']/d['n']:.1f}% 總{d['ret']:.0f}% 勝率{d['win']/d['n']*100:.0f}%"
+                        for y, d in sorted(yearly.items())
+                    ])
                     telegram_push(
-                        f"🧪 GPU v2 OOS 突破！\n"
+                        f"🚀 GPU v3 強一致性突破！\n"
                         f"━━━━━━━━━━━━\n"
                         f"分數：{best_score:.2f} > {cs:.2f}\n"
-                        f"📊 訓練期(22-24)：{t_n}筆 avg{t_avg:.1f}% 總{t_ret:.0f}% 勝率{t_wr:.0f}%\n"
-                        f"🔬 驗證期(25-26)：{v_n}筆 avg{v_avg:.1f}% 總{v_ret:.0f}% 勝率{v_wr:.0f}%\n"
+                        f"全期：{n_all}筆 avg{avg_r:.1f}% 總{total_r:.0f}% 勝率{wr_r:.0f}%\n"
                         f"停損{best_params.get('stop_loss',0):.0f}% | 持倉{best_params.get('max_positions',2):.0f}檔\n"
                         f"⚡ {total_tested:,}組/{elapsed:.0f}秒\n\n"
-                        f"🔬 驗證期明細：\n{val_lines}"
+                        f"📊 分年績效：\n{year_lines}"
                     )
                     print(f"  [GPU] ✅ Gist 同步！({best_score:.2f} > {cs:.2f})")
                 last_synced_improved = total_improved
