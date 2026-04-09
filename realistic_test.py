@@ -14,7 +14,7 @@ with open("best_strategy.json", encoding="utf-8") as f:
 p = strategy["params"]
 print(f"v{strategy.get('version','?')} | {strategy.get('score',0):.2f}分")
 
-data = {k:v for k,v in data.items() if len(v) >= 900}
+data = {k:v for k,v in data.items() if len(v) >= 900 and v["Close"].mean() >= 15}
 pre = precompute(data)
 ns, nd = pre["n_stocks"], pre["n_days"]
 dates = pre["dates"]
