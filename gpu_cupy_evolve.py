@@ -586,6 +586,26 @@ MA_FAST_OPTS = [3,5,10]
 MA_SLOW_OPTS = [15,20,30,60]
 MOM_DAYS_OPTS = [3,5,10]
 
+# === 半凍結策略（v5 112.91 基準）===
+# 已開啟且表現好的參數：爬山 radius=1（只能微調到鄰近值）
+# 已關閉的功能（w=0）：full exploration（開/關 + 係數全範圍搜索）
+FROZEN_PARAMS = {
+    # 買入指標（已開啟，鎖住）
+    "w_rsi","rsi_th","w_bb","bb_th","w_ma",
+    "w_kd","kd_th","kd_cross","w_wr","wr_th",
+    "w_mom","mom_th","w_near_high","near_high_pct",
+    "w_squeeze","w_new_high","w_adx","adx_th",
+    "above_ma60","vol_gt_yesterday","buy_threshold",
+    "w_atr","atr_min",
+    # 賣出條件（已開啟，鎖住）
+    "stop_loss","use_take_profit","take_profit","trailing_stop",
+    "sell_below_ma","hold_days",
+    "use_time_decay","ret_per_day",
+    "use_profit_lock","lock_trigger","lock_floor",
+    "max_positions",
+}
+# 未開啟的功能（full exploration）— 不在 FROZEN_PARAMS 裡的都是自由探索
+
 def precompute(data):
     tickers = list(data.keys())
     ml = min(len(data[t]) for t in tickers)
@@ -1100,8 +1120,20 @@ def main():
         third = n_random  # 相容舊變數名
 
         # === 全部先用隨機填滿（向量化，超快）===
+        # 半凍結：凍結參數的隨機部分也限制在基準值附近（radius=1）
+        _base_for_freeze = best_params if best_params else gist_best_params
         for i, key in enumerate(PARAM_ORDER):
-            params_np[:, i] = np.random.choice(PARAMS_SPACE[key], BATCH).astype(np.float32)
+            opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
+            if key in FROZEN_PARAMS and _base_for_freeze:
+                # 凍結參數：隨機部分只在基準值 ±1 格內微調
+                base_val = float(_base_for_freeze.get(key, opts[0]))
+                base_idx = int(np.argmin(np.abs(opts - base_val)))
+                lo = max(0, base_idx - 1)
+                hi = min(len(opts) - 1, base_idx + 1)
+                params_np[:, i] = opts[np.random.randint(lo, hi + 1, BATCH)]
+            else:
+                # 自由參數：全範圍探索
+                params_np[:, i] = np.random.choice(opts, BATCH).astype(np.float32)
 
         # === 爬山微調（向量化）===
         if explore_bases is not None:
@@ -1115,7 +1147,11 @@ def main():
                 diffs = np.abs(opts - base_val)
                 base_idx = int(np.argmin(diffs))
                 keep = np.random.random(n_climb) >= mutate_rate
-                radius = 2 + min(no_improve_rounds // 3, 4)  # 越久沒突破鄰域越大
+                # 半凍結：凍結參數 radius=1，自由參數正常擴展
+                if key in FROZEN_PARAMS:
+                    radius = 1  # 只能微調到鄰近一格
+                else:
+                    radius = 2 + min(no_improve_rounds // 3, 4)  # 自由參數越久沒突破鄰域越大
                 lo = max(0, base_idx - radius)
                 hi = min(len(opts) - 1, base_idx + radius)
                 nearby = np.random.randint(lo, hi + 1, n_climb)
@@ -1148,7 +1184,15 @@ def main():
             mutate_mask = np.random.random((breed_size, len(PARAM_ORDER))) < breed_mut_rate
             for i, key in enumerate(PARAM_ORDER):
                 opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
-                random_vals = opts[np.random.randint(len(opts), size=breed_size)]
+                if key in FROZEN_PARAMS and _base_for_freeze:
+                    # 凍結參數：配種突變也限制在基準值 ±1 格
+                    base_val = float(_base_for_freeze.get(key, opts[0]))
+                    base_idx = int(np.argmin(np.abs(opts - base_val)))
+                    lo = max(0, base_idx - 1)
+                    hi = min(len(opts) - 1, base_idx + 1)
+                    random_vals = opts[np.random.randint(lo, hi + 1, size=breed_size)]
+                else:
+                    random_vals = opts[np.random.randint(len(opts), size=breed_size)]
                 offspring[:, i] = np.where(mutate_mask[:, i], random_vals, offspring[:, i])
                 params_np[n_random+n_climb:, i] = offspring[:, i]
 
