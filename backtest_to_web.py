@@ -5,7 +5,7 @@ Usage: python backtest_to_web.py
 import json, os, sys, numpy as np
 
 # === Load strategy and data ===
-with open("best_strategy.json", "r") as f:
+with open("best_strategy.json", "r", encoding="utf-8") as f:
     strategy = json.load(f)
 p = strategy["params"]
 
