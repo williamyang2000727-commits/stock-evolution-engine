@@ -61,13 +61,10 @@ for t in trades:
 rets = [t["return_pct"] for t in web_trades]
 wins_r = [r for r in rets if r > 0]
 losses_r = [r for r in rets if r <= 0]
-tr = 1.0
-for r in rets:
-    tr *= (1 + r / 100)
 
 stats = {
     "total_trades": len(rets),
-    "total_return_pct": round((tr - 1) * 100, 1),
+    "total_return_pct": round(sum(rets), 1),  # Simple sum (matching GPU)
     "win_rate": round(len(wins_r) / len(rets) * 100, 1) if rets else 0,
     "avg_return": round(np.mean(rets), 1) if rets else 0,
     "avg_win": round(np.mean(wins_r), 1) if wins_r else 0,
