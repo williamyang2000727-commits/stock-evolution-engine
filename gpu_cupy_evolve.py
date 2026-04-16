@@ -158,9 +158,9 @@ void backtest(
     // 多持倉
     int max_pos = (int)p[57]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[60];
-    int ma_slow_idx = (int)p[61];
-    int mom_idx = (int)p[62];
+    int ma_fast_idx = (int)p[68];
+    int ma_slow_idx = (int)p[69];
+    int mom_idx = (int)p[70];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -552,6 +552,11 @@ PARAMS_SPACE = {
     "use_mom_exit": [0,1], "mom_exit_th": [0,1,2,3,5],
     # ====== 類股資金流向 ======
     "w_sector_flow": [0,1,2,3], "sector_flow_topn": [1,2,3,5,8],
+    # ====== 新指標 ======
+    "w_up_days": [0,1,2,3], "up_days_min": [2,3,4,5],
+    "w_week52": [0,1,2,3], "week52_min": [0.6,0.7,0.8,0.9],
+    "w_vol_up_days": [0,1,2], "vol_up_days_min": [2,3,4],
+    "w_mom_accel": [0,1,2], "mom_accel_min": [0,2,5,8],
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10],
     # ====== 多持倉 ======
@@ -583,6 +588,10 @@ PARAM_ORDER = [
     "upgrade_margin",
     "max_positions",
     "w_sector_flow","sector_flow_topn",
+    "w_up_days","up_days_min",
+    "w_week52","week52_min",
+    "w_vol_up_days","vol_up_days_min",
+    "w_mom_accel","mom_accel_min",
 ]
 
 MA_FAST_OPTS = [3,5,10]
@@ -800,6 +809,33 @@ def precompute(data):
     _mapped = sum(1 for s in _stock_sec if s >= 0)
     print(f"  類股資金流向：{_mapped}/{n} 檔有產業映射，{_n_sec} 個產業")
 
+    # === 新指標：近 N 日連漲天數 ===
+    up_days = np.zeros_like(close)
+    for i in range(1, ml):
+        up_days[:, i] = np.where(close[:, i] > close[:, i-1], up_days[:, i-1] + 1, 0)
+
+    # === 新指標：52 週高低範圍位置（0~1，1=在最高點）===
+    week52_pos = np.zeros_like(close)
+    for i in range(250, ml):
+        h252 = np.max(high[:, i-250:i+1], axis=1)
+        l252 = np.min(low[:, i-250:i+1], axis=1)
+        rng = h252 - l252
+        week52_pos[:, i] = np.where(rng > 0, (close[:, i] - l252) / rng, 0.5)
+
+    # === 新指標：量能連續放大天數 ===
+    vol_up_days = np.zeros_like(volume)
+    for i in range(1, ml):
+        vol_up_days[:, i] = np.where(volume[:, i] > volume[:, i-1], vol_up_days[:, i-1] + 1, 0)
+
+    # === 新指標：動量加速度（5日動量的變化率）===
+    mom_accel = np.zeros_like(close)
+    if 5 in mom_d:
+        m5 = mom_d[5]
+        for i in range(5, ml):
+            mom_accel[:, i] = m5[:, i] - m5[:, i-5]
+
+    print(f"  新指標：連漲天數 / 52週位置 / 量能連續放大 / 動量加速度")
+
     # 無大盤過濾（v1 框架：commit 672bdd8 移除，全部天數允許買入）
     market_bull = np.ones(ml, dtype=np.float32)
     print(f"  大盤過濾：無（v1 框架）| {ml}/{ml} 天全部允許")
@@ -819,6 +855,8 @@ def precompute(data):
         "open":opn.astype(np.float32),
         "bb_std":bb_std.astype(np.float32),
         "sector_hot":sector_hot,
+        "up_days":up_days.astype(np.float32),"week52_pos":week52_pos.astype(np.float32),
+        "vol_up_days":vol_up_days.astype(np.float32),"mom_accel":mom_accel.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
 REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線","停滯出場","漸進停利","鎖利出場","動量反轉","換股"]
@@ -837,6 +875,8 @@ def cpu_replay(pre, p):
     opn=pre.get("open")
     market_bull=pre.get("market_bull")
     sector_hot=pre.get("sector_hot")
+    up_days_arr=pre.get("up_days"); week52_arr=pre.get("week52_pos")
+    vol_up_days_arr=pre.get("vol_up_days"); mom_accel_arr=pre.get("mom_accel")
     maf=pre["ma_d"].get(int(p.get("ma_fast_w",5)), pre["ma_d"][5])
     mas=pre["ma_d"].get(int(p.get("ma_slow_w",20)), pre["ma_d"][20])
     ma60=pre["ma60"]
@@ -921,6 +961,10 @@ def cpu_replay(pre, p):
                 if int(p.get("w_obv",0))>0 and obv_rising_arr[si,d]>0.5: sc+=int(p["w_obv"])
                 if int(p.get("w_atr",0))>0 and atr_pct_arr[si,d]>=p.get("atr_min",2): sc+=int(p["w_atr"])
                 if int(p.get("w_sector_flow",0))>0 and sector_hot is not None and sector_hot[si,d]<p.get("sector_flow_topn",3): sc+=int(p["w_sector_flow"])
+                if int(p.get("w_up_days",0))>0 and up_days_arr is not None and up_days_arr[si,d]>=p.get("up_days_min",3): sc+=int(p["w_up_days"])
+                if int(p.get("w_week52",0))>0 and week52_arr is not None and week52_arr[si,d]>=p.get("week52_min",0.8): sc+=int(p["w_week52"])
+                if int(p.get("w_vol_up_days",0))>0 and vol_up_days_arr is not None and vol_up_days_arr[si,d]>=p.get("vol_up_days_min",3): sc+=int(p["w_vol_up_days"])
+                if int(p.get("w_mom_accel",0))>0 and mom_accel_arr is not None and mom_accel_arr[si,d]>=p.get("mom_accel_min",2): sc+=int(p["w_mom_accel"])
                 return sc
             # 找候選最高分
             cand_si=-1; cand_sc=0; cand_vol=0
@@ -991,6 +1035,14 @@ def cpu_replay(pre, p):
                 if w_atr_buy>0 and atr_pct_arr[si,day]>=atr_min_val: sc+=w_atr_buy
                 w_sf=int(p.get("w_sector_flow",0))
                 if w_sf>0 and sector_hot is not None and sector_hot[si,day]<p.get("sector_flow_topn",3): sc+=w_sf
+                _wud=int(p.get("w_up_days",0))
+                if _wud>0 and up_days_arr is not None and up_days_arr[si,day]>=p.get("up_days_min",3): sc+=_wud
+                _w52=int(p.get("w_week52",0))
+                if _w52>0 and week52_arr is not None and week52_arr[si,day]>=p.get("week52_min",0.8): sc+=_w52
+                _wvud=int(p.get("w_vol_up_days",0))
+                if _wvud>0 and vol_up_days_arr is not None and vol_up_days_arr[si,day]>=p.get("vol_up_days_min",3): sc+=_wvud
+                _wma=int(p.get("w_mom_accel",0))
+                if _wma>0 and mom_accel_arr is not None and mom_accel_arr[si,day]>=p.get("mom_accel_min",2): sc+=_wma
                 cg=int(p.get("consecutive_green",0))
                 if cg>=1:
                     ok=True
@@ -1175,6 +1227,49 @@ def main():
             print(f"[GPU] 載入 v5 作為爬山起點 + 名人堂全填 v5（配種從 2000%+ 開始）")
     except Exception as _e:
         print(f"[GPU] Gist 載入失敗：{_e}")
+
+    # === 單參數掃描：逐一測試每個參數的每個值，快速找低垂果實 ===
+    if gist_best_params:
+        import math as _m2
+        _base = dict(gist_best_params)
+        _base_trades = [t for t in cpu_replay(pre, _base) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
+        _base_total = sum(t.get("return",0) for t in _base_trades)
+        print(f"\n[GPU] 🔍 單參數掃描開始（基準：{len(_base_trades)}筆 {_base_total:.0f}%）")
+        _improvements = []
+        for key in PARAM_ORDER:
+            opts = PARAMS_SPACE.get(key, [])
+            base_val = _base.get(key, opts[0] if opts else 0)
+            for val in opts:
+                if abs(float(val) - float(base_val)) < 1e-6: continue
+                _test = dict(_base); _test[key] = float(val)
+                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
+                _ttotal = sum(t.get("return",0) for t in _tt)
+                _tn = len(_tt)
+                if _ttotal > _base_total and 40 <= _tn <= 150:
+                    _diff = _ttotal - _base_total
+                    _improvements.append((key, float(val), base_val, _ttotal, _tn, _diff))
+        _improvements.sort(key=lambda x: -x[5])
+        if _improvements:
+            print(f"[GPU] 🎯 發現 {len(_improvements)} 個改進：")
+            for key, val, old, total, n, diff in _improvements[:10]:
+                print(f"  {key}: {old} → {val} | +{diff:.0f}%（總{total:.0f}%, {n}筆）")
+        else:
+            print(f"[GPU] 單參數掃描完成，沒有單一參數改進")
+        # MA/MOM 也掃
+        for ma_key, ma_opts in [("ma_fast_w", MA_FAST_OPTS), ("ma_slow_w", MA_SLOW_OPTS), ("momentum_days", MOM_DAYS_OPTS)]:
+            base_val = _base.get(ma_key, ma_opts[0])
+            for val in ma_opts:
+                if val == base_val: continue
+                _test = dict(_base); _test[ma_key] = val
+                if _test.get("ma_fast_w",5) >= _test.get("ma_slow_w",20): continue
+                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
+                _ttotal = sum(t.get("return",0) for t in _tt)
+                _tn = len(_tt)
+                if _ttotal > _base_total and 40 <= _tn <= 150:
+                    _diff = _ttotal - _base_total
+                    _improvements.append((ma_key, val, base_val, _ttotal, _tn, _diff))
+                    print(f"  {ma_key}: {base_val} → {val} | +{_diff:.0f}%（總{_ttotal:.0f}%, {_tn}筆）")
+        print(f"[GPU] 🔍 掃描完成\n")
 
     last_data_date = time.strftime("%Y-%m-%d")
 
