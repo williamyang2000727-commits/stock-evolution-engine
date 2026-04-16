@@ -525,25 +525,25 @@ PARAMS_SPACE = {
     "consecutive_green": [0,1,2,3], "gap_up": [0,1],
     "above_ma60": [0,1], "vol_gt_yesterday": [0,1],
     "buy_threshold": [6,8,10,12,14,16],
-    # ====== 賣出（限制合理範圍，防止短線刷分）======
-    "stop_loss": [-10,-12,-15,-20,-25],
-    "use_take_profit": [0,1], "take_profit": [40,50,60,80,100,150],
-    "trailing_stop": [0,5,10,15,20],
-    "use_rsi_sell": [0,1], "rsi_sell": [80,85,90,95],
+    # ====== 賣出（全自由探索，靠 120 筆上限 + 品質門檻 + 同資料比較防刷分）======
+    "stop_loss": [-3,-5,-7,-10,-12,-15,-20],
+    "use_take_profit": [0,1], "take_profit": [20,30,40,50,60,80,100,150],
+    "trailing_stop": [0,3,5,7,10,15,20],
+    "use_rsi_sell": [0,1], "rsi_sell": [70,75,80,85,90,95],
     "use_macd_sell": [0,1], "use_kd_sell": [0,1],
-    "sell_vol_shrink": [0,0.3,0.5],
+    "sell_vol_shrink": [0,0.3,0.5,0.7],
     "sell_below_ma": [0,1,2,3],
-    "hold_days": [20,25,30,40],
+    "hold_days": [5,7,10,15,20,25,30],
     # ====== BIAS 乖離率 ======
     "w_bias": [0,1,2,3], "bias_max": [3,5,8,10,15,20,30],
     # ====== 停滯出場 ======
-    "use_stagnation_exit": [0,1], "stagnation_days": [7,10,15], "stagnation_min_ret": [1,3,5],
+    "use_stagnation_exit": [0,1], "stagnation_days": [5,7,10,15], "stagnation_min_ret": [0,1,3,5],
     # ====== 保本停損 ======
     "use_breakeven": [0,1], "breakeven_trigger": [10,15,20,25,30],
     # ====== OBV 能量潮 ======
     "w_obv": [0,1,2,3], "obv_rising_days": [3,5,10],
     # ====== 漸進式最低報酬 ======
-    "use_time_decay": [0,1], "ret_per_day": [0.1,0.2,0.3,0.5],
+    "use_time_decay": [0,1], "ret_per_day": [0.1,0.2,0.3,0.5,0.8,1.0,1.5],
     # ====== ATR 波動率門檻（過濾低波動股）======
     "w_atr": [0,1,2,3], "atr_min": [1.0,1.5,2.0,2.5,3.0,4.0],
     # ====== 鎖利出場 ======
