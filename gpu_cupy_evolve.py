@@ -1088,17 +1088,27 @@ def main():
     MOM_MAP = {3:0, 5:1, 10:2}
     N_PARAMS_FULL = N_PARAMS + 3  # 加 ma_fast_idx, ma_slow_idx, mom_idx
 
-    # 嘗試從 Gist 載入最佳策略作為爬山起點
+    # 從 Gist 載入策略 → cpu_replay 建立真實基準
     gist_best_params = None
     try:
         headers = {"Authorization": f"token {GH_TOKEN}"} if GH_TOKEN else {}
         r = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers=headers, timeout=10)
         gist_data = json.loads(list(r.json()["files"].values())[0]["content"])
-        if gist_data.get("score", 0) > 0 and "params" in gist_data:
+        if "params" in gist_data:
             gist_best_params = gist_data["params"]
-            best_score = gist_data["score"]
-            print(f"[GPU] 載入 Gist 最佳策略（{best_score:.2f}）作為爬山起點")
-    except: pass
+            # 用 cpu_replay 在當前資料上跑一次，建立真實基準
+            import math as _math
+            _baseline_trades = cpu_replay(pre, gist_best_params)
+            _baseline_trades = [t for t in _baseline_trades if not _math.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
+            _baseline_total = sum(t.get("return",0) for t in _baseline_trades)
+            _baseline_n = len(_baseline_trades)
+            _baseline_avg = _baseline_total / _baseline_n if _baseline_n else 0
+            print(f"[GPU] Gist 策略在當前資料上：{_baseline_n}筆 avg{_baseline_avg:.1f}% 總{_baseline_total:.0f}%")
+            # 推回 Gist 建立真實分數基準（不用 kernel score，用 -1 讓 kernel 自然超越）
+            best_params = dict(gist_best_params)
+            print(f"[GPU] 載入 Gist 策略作為爬山起點（score 由 kernel 決定）")
+    except Exception as _e:
+        print(f"[GPU] Gist 載入失敗：{_e}")
 
     last_data_date = time.strftime("%Y-%m-%d")
 
