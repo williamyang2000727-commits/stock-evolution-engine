@@ -409,7 +409,7 @@ void backtest(
 
     // === v5 全期評分 + 強一致性防 overfitting ===
     float score = -999999.0f;
-    if (n_trades >= 40 && n_trades <= 120) {
+    if (n_trades >= 40 && n_trades <= 150) {
         float avg_ret = total_ret / n_trades;
         float win_rate = win_count / n_trades * 100.0f;
 
