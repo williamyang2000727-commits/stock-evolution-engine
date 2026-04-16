@@ -58,4 +58,12 @@ for year in sorted(years.keys()):
         tk = t["ticker"].replace(".TW", "").replace(".TWO", "")
         print(f" {i+1:2d}. {e} {t['name']}({tk}) | {t['buy_date'][5:]}>{t['sell_date'][5:]} | {t['buy_price']}>{t['sell_price']} | {t['return']:+.2f}% | {t['days']}天 | {t['reason']}")
 
+if holding:
+    print(f"\n=== 持有中（{len(holding)} 檔）===")
+    for t in holding:
+        tk = t["ticker"].replace(".TW","").replace(".TWO","")
+        print(f"  {t['name']}({tk}) | {t['buy_date'][5:]} 買 {t['buy_price']} | 現 {t['sell_price']} | {t['return']:+.2f}%")
+else:
+    print(f"\n⚠️ 沒有持有中！推 Web 前要手動補。")
+
 input("\n按 Enter 結束...")
