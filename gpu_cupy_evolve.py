@@ -488,7 +488,7 @@ void backtest(
                 s_consistency = min_seg_annual * 0.10f;
             }
 
-            float s_total = annual_ret * 0.25f;
+            float s_total = annual_ret * 0.15f;
             float s_sharpe = sharpe * 4.0f; if (s_sharpe > 15) s_sharpe = 15;
             float s_wr = win_rate * 0.05f;
             float s_pl = pl_ratio * 1.0f; if (s_pl > 8) s_pl = 8;
@@ -510,18 +510,18 @@ void backtest(
 ''', 'backtest')
 
 PARAMS_SPACE = {
-    # ====== 評分制買入（權重 0-5 + 門檻）======
-    "w_rsi": [0,1,2,3,4,5], "rsi_th": [55,60,65,68,70,72,75,80,85],
-    "w_bb": [0,1,2,3,4], "bb_th": [0.6,0.7,0.8,0.85,0.9,0.95,1.0],
-    "w_vol": [0,1,2,3], "vol_th": [1.5,2.0,2.5,3.0,4.0,5.0],
-    "w_ma": [0,1,2,3,4],
+    # ====== 評分制買入（權重 0-3 + 門檻）======
+    "w_rsi": [0,1,2,3], "rsi_th": [60,63,65,68,70,72,75,80],
+    "w_bb": [0,1,2,3], "bb_th": [0.7,0.75,0.8,0.85,0.9,0.95,1.0],
+    "w_vol": [0,1,2,3], "vol_th": [2.0,2.5,3.0,3.5,4.0,5.0,6.0],
+    "w_ma": [0,1,2,3],
     "w_macd": [0,1,2,3], "macd_mode": [0,1,2],
-    "w_kd": [0,1,2,3,4], "kd_th": [50,55,60,65,70,75,80], "kd_cross": [0,1],
-    "w_wr": [0,1,2,3,4,5], "wr_th": [-20,-25,-30,-35,-40,-50],
-    "w_mom": [0,1,2,3,4], "mom_th": [3,5,8,10,12,15],
-    "w_near_high": [0,1,2,3], "near_high_pct": [2,3,5,8,10],
-    "w_squeeze": [0,1,2,3,4], "w_new_high": [0,1,2,3,4],
-    "w_adx": [0,1,2,3,4], "adx_th": [20,25,30,35,40],
+    "w_kd": [0,1,2,3], "kd_th": [60,65,70,75,80,85], "kd_cross": [0,1],
+    "w_wr": [0,1,2,3], "wr_th": [-25,-30,-35,-40,-50],
+    "w_mom": [0,1,2,3], "mom_th": [5,8,10,12,15],
+    "w_near_high": [0,1,2], "near_high_pct": [3,5,10],
+    "w_squeeze": [0,1,2,3], "w_new_high": [0,1,2,3],
+    "w_adx": [0,1,2,3], "adx_th": [25,30,35,40],
     "consecutive_green": [0,1,2,3], "gap_up": [0,1],
     "above_ma60": [0,1], "vol_gt_yesterday": [0,1],
     "buy_threshold": [6,8,10,12,14,16],
@@ -1176,112 +1176,6 @@ def main():
     except Exception as _e:
         print(f"[GPU] Gist 載入失敗：{_e}")
 
-    # === 單參數掃描：逐一測試每個參數的每個值，快速找低垂果實 ===
-    if gist_best_params:
-        import math as _m2
-        _base = dict(gist_best_params)
-        _base_trades = [t for t in cpu_replay(pre, _base) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
-        _base_total = sum(t.get("return",0) for t in _base_trades)
-        print(f"\n[GPU] 🔍 單參數掃描開始（基準：{len(_base_trades)}筆 {_base_total:.0f}%）")
-        _improvements = []
-        for key in PARAM_ORDER:
-            opts = PARAMS_SPACE.get(key, [])
-            base_val = _base.get(key, opts[0] if opts else 0)
-            for val in opts:
-                if abs(float(val) - float(base_val)) < 1e-6: continue
-                _test = dict(_base); _test[key] = float(val)
-                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
-                _ttotal = sum(t.get("return",0) for t in _tt)
-                _tn = len(_tt)
-                if _ttotal > _base_total and 40 <= _tn <= 150:
-                    _diff = _ttotal - _base_total
-                    _improvements.append((key, float(val), base_val, _ttotal, _tn, _diff))
-        _improvements.sort(key=lambda x: -x[5])
-        if _improvements:
-            print(f"[GPU] 🎯 發現 {len(_improvements)} 個改進：")
-            for key, val, old, total, n, diff in _improvements[:10]:
-                print(f"  {key}: {old} → {val} | +{diff:.0f}%（總{total:.0f}%, {n}筆）")
-        else:
-            print(f"[GPU] 單參數掃描完成，沒有單一參數改進")
-        # MA/MOM 也掃
-        for ma_key, ma_opts in [("ma_fast_w", MA_FAST_OPTS), ("ma_slow_w", MA_SLOW_OPTS), ("momentum_days", MOM_DAYS_OPTS)]:
-            base_val = _base.get(ma_key, ma_opts[0])
-            for val in ma_opts:
-                if val == base_val: continue
-                _test = dict(_base); _test[ma_key] = val
-                if _test.get("ma_fast_w",5) >= _test.get("ma_slow_w",20): continue
-                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
-                _ttotal = sum(t.get("return",0) for t in _tt)
-                _tn = len(_tt)
-                if _ttotal > _base_total and 40 <= _tn <= 150:
-                    _diff = _ttotal - _base_total
-                    _improvements.append((ma_key, val, base_val, _ttotal, _tn, _diff))
-                    print(f"  {ma_key}: {base_val} → {val} | +{_diff:.0f}%（總{_ttotal:.0f}%, {_tn}筆）")
-        print(f"[GPU] 🔍 1D 掃描完成")
-
-        # === 2D 掃描：測試所有雙參數組合 ===
-        _sweep_keys = [
-            "w_sector_flow","sector_flow_topn",
-            "above_ma60","w_new_high","use_breakeven","breakeven_trigger","buy_threshold",
-            "w_rsi","w_bb","w_kd","w_wr","w_atr","w_adx","w_squeeze",
-        ]
-        # 收集每個 key 的非基準值
-        _changes = []
-        for key in _sweep_keys:
-            opts = PARAMS_SPACE.get(key, [])
-            bv = float(_base.get(key, opts[0] if opts else 0))
-            for val in opts:
-                if abs(float(val) - bv) > 1e-6:
-                    _changes.append((key, float(val)))
-        print(f"[GPU] 🔍 2D 掃描開始（{len(_changes)} 個變化 → {len(_changes)*(len(_changes)-1)//2} 組合）")
-        _imp2d = []
-        _tested_2d = 0
-        for i in range(len(_changes)):
-            for j in range(i+1, len(_changes)):
-                k1, v1 = _changes[i]
-                k2, v2 = _changes[j]
-                if k1 == k2: continue
-                _test = dict(_base); _test[k1] = v1; _test[k2] = v2
-                if _test.get("ma_fast_w",5) >= _test.get("ma_slow_w",20): continue
-                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
-                _ttotal = sum(t.get("return",0) for t in _tt)
-                _tn = len(_tt)
-                _tested_2d += 1
-                if _ttotal > _base_total and 40 <= _tn <= 150:
-                    _diff = _ttotal - _base_total
-                    _imp2d.append((k1, v1, k2, v2, _ttotal, _tn, _diff))
-                if _tested_2d % 100 == 0:
-                    print(f"  ... {_tested_2d} 組已測試，{len(_imp2d)} 個改進")
-        _imp2d.sort(key=lambda x: -x[6])
-        if _imp2d:
-            print(f"[GPU] 🎯 2D 發現 {len(_imp2d)} 個改進（前 10）：")
-            for k1, v1, k2, v2, total, n, diff in _imp2d[:10]:
-                print(f"  {k1}={v1} + {k2}={v2} | +{diff:.0f}%（總{total:.0f}%, {n}筆）")
-            # 用最佳 2D 結果繼續 3D
-            _best2d = _imp2d[0]
-            _base3 = dict(_base); _base3[_best2d[0]] = _best2d[1]; _base3[_best2d[2]] = _best2d[3]
-            _base3_total = _best2d[4]
-            print(f"\n[GPU] 🔍 3D 掃描（基於最佳 2D：{_best2d[0]}={_best2d[1]} + {_best2d[2]}={_best2d[3]}，{_base3_total:.0f}%）")
-            _imp3d = []
-            for key, val in _changes:
-                if key == _best2d[0] or key == _best2d[2]: continue
-                _test = dict(_base3); _test[key] = val
-                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
-                _ttotal = sum(t.get("return",0) for t in _tt)
-                _tn = len(_tt)
-                if _ttotal > _base3_total and 40 <= _tn <= 150:
-                    _imp3d.append((key, val, _ttotal, _tn, _ttotal - _base3_total))
-            _imp3d.sort(key=lambda x: -x[4])
-            if _imp3d:
-                print(f"[GPU] 🎯 3D 發現 {len(_imp3d)} 個改進：")
-                for key, val, total, n, diff in _imp3d[:5]:
-                    print(f"  +{key}={val} | +{diff:.0f}%（總{total:.0f}%, {n}筆）")
-            else:
-                print(f"[GPU] 3D 沒有進一步改進")
-        else:
-            print(f"[GPU] 2D 掃描完成（{_tested_2d} 組），沒有雙參數改進")
-        print(f"[GPU] 🔍 多維掃描完成\n")
-
     last_data_date = time.strftime("%Y-%m-%d")
 
     while True:
@@ -1611,10 +1505,10 @@ def main():
                         if y not in yearly: yearly[y] = {"n":0,"ret":0,"win":0}
                         yearly[y]["n"] += 1; yearly[y]["ret"] += t["return"]
                         if t["return"] > 0: yearly[y]["win"] += 1
-                    n_all = len(_completed_td)
-                    total_r = sum(t["return"] for t in _completed_td)
+                    n_all = len(trade_details)
+                    total_r = sum(t["return"] for t in trade_details)
                     avg_r = total_r / n_all if n_all else 0
-                    wr_r = sum(1 for t in _completed_td if t["return"]>0) / n_all * 100 if n_all else 0
+                    wr_r = sum(1 for t in trade_details if t["return"]>0) / n_all * 100 if n_all else 0
                     content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060_v3_consistency",
                         "updated_at":time.strftime("%Y-%m-%dT%H:%M:%S"),
                         "params":best_params,"backtest":{
