@@ -1505,10 +1505,10 @@ def main():
                         if y not in yearly: yearly[y] = {"n":0,"ret":0,"win":0}
                         yearly[y]["n"] += 1; yearly[y]["ret"] += t["return"]
                         if t["return"] > 0: yearly[y]["win"] += 1
-                    n_all = len(trade_details)
-                    total_r = sum(t["return"] for t in trade_details)
+                    n_all = len(_completed_td)
+                    total_r = sum(t["return"] for t in _completed_td)
                     avg_r = total_r / n_all if n_all else 0
-                    wr_r = sum(1 for t in trade_details if t["return"]>0) / n_all * 100 if n_all else 0
+                    wr_r = sum(1 for t in _completed_td if t["return"]>0) / n_all * 100 if n_all else 0
                     content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060_v3_consistency",
                         "updated_at":time.strftime("%Y-%m-%dT%H:%M:%S"),
                         "params":best_params,"backtest":{
