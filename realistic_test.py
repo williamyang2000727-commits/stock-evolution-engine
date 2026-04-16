@@ -25,13 +25,12 @@ print(f"期間：{dates[0].date()} ~ {dates[-1].date()}")
 # 直接用 cpu_replay（跟 GPU kernel 完全一致的 Python 版）
 trades = cpu_replay(pre, p)
 trades.sort(key=lambda x: x["buy_date"])
-if n == 0:
-    print("無交易"); sys.exit()
-
 completed = [t for t in trades if t.get("reason") != "持有中"]
 holding = [t for t in trades if t.get("reason") == "持有中"]
-trades = completed  # display completed only, holding at end
+trades = completed
 n = len(trades)
+if n == 0:
+    print("無交易"); sys.exit()
 total = sum(t["return"] for t in trades)
 avg = total / n
 wins = sum(1 for t in trades if t["return"] > 0)
