@@ -503,7 +503,7 @@ void backtest(
                     else streak = 0;
                 }
 
-                // === 🔴 真 Walk-Forward 盲測門檻（核心防 overfit）===
+                // === 真 Walk-Forward 盲測門檻（核心防 overfit）===
                 // n_test >= 5（有足夠測試樣本）
                 // test_total > 0（test 期必須正報酬）
                 // test 年化 >= train 年化 * 0.4（不能退化超過 60%）
