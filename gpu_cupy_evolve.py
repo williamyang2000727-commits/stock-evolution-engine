@@ -1242,6 +1242,79 @@ def main():
     except Exception as _e:
         print(f"[GPU] Gist 載入失敗：{_e}")
 
+    # === 多維掃描：快速找低垂果實 ===
+    if gist_best_params:
+        import math as _m2
+        _base = dict(gist_best_params)
+        _base_trades = [t for t in cpu_replay(pre, _base) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
+        _base_total = sum(t.get("return",0) for t in _base_trades)
+        print(f"\n[GPU] 🔍 單參數掃描開始（基準：{len(_base_trades)}筆 {_base_total:.0f}%）")
+        _improvements = []
+        for key in list(PARAM_ORDER) + ["ma_fast_w","ma_slow_w","momentum_days"]:
+            opts = PARAMS_SPACE.get(key, {"ma_fast_w":MA_FAST_OPTS,"ma_slow_w":MA_SLOW_OPTS,"momentum_days":MOM_DAYS_OPTS}.get(key,[]))
+            base_val = _base.get(key, opts[0] if opts else 0)
+            for val in opts:
+                if abs(float(val) - float(base_val)) < 1e-6: continue
+                _test = dict(_base); _test[key] = float(val)
+                if _test.get("ma_fast_w",5) >= _test.get("ma_slow_w",20): continue
+                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
+                _ttotal = sum(t.get("return",0) for t in _tt); _tn = len(_tt)
+                if _ttotal > _base_total and 40 <= _tn <= 150:
+                    _improvements.append((key, float(val), base_val, _ttotal, _tn, _ttotal - _base_total))
+        _improvements.sort(key=lambda x: -x[5])
+        if _improvements:
+            print(f"[GPU] 🎯 1D 發現 {len(_improvements)} 個改進（前 5）：")
+            for k, v, o, tot, n, d in _improvements[:5]:
+                print(f"  {k}: {o} → {v} | +{d:.0f}%（總{tot:.0f}%, {n}筆）")
+        else:
+            print(f"[GPU] 1D 沒有單參數改進")
+        # 2D 掃描
+        _sweep_keys = ["w_sector_flow","sector_flow_topn","w_up_days","up_days_min","w_week52","week52_min",
+            "w_vol_up_days","vol_up_days_min","w_mom_accel","mom_accel_min",
+            "above_ma60","w_new_high","use_breakeven","breakeven_trigger","buy_threshold",
+            "w_rsi","w_bb","w_kd","w_wr","w_atr","w_adx","w_squeeze"]
+        _changes = []
+        for key in _sweep_keys:
+            opts = PARAMS_SPACE.get(key, [])
+            bv = float(_base.get(key, opts[0] if opts else 0))
+            for val in opts:
+                if abs(float(val) - bv) > 1e-6: _changes.append((key, float(val)))
+        print(f"[GPU] 🔍 2D 掃描（{len(_changes)} 變化 → {len(_changes)*(len(_changes)-1)//2} 組合）")
+        _imp2d = []; _tested = 0
+        for i in range(len(_changes)):
+            for j in range(i+1, len(_changes)):
+                k1,v1 = _changes[i]; k2,v2 = _changes[j]
+                if k1 == k2: continue
+                _test = dict(_base); _test[k1]=v1; _test[k2]=v2
+                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
+                _ttotal = sum(t.get("return",0) for t in _tt); _tn = len(_tt); _tested += 1
+                if _ttotal > _base_total and 40 <= _tn <= 150:
+                    _imp2d.append((k1,v1,k2,v2,_ttotal,_tn,_ttotal-_base_total))
+                if _tested % 200 == 0: print(f"  ... {_tested} 組，{len(_imp2d)} 改進")
+        _imp2d.sort(key=lambda x: -x[6])
+        if _imp2d:
+            print(f"[GPU] 🎯 2D 發現 {len(_imp2d)} 個改進（前 5）：")
+            for k1,v1,k2,v2,tot,n,d in _imp2d[:5]:
+                print(f"  {k1}={v1} + {k2}={v2} | +{d:.0f}%（總{tot:.0f}%, {n}筆）")
+            _b2 = _imp2d[0]; _base3 = dict(_base); _base3[_b2[0]]=_b2[1]; _base3[_b2[2]]=_b2[3]
+            print(f"[GPU] 🔍 3D 掃描（基於最佳 2D）")
+            _imp3d = []
+            for key, val in _changes:
+                if key in (_b2[0],_b2[2]): continue
+                _test = dict(_base3); _test[key]=val
+                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
+                _ttotal = sum(t.get("return",0) for t in _tt); _tn = len(_tt)
+                if _ttotal > _b2[4] and 40 <= _tn <= 150:
+                    _imp3d.append((key,val,_ttotal,_tn,_ttotal-_b2[4]))
+            _imp3d.sort(key=lambda x: -x[4])
+            if _imp3d:
+                print(f"[GPU] 🎯 3D 發現 {len(_imp3d)} 個改進（前 3）：")
+                for k,v,tot,n,d in _imp3d[:3]:
+                    print(f"  +{k}={v} | +{d:.0f}%（總{tot:.0f}%, {n}筆）")
+        else:
+            print(f"[GPU] 2D 沒有雙參數改進")
+        print(f"[GPU] 🔍 掃描完成\n")
+
     last_data_date = time.strftime("%Y-%m-%d")
 
     while True:
@@ -1250,7 +1323,9 @@ def main():
         if today_str != last_data_date:
             print(f"\n[GPU] 🔄 新的一天（{today_str}），自動刷新資料...")
             try:
-                if os.path.exists(CACHE_PATH): os.remove(CACHE_PATH)
+                # 不刪快取！用時間戳更新讓 yfinance 增量更新
+                if os.path.exists(CACHE_PATH):
+                    os.utime(CACHE_PATH, None)
                 raw = download_data()
                 data = {k:v for k,v in raw.items() if len(v) >= 900}
                 print(f"[GPU] 刷新完成：{len(data)} 檔（>=900天，v1 框架）")
@@ -1574,10 +1649,10 @@ def main():
                         if y not in yearly: yearly[y] = {"n":0,"ret":0,"win":0}
                         yearly[y]["n"] += 1; yearly[y]["ret"] += t["return"]
                         if t["return"] > 0: yearly[y]["win"] += 1
-                    n_all = len(trade_details)
-                    total_r = sum(t["return"] for t in trade_details)
+                    n_all = len(_completed_td)
+                    total_r = sum(t["return"] for t in _completed_td)
                     avg_r = total_r / n_all if n_all else 0
-                    wr_r = sum(1 for t in trade_details if t["return"]>0) / n_all * 100 if n_all else 0
+                    wr_r = sum(1 for t in _completed_td if t["return"]>0) / n_all * 100 if n_all else 0
                     content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060_v3_consistency",
                         "updated_at":time.strftime("%Y-%m-%dT%H:%M:%S"),
                         "params":best_params,"backtest":{
@@ -1602,49 +1677,7 @@ def main():
                         f"📊 分年績效：\n{year_lines}"
                     )
                     print(f"  [GPU] ✅ Gist 同步！({best_score:.2f} > {cs:.2f})")
-                    # Auto-push backtest to Web App
-                    try:
-                        WEB_GIST = "e1159b02a87d3c6ee9f33fb9ef61bb80"
-                        web_trades = []
-                        for t in trade_details:
-                            wt = {
-                                "ticker": t.get("ticker", ""), "name": t.get("name", ""),
-                                "buy_price": round(t.get("buy_price", 0), 2),
-                                "sell_price": round(t.get("sell_price", 0), 2),
-                                "hold_days": t.get("days", 0),
-                                "return_pct": round(t.get("return", 0), 1),
-                                "reason": t.get("reason", ""),
-                                "buy_date": t.get("buy_date", ""), "sell_date": t.get("sell_date", ""),
-                            }
-                            if t.get("reason") == "持有中":
-                                wt["peak_price"] = t.get("peak_price", t.get("buy_price", 0))
-                            web_trades.append(wt)
-                        _completed = [t for t in web_trades if t.get("reason") != "持有中"]
-                        _rets = [t["return_pct"] for t in _completed]
-                        _wins = [r for r in _rets if r > 0]
-                        _losses = [r for r in _rets if r <= 0]
-                        _dates = pre["dates"]
-                        bt_stats = {
-                            "total_trades": len(_completed),
-                            "total_return_pct": round(sum(_rets), 1),
-                            "win_rate": round(len(_wins)/len(_rets)*100, 1) if _rets else 0,
-                            "avg_return": round(sum(_rets)/len(_rets), 1) if _rets else 0,
-                            "avg_win": round(sum(_wins)/len(_wins), 1) if _wins else 0,
-                            "avg_loss": round(sum(_losses)/len(_losses), 1) if _losses else 0,
-                            "max_win": round(max(_rets), 1) if _rets else 0,
-                            "max_loss": round(min(_rets), 1) if _rets else 0,
-                            "avg_hold_days": round(sum(t["hold_days"] for t in web_trades)/len(web_trades), 1) if web_trades else 0,
-                            "start_date": str(_dates[0].date()),
-                            "end_date": str(_dates[-1].date()),
-                            "total_days": pre["n_days"],
-                            "strategy_score": round(best_score, 4),
-                        }
-                        bt_content = json.dumps({"stats": bt_stats, "trades": web_trades}, ensure_ascii=False)
-                        requests.patch(f"https://api.github.com/gists/{WEB_GIST}", headers=headers,
-                            json={"files": {"backtest_results.json": {"content": bt_content}}}, timeout=30)
-                        print(f"  [GPU] ✅ 回測已推送 Web App（{len(web_trades)} 筆交易，{str(_dates[0].date())} ~ {str(_dates[-1].date())}）")
-                    except Exception as e:
-                        print(f"  [GPU] 回測推送失敗: {e}")
+                    print(f"  [GPU] ⚠️ Web 不自動推送，用 backtest_to_web.py 手動推")
                 last_synced_improved = total_improved
             except Exception as e:
                 print(f"  [GPU] Gist 錯誤: {e}")
