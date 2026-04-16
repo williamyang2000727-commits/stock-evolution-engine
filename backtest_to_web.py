@@ -62,6 +62,24 @@ for t in trades:
         wt["peak_price"] = round(t.get("peak_price", t.get("buy_price", 0)), 2)
     web_trades.append(wt)
 
+# Smart end_date: 如果結尾有空位（GPU 沒買到），回退讓 Web 延伸補買
+_holding = [t for t in web_trades if t.get("reason") == "持有中"]
+_max_pos = int(p.get("max_positions", 2))
+if len(_holding) < _max_pos:
+    # 找造成空位的賣出日，回退到那天之前
+    _completed_sorted = sorted([t for t in web_trades if t.get("sell_date")], key=lambda t: t["sell_date"], reverse=True)
+    _empty_slots = _max_pos - len(_holding)
+    _sell_dates = [t["sell_date"] for t in _completed_sorted[:_empty_slots]]
+    _earliest_unfilled = min(_sell_dates) if _sell_dates else str(dates[-1].date())
+    from datetime import date as _dt, timedelta as _td
+    _d = _dt.fromisoformat(_earliest_unfilled) - _td(days=1)
+    while _d.weekday() >= 5: _d -= _td(days=1)  # skip weekends
+    _smart_end_date = str(_d)
+    print(f"空位偵測：{_empty_slots} 個空位，回退 end_date 到 {_smart_end_date}（Web 會從 {_earliest_unfilled} 開始先賣後買）")
+else:
+    _smart_end_date = str(dates[-1].date())
+    print(f"滿倉結束，end_date = {_smart_end_date}")
+
 completed = [t for t in web_trades if t.get("reason") != "持有中"]
 rets = [t["return_pct"] for t in completed]
 wins_r = [r for r in rets if r > 0]
@@ -78,7 +96,7 @@ stats = {
     "max_loss": round(min(rets), 1) if rets else 0,
     "avg_hold_days": round(np.mean([t["hold_days"] for t in web_trades]), 1),
     "start_date": str(dates[0].date()),
-    "end_date": str(dates[-1].date()),
+    "end_date": _smart_end_date,
     "total_days": nd,
     "strategy_version": strategy.get("version", "?"),
     "strategy_score": strategy.get("score", "?"),
