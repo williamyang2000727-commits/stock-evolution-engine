@@ -1063,7 +1063,7 @@ def main():
     BATCH = 200000  # 縮小避免 Python 參數生成卡住
     BLOCK = 256
     N_PARAMS = len(PARAM_ORDER)
-    best_score = -999999
+    best_score = 100  # 從 v5 水準開始，不浪費時間爬
     best_params = None
     best_avg = 0; best_total = 0; best_wr = 0; best_nt = 0
     total_tested = 0; total_improved = 0; last_synced_improved = 0
