@@ -1365,6 +1365,45 @@ def main():
                         f"📊 分年績效：\n{year_lines}"
                     )
                     print(f"  [GPU] ✅ Gist 同步！({best_score:.2f} > {cs:.2f})")
+                    # Auto-push backtest to Web App
+                    try:
+                        WEB_GIST = "e1159b02a87d3c6ee9f33fb9ef61bb80"
+                        web_trades = []
+                        for t in trade_details:
+                            web_trades.append({
+                                "ticker": t.get("ticker", ""), "name": t.get("name", ""),
+                                "buy_price": round(t.get("buy_price", 0), 2),
+                                "sell_price": round(t.get("sell_price", 0), 2),
+                                "hold_days": t.get("days", 0),
+                                "return_pct": round(t.get("return", 0), 1),
+                                "reason": t.get("reason", ""),
+                                "buy_date": t.get("buy_date", ""), "sell_date": t.get("sell_date", ""),
+                            })
+                        _rets = [t["return_pct"] for t in web_trades]
+                        _wins = [r for r in _rets if r > 0]
+                        _losses = [r for r in _rets if r <= 0]
+                        _dates = pre["dates"]
+                        bt_stats = {
+                            "total_trades": len(_rets),
+                            "total_return_pct": round(sum(_rets), 1),
+                            "win_rate": round(len(_wins)/len(_rets)*100, 1) if _rets else 0,
+                            "avg_return": round(sum(_rets)/len(_rets), 1) if _rets else 0,
+                            "avg_win": round(sum(_wins)/len(_wins), 1) if _wins else 0,
+                            "avg_loss": round(sum(_losses)/len(_losses), 1) if _losses else 0,
+                            "max_win": round(max(_rets), 1) if _rets else 0,
+                            "max_loss": round(min(_rets), 1) if _rets else 0,
+                            "avg_hold_days": round(sum(t["hold_days"] for t in web_trades)/len(web_trades), 1) if web_trades else 0,
+                            "start_date": str(_dates[0].date()),
+                            "end_date": str(_dates[-1].date()),
+                            "total_days": pre["n_days"],
+                            "strategy_score": round(best_score, 4),
+                        }
+                        bt_content = json.dumps({"stats": bt_stats, "trades": web_trades}, ensure_ascii=False)
+                        requests.patch(f"https://api.github.com/gists/{WEB_GIST}", headers=headers,
+                            json={"files": {"backtest_results.json": {"content": bt_content}}}, timeout=30)
+                        print(f"  [GPU] ✅ 回測已推送 Web App（{len(web_trades)} 筆交易，{str(_dates[0].date())} ~ {str(_dates[-1].date())}）")
+                    except Exception as e:
+                        print(f"  [GPU] 回測推送失敗: {e}")
                 last_synced_improved = total_improved
             except Exception as e:
                 print(f"  [GPU] Gist 錯誤: {e}")
