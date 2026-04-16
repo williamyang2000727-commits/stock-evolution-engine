@@ -589,25 +589,9 @@ MA_FAST_OPTS = [3,5,10]
 MA_SLOW_OPTS = [15,20,30,60]
 MOM_DAYS_OPTS = [3,5,10]
 
-# === 半凍結策略（v5 112.91 基準）===
-# 已開啟且表現好的參數：爬山 radius=1（只能微調到鄰近值）
-# 已關閉的功能（w=0）：full exploration（開/關 + 係數全範圍搜索）
-FROZEN_PARAMS = {
-    # 買入指標（已開啟，鎖住）
-    "w_rsi","rsi_th","w_bb","bb_th","w_ma",
-    "w_kd","kd_th","kd_cross","w_wr","wr_th",
-    "w_mom","mom_th","w_near_high","near_high_pct",
-    "w_squeeze","w_new_high","w_adx","adx_th",
-    "above_ma60","vol_gt_yesterday","buy_threshold",
-    "w_atr","atr_min",
-    # 賣出條件（已開啟，鎖住）
-    "stop_loss","use_take_profit","take_profit","trailing_stop",
-    "sell_below_ma","hold_days",
-    "use_time_decay","ret_per_day",
-    "use_profit_lock","lock_trigger","lock_floor",
-    "max_positions",
-}
-# 未開啟的功能（full exploration）— 不在 FROZEN_PARAMS 裡的都是自由探索
+# === 全自由探索（所有參數全範圍搜索）===
+# Gist 保護：只有超過 112.92 才會推送，不怕退化
+FROZEN_PARAMS = set()  # 全部解鎖
 
 def precompute(data):
     tickers = list(data.keys())
