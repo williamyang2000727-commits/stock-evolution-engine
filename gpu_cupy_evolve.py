@@ -1171,7 +1171,8 @@ def main():
                     print(f"[GPU] ✅ v5 新資料結果已推送（{len(_web_completed)}筆完成 + {_holding_n}筆持有中 → Web 會自動延續）")
                 except Exception as _e:
                     print(f"[GPU] ⚠️ 推送失敗：{_e}")
-            print(f"[GPU] 載入 Gist 策略作為爬山起點（score 由 kernel 決定）")
+            hall_of_fame = [(999, dict(gist_best_params)) for _ in range(5)]
+            print(f"[GPU] 載入 v5 作為爬山起點 + 名人堂全填 v5（配種從 2000%+ 開始）")
     except Exception as _e:
         print(f"[GPU] Gist 載入失敗：{_e}")
 
