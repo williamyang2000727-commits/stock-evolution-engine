@@ -1063,7 +1063,7 @@ def main():
     BATCH = 200000  # 縮小避免 Python 參數生成卡住
     BLOCK = 256
     N_PARAMS = len(PARAM_ORDER)
-    best_score = 100  # 從 v5 水準開始，不浪費時間爬
+    best_score = -999999  # R1 結束後用 v5 kernel 分數覆蓋
     best_params = None
     best_avg = 0; best_total = 0; best_wr = 0; best_nt = 0
     total_tested = 0; total_improved = 0; last_synced_improved = 0
@@ -1366,6 +1366,21 @@ def main():
 
         results = d_results.get()
         total_tested += BATCH
+
+        # R1：抓 v5（position 0）的 kernel 分數，強制設為基準
+        if rnd == 1 and gist_best_params:
+            _v5_score = float(results[0, 0])
+            _v5_nt = int(results[0, 1])
+            _v5_total = float(results[0, 3])
+            if _v5_score > 0:
+                best_score = _v5_score
+                best_params = dict(gist_best_params)
+                best_nt = _v5_nt; best_total = _v5_total
+                best_avg = float(results[0, 2]); best_wr = float(results[0, 4])
+                total_improved += 1
+                print(f"  [GPU] ⭐ v5 kernel 基準：{_v5_score:.1f} | {_v5_nt}筆 | 總{_v5_total:.0f}%（從這裡開始）")
+            else:
+                print(f"  [GPU] ⚠️ v5 kernel 分數無效（{_v5_score:.1f}，{_v5_nt}筆），kernel 和 cpu_replay 有差異")
 
         # 收集這批裡分數 > 0 的前 5 名加入名人堂（不用破紀錄也能入）
         top_indices = np.argsort(results[:, 0])[-5:][::-1]
