@@ -1239,7 +1239,6 @@ def main():
         third = n_random  # 相容舊變數名
 
         # === 全部先用隨機填滿（向量化，超快）===
-        # 半凍結：凍結參數的隨機部分也限制在基準值附近（radius=1）
         _base_for_freeze = best_params if best_params else gist_best_params
         for i, key in enumerate(PARAM_ORDER):
             opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
@@ -1336,6 +1335,16 @@ def main():
         params_np[:, N_PARAMS] = mf_mapped.astype(np.float32)
         params_np[:, N_PARAMS+1] = ms_mapped.astype(np.float32)
         params_np[:, N_PARAMS+2] = md_mapped.astype(np.float32)
+
+        # 第一輪：把 v5 塞進 params_np[0]，kernel 立刻評估建立基準
+        if rnd == 1 and gist_best_params:
+            for i, key in enumerate(PARAM_ORDER):
+                opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
+                val = float(gist_best_params.get(key, opts[0]))
+                params_np[0, i] = opts[int(np.argmin(np.abs(opts - val)))]
+            params_np[0, N_PARAMS] = MA_FAST_MAP.get(int(gist_best_params.get("ma_fast_w", 5)), 1)
+            params_np[0, N_PARAMS+1] = MA_SLOW_MAP.get(int(gist_best_params.get("ma_slow_w", 20)), 1)
+            params_np[0, N_PARAMS+2] = MOM_MAP.get(int(gist_best_params.get("momentum_days", 5)), 1)
 
         d_params = cp.asarray(params_np)
         d_results = cp.zeros((BATCH, 5), dtype=cp.float32)
