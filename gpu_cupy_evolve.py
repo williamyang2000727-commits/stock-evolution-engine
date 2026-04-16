@@ -158,9 +158,9 @@ void backtest(
     // 多持倉
     int max_pos = (int)p[57]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[58];
-    int ma_slow_idx = (int)p[59];
-    int mom_idx = (int)p[60];
+    int ma_fast_idx = (int)p[60];
+    int ma_slow_idx = (int)p[61];
+    int mom_idx = (int)p[62];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -577,12 +577,12 @@ PARAM_ORDER = [
     "use_breakeven","breakeven_trigger",
     "w_obv","obv_rising_days",
     "w_atr","atr_min",
-    "w_sector_flow","sector_flow_topn",
     "use_time_decay","ret_per_day",
     "use_profit_lock","lock_trigger","lock_floor",
     "use_mom_exit","mom_exit_th",
     "upgrade_margin",
     "max_positions",
+    "w_sector_flow","sector_flow_topn",
 ]
 
 MA_FAST_OPTS = [3,5,10]
