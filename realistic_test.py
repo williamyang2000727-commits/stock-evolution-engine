@@ -14,7 +14,8 @@ with open("best_strategy.json", encoding="utf-8") as f:
 p = strategy["params"]
 print(f"v{strategy.get('version','?')} | {strategy.get('score',0):.2f}分")
 
-data = {k:v for k,v in data.items() if len(v) >= 900}
+TARGET_DAYS = 900
+data = {k: v.tail(TARGET_DAYS) for k, v in data.items() if len(v) >= TARGET_DAYS}
 pre = precompute(data)
 ns, nd = pre["n_stocks"], pre["n_days"]
 dates = pre["dates"]
@@ -24,10 +25,13 @@ print(f"期間：{dates[0].date()} ~ {dates[-1].date()}")
 # 直接用 cpu_replay（跟 GPU kernel 完全一致的 Python 版）
 trades = cpu_replay(pre, p)
 trades.sort(key=lambda x: x["buy_date"])
-n = len(trades)
 if n == 0:
     print("無交易"); sys.exit()
 
+completed = [t for t in trades if t.get("reason") != "持有中"]
+holding = [t for t in trades if t.get("reason") == "持有中"]
+trades = completed  # display completed only, holding at end
+n = len(trades)
 total = sum(t["return"] for t in trades)
 avg = total / n
 wins = sum(1 for t in trades if t["return"] > 0)
