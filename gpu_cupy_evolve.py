@@ -1269,7 +1269,72 @@ def main():
                     _diff = _ttotal - _base_total
                     _improvements.append((ma_key, val, base_val, _ttotal, _tn, _diff))
                     print(f"  {ma_key}: {base_val} → {val} | +{_diff:.0f}%（總{_ttotal:.0f}%, {_tn}筆）")
-        print(f"[GPU] 🔍 掃描完成\n")
+        print(f"[GPU] 🔍 1D 掃描完成")
+
+        # === 2D 掃描：測試所有雙參數組合 ===
+        _sweep_keys = [
+            "w_sector_flow","sector_flow_topn","w_up_days","up_days_min",
+            "w_week52","week52_min","w_vol_up_days","vol_up_days_min",
+            "w_mom_accel","mom_accel_min",
+            "above_ma60","w_new_high","use_breakeven","breakeven_trigger","buy_threshold",
+            "w_rsi","w_bb","w_kd","w_wr","w_atr","w_adx","w_squeeze",
+        ]
+        # 收集每個 key 的非基準值
+        _changes = []
+        for key in _sweep_keys:
+            opts = PARAMS_SPACE.get(key, [])
+            bv = float(_base.get(key, opts[0] if opts else 0))
+            for val in opts:
+                if abs(float(val) - bv) > 1e-6:
+                    _changes.append((key, float(val)))
+        print(f"[GPU] 🔍 2D 掃描開始（{len(_changes)} 個變化 → {len(_changes)*(len(_changes)-1)//2} 組合）")
+        _imp2d = []
+        _tested_2d = 0
+        for i in range(len(_changes)):
+            for j in range(i+1, len(_changes)):
+                k1, v1 = _changes[i]
+                k2, v2 = _changes[j]
+                if k1 == k2: continue
+                _test = dict(_base); _test[k1] = v1; _test[k2] = v2
+                if _test.get("ma_fast_w",5) >= _test.get("ma_slow_w",20): continue
+                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
+                _ttotal = sum(t.get("return",0) for t in _tt)
+                _tn = len(_tt)
+                _tested_2d += 1
+                if _ttotal > _base_total and 40 <= _tn <= 150:
+                    _diff = _ttotal - _base_total
+                    _imp2d.append((k1, v1, k2, v2, _ttotal, _tn, _diff))
+                if _tested_2d % 100 == 0:
+                    print(f"  ... {_tested_2d} 組已測試，{len(_imp2d)} 個改進")
+        _imp2d.sort(key=lambda x: -x[6])
+        if _imp2d:
+            print(f"[GPU] 🎯 2D 發現 {len(_imp2d)} 個改進（前 10）：")
+            for k1, v1, k2, v2, total, n, diff in _imp2d[:10]:
+                print(f"  {k1}={v1} + {k2}={v2} | +{diff:.0f}%（總{total:.0f}%, {n}筆）")
+            # 用最佳 2D 結果繼續 3D
+            _best2d = _imp2d[0]
+            _base3 = dict(_base); _base3[_best2d[0]] = _best2d[1]; _base3[_best2d[2]] = _best2d[3]
+            _base3_total = _best2d[4]
+            print(f"\n[GPU] 🔍 3D 掃描（基於最佳 2D：{_best2d[0]}={_best2d[1]} + {_best2d[2]}={_best2d[3]}，{_base3_total:.0f}%）")
+            _imp3d = []
+            for key, val in _changes:
+                if key == _best2d[0] or key == _best2d[2]: continue
+                _test = dict(_base3); _test[key] = val
+                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
+                _ttotal = sum(t.get("return",0) for t in _tt)
+                _tn = len(_tt)
+                if _ttotal > _base3_total and 40 <= _tn <= 150:
+                    _imp3d.append((key, val, _ttotal, _tn, _ttotal - _base3_total))
+            _imp3d.sort(key=lambda x: -x[4])
+            if _imp3d:
+                print(f"[GPU] 🎯 3D 發現 {len(_imp3d)} 個改進：")
+                for key, val, total, n, diff in _imp3d[:5]:
+                    print(f"  +{key}={val} | +{diff:.0f}%（總{total:.0f}%, {n}筆）")
+            else:
+                print(f"[GPU] 3D 沒有進一步改進")
+        else:
+            print(f"[GPU] 2D 掃描完成（{_tested_2d} 組），沒有雙參數改進")
+        print(f"[GPU] 🔍 多維掃描完成\n")
 
     last_data_date = time.strftime("%Y-%m-%d")
 
