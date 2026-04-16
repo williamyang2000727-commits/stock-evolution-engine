@@ -550,6 +550,8 @@ PARAMS_SPACE = {
     "use_profit_lock": [0,1], "lock_trigger": [15,20,30,40,50], "lock_floor": [3,5,8,10,15],  # GPU 自由選擇
     # ====== 動量反轉出場 ======
     "use_mom_exit": [0,1], "mom_exit_th": [0,1,2,3,5],
+    # ====== 類股資金流向 ======
+    "w_sector_flow": [0,1,2,3], "sector_flow_ratio": [1.2,1.3,1.5,1.8,2.0],
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10],
     # ====== 多持倉 ======
@@ -575,6 +577,7 @@ PARAM_ORDER = [
     "use_breakeven","breakeven_trigger",
     "w_obv","obv_rising_days",
     "w_atr","atr_min",
+    "w_sector_flow","sector_flow_ratio",
     "use_time_decay","ret_per_day",
     "use_profit_lock","lock_trigger","lock_floor",
     "use_mom_exit","mom_exit_th",
@@ -774,6 +777,38 @@ def precompute(data):
     ranks = np.argsort(np.argsort(-volume, axis=0), axis=0)  # 每天的排名（0=最大）
     top100_mask = (ranks < 100).astype(np.float32)
 
+    # 類股資金流向（sector flow）
+    try:
+        sf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tw_sector_mapping.json")
+        with open(sf_path, "r", encoding="utf-8") as f:
+            _sec_map = json.load(f)
+    except:
+        _sec_map = {}
+    _sec_names = sorted(set(_sec_map.values()))
+    _sec_id = {s: i for i, s in enumerate(_sec_names)}
+    _n_sec = max(len(_sec_names), 1)
+    _stock_sec = np.full(n, -1, dtype=np.int32)
+    for si, t in enumerate(tickers):
+        sec = _sec_map.get(t, "")
+        if sec in _sec_id:
+            _stock_sec[si] = _sec_id[sec]
+    # Compute sector trading value per day
+    _sec_val = np.zeros((_n_sec, ml), dtype=np.float64)
+    for si in range(n):
+        sid = _stock_sec[si]
+        if sid >= 0:
+            _sec_val[sid] += close[si] * volume[si]
+    # 20-day rolling average → ratio
+    sector_ratio = np.ones((n, ml), dtype=np.float32)
+    for d in range(20, ml):
+        _avg = np.mean(_sec_val[:, d-20:d], axis=1)
+        for si in range(n):
+            sid = _stock_sec[si]
+            if sid >= 0 and _avg[sid] > 0:
+                sector_ratio[si, d] = float(_sec_val[sid, d] / _avg[sid])
+    _mapped = sum(1 for s in _stock_sec if s >= 0)
+    print(f"  類股資金流向：{_mapped}/{n} 檔有產業映射，{_n_sec} 個產業")
+
     # 無大盤過濾（v1 框架：commit 672bdd8 移除，全部天數允許買入）
     market_bull = np.ones(ml, dtype=np.float32)
     print(f"  大盤過濾：無（v1 框架）| {ml}/{ml} 天全部允許")
@@ -792,6 +827,7 @@ def precompute(data):
         "market_bull":market_bull,
         "open":opn.astype(np.float32),
         "bb_std":bb_std.astype(np.float32),
+        "sector_ratio":sector_ratio,
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
 REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線","停滯出場","漸進停利","鎖利出場","動量反轉","換股"]
@@ -809,6 +845,7 @@ def cpu_replay(pre, p):
     squeeze_fire=pre["squeeze_fire"]; new_high_60=pre["new_high_60"]; adx_arr=pre["adx"]; bias_arr=pre["bias"]; obv_rising_arr=pre["obv_rising"]; atr_pct_arr=pre["atr_pct"]
     opn=pre.get("open")
     market_bull=pre.get("market_bull")
+    sector_ratio=pre.get("sector_ratio")
     maf=pre["ma_d"].get(int(p.get("ma_fast_w",5)), pre["ma_d"][5])
     mas=pre["ma_d"].get(int(p.get("ma_slow_w",20)), pre["ma_d"][20])
     ma60=pre["ma60"]
@@ -892,6 +929,7 @@ def cpu_replay(pre, p):
                 if int(p.get("w_bias",0))>0 and bias_arr[si,d]>=0 and bias_arr[si,d]<=p.get("bias_max",15): sc+=int(p["w_bias"])
                 if int(p.get("w_obv",0))>0 and obv_rising_arr[si,d]>0.5: sc+=int(p["w_obv"])
                 if int(p.get("w_atr",0))>0 and atr_pct_arr[si,d]>=p.get("atr_min",2): sc+=int(p["w_atr"])
+                if int(p.get("w_sector_flow",0))>0 and sector_ratio is not None and sector_ratio[si,d]>=p.get("sector_flow_ratio",1.5): sc+=int(p["w_sector_flow"])
                 return sc
             # 找候選最高分
             cand_si=-1; cand_sc=0; cand_vol=0
@@ -960,6 +998,8 @@ def cpu_replay(pre, p):
                 if w_bias>0 and bias_arr[si,day]>=0 and bias_arr[si,day]<=bias_max_val: sc+=w_bias
                 if w_obv>0 and obv_rising_arr[si,day]>0.5: sc+=w_obv
                 if w_atr_buy>0 and atr_pct_arr[si,day]>=atr_min_val: sc+=w_atr_buy
+                w_sf=int(p.get("w_sector_flow",0))
+                if w_sf>0 and sector_ratio is not None and sector_ratio[si,day]>=p.get("sector_flow_ratio",1.5): sc+=w_sf
                 cg=int(p.get("consecutive_green",0))
                 if cg>=1:
                     ok=True
