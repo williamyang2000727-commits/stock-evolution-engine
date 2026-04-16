@@ -547,7 +547,7 @@ void backtest(
                         // C: 新評分公式（基於 train 期）
                         float s_total = train_annual * 0.30f;
                         float s_sharpe = sharpe_train * 3.0f; if (s_sharpe > 12) s_sharpe = 12;
-                        float s_pl = pl_ratio * 1.0f; if (s_pl > 8) s_pl = 8;
+                        float s_pl = pl_ratio * 0.8f; if (s_pl > 8) s_pl = 8;
                         float s_streak = max_streak * 1.5f;
                         float s_dd = fabsf(max_dd_train) * 0.1f;
                         float s_hold_pen = 0;
@@ -1628,6 +1628,21 @@ def main():
             print(f"  [GPU] 新紀錄！{best_score:.1f} | avg{best_avg:.1f}% | 總{best_total:.0f}% | 勝率{best_wr:.0f}% | {best_nt}筆")
         else:
             no_improve_rounds += 1
+            # B+ 週期擾動：每 10 輪無突破，替換最弱 HOF 為隨機策略（打破局部最佳）
+            if no_improve_rounds > 0 and no_improve_rounds % 10 == 0 and len(hall_of_fame) >= 2:
+                # 產生一個完全隨機的新策略
+                rand_p = {}
+                for key in PARAM_ORDER:
+                    rand_p[key] = float(np.random.choice(PARAMS_SPACE[key]))
+                # ma 確保 fast < slow
+                _mfw = int(np.random.choice(MA_FAST_OPTS))
+                _msw = int(np.random.choice([o for o in MA_SLOW_OPTS if o > _mfw] or [max(MA_SLOW_OPTS)]))
+                rand_p["ma_fast_w"] = _mfw
+                rand_p["ma_slow_w"] = _msw
+                rand_p["momentum_days"] = int(np.random.choice(MOM_DAYS_OPTS))
+                # 替換 HOF 最後一名（分數最低）
+                hall_of_fame[-1] = (0, rand_p)
+                print(f"  [GPU] 🎲 B+ 週期擾動：{no_improve_rounds}輪無突破，HOF 最弱 slot 換成隨機策略（打破局部最佳）")
             # 變異率到頂 = 爬山已退化成亂射，啟動多起點爬山
             if mutate_rate >= 0.50:
                 hall_of_fame = []
