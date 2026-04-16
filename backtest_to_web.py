@@ -22,7 +22,8 @@ print(f"Strategy: v{strategy.get('version','?')} | score={strategy.get('score',0
 
 # === Load data ===
 data = download_data()
-data = {k: v for k, v in data.items() if len(v) >= 900}
+TARGET_DAYS = 900
+data = {k: v.tail(TARGET_DAYS) for k, v in data.items() if len(v) >= TARGET_DAYS}
 print(f"Stocks with 900+ days: {len(data)}")
 
 # === Precompute + Run ===
@@ -46,7 +47,7 @@ print(f"\nTrades: {n} | Avg: {avg:.2f}% | Total: {total:.2f}% | Win Rate: {wins/
 # === Format for Web ===
 web_trades = []
 for t in trades:
-    web_trades.append({
+    wt = {
         "ticker": t.get("ticker", ""),
         "name": t.get("name", ""),
         "buy_price": round(t.get("buy_price", 0), 2),
@@ -56,14 +57,18 @@ for t in trades:
         "reason": t.get("reason", ""),
         "buy_date": t.get("buy_date", ""),
         "sell_date": t.get("sell_date", ""),
-    })
+    }
+    if t.get("reason") == "持有中":
+        wt["peak_price"] = round(t.get("peak_price", t.get("buy_price", 0)), 2)
+    web_trades.append(wt)
 
-rets = [t["return_pct"] for t in web_trades]
+completed = [t for t in web_trades if t.get("reason") != "持有中"]
+rets = [t["return_pct"] for t in completed]
 wins_r = [r for r in rets if r > 0]
 losses_r = [r for r in rets if r <= 0]
 
 stats = {
-    "total_trades": len(rets),
+    "total_trades": len(completed),
     "total_return_pct": round(sum(rets), 1),  # Simple sum (matching GPU)
     "win_rate": round(len(wins_r) / len(rets) * 100, 1) if rets else 0,
     "avg_return": round(np.mean(rets), 1) if rets else 0,
