@@ -181,6 +181,7 @@ void backtest(
     float total_ret = 0, win_count = 0, wasted_count = 0;
     float rets[100];
     int trade_bdays[100];
+    int hold_days_arr[100];
 
     for (int day = 60; day < n_days - 1; day++) {
         // === Phase 1: 檢查所有持倉的賣出條件（用 day 收盤價判斷）===
@@ -232,6 +233,7 @@ void backtest(
                 float actual_ret = (sell_price / hold_bp[h] - 1.0f) * 100.0f - 0.585f;  // 扣手續費+證交稅
                 rets[n_trades] = actual_ret;
                 trade_bdays[n_trades] = hold_bd[h];
+                hold_days_arr[n_trades] = day + 1 - hold_bd[h];
                 total_ret += actual_ret;
                 if (actual_ret > 0) win_count += 1;
                 if (actual_ret < 10) wasted_count += 1;
@@ -337,6 +339,7 @@ void backtest(
                     float actual_ret = (sell_price / hold_bp[weakest_h] - 1.0f) * 100.0f - 0.585f;  // 扣手續費+證交稅
                     rets[n_trades] = actual_ret;
                     trade_bdays[n_trades] = hold_bd[weakest_h];
+                    hold_days_arr[n_trades] = day + 1 - hold_bd[weakest_h];
                     total_ret += actual_ret;
                     if (actual_ret > 0) win_count += 1;
                     if (actual_ret < 10) wasted_count += 1;
@@ -425,13 +428,19 @@ void backtest(
         // Phase 3 已移除（第三檔回測表現不佳）
     }
 
-    // === v5 全期評分 + 強一致性防 overfitting ===
+    // === 新評分 v2（C+D+E）：嚴格品質門檻 + walk-forward + 精簡公式 ===
     float score = -999999.0f;
-    if (n_trades >= 40 && n_trades <= 150) {
+    // D: 筆數 50-120
+    if (n_trades >= 50 && n_trades <= 120) {
         float avg_ret = total_ret / n_trades;
         float win_rate = win_count / n_trades * 100.0f;
 
-        if (avg_ret >= 5 && win_rate >= 35) {
+        // D: avg_hold >= 5
+        float avg_hold = 0;
+        for (int i=0; i<n_trades; i++) avg_hold += (float)hold_days_arr[i];
+        avg_hold /= n_trades;
+
+        if (avg_ret >= 5 && win_rate >= 35 && avg_hold >= 5.0f) {
             // === Sharpe ratio ===
             float sum_sq = 0;
             for (int i=0; i<n_trades; i++) {
@@ -441,14 +450,6 @@ void backtest(
             float std_ret = sqrtf(sum_sq / n_trades);
             float sharpe = std_ret > 0.5f ? avg_ret / std_ret : avg_ret;
             if (sharpe > 10) sharpe = 10;
-
-            // === Profit Factor ===
-            float w_sum=0, l_sum=0;
-            for (int i=0; i<n_trades; i++) {
-                if (rets[i]>0) w_sum+=rets[i]; else l_sum+=fabsf(rets[i]);
-            }
-            float pf = l_sum>0 ? w_sum/l_sum : 20.0f;
-            if (pf > 20) pf = 20;
 
             // === 盈虧比 (P/L ratio) ===
             float avg_win=0, avg_loss=0;
@@ -470,51 +471,57 @@ void backtest(
                 if (running_dd < max_dd_sum) max_dd_sum = running_dd;
             }
 
-            // === 最長連虧 ===
-            int max_streak = 0, streak = 0;
-            for (int i=0; i<n_trades; i++) {
-                if (rets[i] <= 0) { streak++; if (streak > max_streak) max_streak = streak; }
-                else streak = 0;
-            }
+            // D: max_dd >= -40%（連虧最深不超過 -40）
+            if (max_dd_sum >= -40.0f) {
+                // === 最長連虧 ===
+                int max_streak = 0, streak = 0;
+                for (int i=0; i<n_trades; i++) {
+                    if (rets[i] <= 0) { streak++; if (streak > max_streak) max_streak = streak; }
+                    else streak = 0;
+                }
 
-            // === 年化報酬（全期）===
-            float n_years = (float)(n_days - 60) / 250.0f;
-            float annual_ret = n_years > 0.5f ? total_ret / n_years : total_ret;
+                // === 年化報酬（全期）===
+                float n_years = (float)(n_days - 60) / 250.0f;
+                float annual_ret = n_years > 0.5f ? total_ret / n_years : total_ret;
 
-            // === v3.4 一致性（v1 原版）===
-            int seg_size = n_days / 3;
-            float seg_ret[3] = {0,0,0}; int seg_n[3] = {0,0,0};
-            for (int i=0; i<n_trades; i++) {
-                int seg = trade_bdays[i] / seg_size;
-                if (seg > 2) seg = 2;
-                seg_ret[seg] += rets[i]; seg_n[seg]++;
-            }
-            float min_seg_annual = 9999;
-            int active_segs = 0;
-            for (int s=0; s<3; s++) {
-                if (seg_n[s] >= 5) {
-                    float sa = seg_ret[s] / (n_years / 3.0f);
-                    if (sa < min_seg_annual) min_seg_annual = sa;
-                    active_segs++;
+                // === 3 段一致性 ===
+                int seg_size = n_days / 3;
+                float seg_ret[3] = {0,0,0}; int seg_n[3] = {0,0,0};
+                for (int i=0; i<n_trades; i++) {
+                    int seg = trade_bdays[i] / seg_size;
+                    if (seg > 2) seg = 2;
+                    seg_ret[seg] += rets[i]; seg_n[seg]++;
+                }
+                float min_seg_annual = 9999;
+                int active_segs = 0;
+                bool wf_ok = true;  // E: walk-forward 每個活躍段都要正報酬
+                for (int s=0; s<3; s++) {
+                    if (seg_n[s] >= 5) {
+                        if (seg_ret[s] <= 0) wf_ok = false;
+                        float sa = seg_ret[s] / (n_years / 3.0f);
+                        if (sa < min_seg_annual) min_seg_annual = sa;
+                        active_segs++;
+                    }
+                }
+                // 至少要有 2 個活躍段，且都要正報酬
+                if (active_segs >= 2 && wf_ok) {
+                    float s_consistency = min_seg_annual * 0.05f;
+                    if (s_consistency > 15) s_consistency = 15;
+
+                    // C: 新評分公式
+                    float s_total = annual_ret * 0.30f;       // 0.15 → 0.30（總報酬主導）
+                    float s_sharpe = sharpe * 3.0f; if (s_sharpe > 12) s_sharpe = 12;
+                    float s_pl = pl_ratio * 1.0f; if (s_pl > 8) s_pl = 8;
+                    float s_streak = max_streak * 1.5f;
+                    float s_dd = fabsf(max_dd_sum) * 0.1f;
+                    // avg_hold penalty：<8 天扣分（鼓勵波段）
+                    float s_hold_pen = 0;
+                    if (avg_hold < 8.0f) s_hold_pen = (8.0f - avg_hold) * 2.0f;
+
+                    // 移除 s_wr（已在門檻把關）、s_pf（和 s_pl 重複）
+                    score = s_total + s_sharpe + s_pl + s_consistency - s_streak - s_dd - s_hold_pen;
                 }
             }
-            float s_consistency = 0;
-            if (active_segs >= 2 && min_seg_annual > 0) {
-                s_consistency = min_seg_annual * 0.05f;
-                if (s_consistency > 15) s_consistency = 15;
-            } else if (active_segs >= 2 && min_seg_annual < 0) {
-                s_consistency = min_seg_annual * 0.10f;
-            }
-
-            float s_total = annual_ret * 0.15f;
-            float s_sharpe = sharpe * 4.0f; if (s_sharpe > 15) s_sharpe = 15;
-            float s_wr = win_rate * 0.05f;
-            float s_pl = pl_ratio * 1.0f; if (s_pl > 8) s_pl = 8;
-            float s_pf = pf * 0.8f; if (s_pf > 8) s_pf = 8;
-            float s_streak = max_streak * 1.5f;
-            float s_dd = fabsf(max_dd_sum) * 0.1f;
-
-            score = s_total + s_sharpe + s_wr + s_pl + s_pf + s_consistency - s_streak - s_dd;
         }
     }
 
@@ -1172,8 +1179,8 @@ def main():
             _baseline_wr = sum(1 for t in _baseline_trades if t.get("return",0)>0) / _baseline_n * 100 if _baseline_n else 0
             print(f"[GPU] Gist 策略在當前資料上：{_baseline_n}筆 avg{_baseline_avg:.1f}% 總{_baseline_total:.0f}% 勝率{_baseline_wr:.0f}%")
             best_params = dict(gist_best_params)
-            # 檢查 Web 回測是否已有近期資料（有的話不重推，避免覆蓋 daily_scan 延續的明細）
-            _should_push = True
+            # 鎖死：GPU 啟動永不推 Web（由 daily_scan + 手動 backtest_to_web.py 負責）
+            _should_push = False
             try:
                 _web_r = requests.get(f"https://api.github.com/gists/e1159b02a87d3c6ee9f33fb9ef61bb80", headers=headers, timeout=10)
                 _web_bt = json.loads(list(_web_r.json()["files"].values())[0]["content"]) if "backtest_results.json" in {f for f in _web_r.json()["files"]} else {}
@@ -1237,8 +1244,9 @@ def main():
                     print(f"[GPU] ✅ v5 新資料結果已推送（{len(_web_completed)}筆完成 + {_holding_n}筆持有中 → Web 會自動延續）")
                 except Exception as _e:
                     print(f"[GPU] ⚠️ 推送失敗：{_e}")
-            hall_of_fame = [(999, dict(gist_best_params)) for _ in range(5)]
-            print(f"[GPU] 載入 v5 作為爬山起點 + 名人堂全填 v5（配種從 2000%+ 開始）")
+            # A: HOF 先放 v5 一份，等 1D 掃描後用 top 4 diverse 改進填剩下的
+            hall_of_fame = [(999, dict(gist_best_params))]
+            print(f"[GPU] 載入 v5 作為爬山起點（HOF[0] = v5，其餘由 1D 掃描填入以確保多樣性）")
     except Exception as _e:
         print(f"[GPU] Gist 載入失敗：{_e}")
 
@@ -1266,8 +1274,17 @@ def main():
             print(f"[GPU] 🎯 1D 發現 {len(_improvements)} 個改進（前 5）：")
             for k, v, o, tot, n, d in _improvements[:5]:
                 print(f"  {k}: {o} → {v} | +{d:.0f}%（總{tot:.0f}%, {n}筆）")
+            # A: 用 top 4 主導參數不同的改進填 HOF（達成多樣性）
+            _seen_keys = set()
+            for k, v, o, tot, n, d in _improvements:
+                if k in _seen_keys: continue
+                _seen_keys.add(k)
+                _diverse = dict(_base); _diverse[k] = v
+                hall_of_fame.append((999, _diverse))
+                if len(hall_of_fame) >= 5: break
+            print(f"[GPU] 🧬 HOF 多樣化完成：{len(hall_of_fame)} 個親代（主導參數：{['v5'] + list(_seen_keys)[:4]}）")
         else:
-            print(f"[GPU] 1D 沒有單參數改進")
+            print(f"[GPU] 1D 沒有單參數改進（HOF 保持只有 v5）")
         # 2D 掃描
         _sweep_keys = ["w_sector_flow","sector_flow_topn","w_up_days","up_days_min","w_week52","week52_min",
             "w_vol_up_days","vol_up_days_min","w_mom_accel","mom_accel_min",
@@ -1384,6 +1401,8 @@ def main():
 
         # === 全部先用隨機填滿（向量化，超快）===
         _base_for_freeze = best_params if best_params else gist_best_params
+        # B: 新指標強制探索 — 40% 機率非零
+        NEW_INDICATOR_WEIGHTS = {"w_sector_flow","w_up_days","w_week52","w_vol_up_days","w_mom_accel"}
         for i, key in enumerate(PARAM_ORDER):
             opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
             if key in FROZEN_PARAMS and _base_for_freeze:
@@ -1393,6 +1412,16 @@ def main():
                 lo = max(0, base_idx - 1)
                 hi = min(len(opts) - 1, base_idx + 1)
                 params_np[:, i] = opts[np.random.randint(lo, hi + 1, BATCH)]
+            elif key in NEW_INDICATOR_WEIGHTS:
+                # B: 新指標 40% 強制非零（避免被 w=0 主導）
+                nonzero_opts = opts[opts > 0]
+                if len(nonzero_opts) > 0:
+                    force_nonzero = np.random.random(BATCH) < 0.4
+                    zero_vals = np.zeros(BATCH, dtype=np.float32)
+                    nonzero_vals = np.random.choice(nonzero_opts, BATCH).astype(np.float32)
+                    params_np[:, i] = np.where(force_nonzero, nonzero_vals, zero_vals)
+                else:
+                    params_np[:, i] = np.random.choice(opts, BATCH).astype(np.float32)
             else:
                 # 自由參數：全範圍探索
                 params_np[:, i] = np.random.choice(opts, BATCH).astype(np.float32)
@@ -1618,30 +1647,60 @@ def main():
                     trade_details = cpu_replay(pre, best_params)
                     import math
                     trade_details = [t for t in trade_details if not math.isnan(t.get("return",0))]
-                    # 品質門檻：拒絕垃圾策略（排除持有中）
                     _completed_td = [t for t in trade_details if t.get("reason") != "持有中"]
                     _n_td = len(_completed_td)
                     _avg_hold = sum(t.get("days",0) for t in _completed_td) / _n_td if _n_td else 0
                     _avg_ret = sum(t.get("return",0) for t in _completed_td) / _n_td if _n_td else 0
                     _new_total = sum(t.get("return",0) for t in _completed_td)
-                    if _n_td > 200 or _avg_hold < 5 or _avg_ret < 3:
-                        print(f"  [GPU] ❌ 品質不過關：{_n_td}筆 avg持有{_avg_hold:.1f}天 avg報酬{_avg_ret:.1f}%（跳過）")
-                        last_synced_improved = total_improved
-                        continue
-                    # 同資料比較：用 cpu_replay 跑 Gist 策略，總報酬必須更高才推
+
+                    # 🛡️ 第 1 層（最重要）：同資料比較 — 新總報酬必須贏 Gist 至少 2%
+                    # 讀取失敗 → 直接拒絕推送（不退回分數比較）
                     try:
                         _gist_data = json.loads(list(r.json()["files"].values())[0]["content"])
                         _gist_params = _gist_data.get("params", {})
-                        _gist_trades = cpu_replay(pre, _gist_params)
-                        _gist_trades = [t for t in _gist_trades if not math.isnan(t.get("return",0))]
-                        _gist_total = sum(t.get("return",0) for t in _gist_trades)
-                        if _new_total < _gist_total:
-                            print(f"  [GPU] ❌ 同資料比較：新{_new_total:.0f}% < 現有{_gist_total:.0f}%（跳過）")
+                        if not _gist_params:
+                            print(f"  [GPU] ❌ Gist 沒有 params，無法比較總報酬（跳過）")
                             last_synced_improved = total_improved
                             continue
-                        print(f"  [GPU] ✅ 同資料驗證通過：新{_new_total:.0f}% > 現有{_gist_total:.0f}%")
+                        _gist_trades = cpu_replay(pre, _gist_params)
+                        _gist_trades = [t for t in _gist_trades if not math.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
+                        _gist_total = sum(t.get("return",0) for t in _gist_trades)
+                        _min_required = _gist_total * 1.02  # 必須贏 2% 才算真突破
+                        if _new_total < _min_required:
+                            print(f"  [GPU] ❌ 總報酬保護：新{_new_total:.0f}% < 需要的 {_min_required:.0f}%（Gist {_gist_total:.0f}% x 1.02）（跳過）")
+                            last_synced_improved = total_improved
+                            continue
+                        print(f"  [GPU] ✅ 總報酬驗證：新{_new_total:.0f}% > Gist {_gist_total:.0f}% x 1.02")
                     except Exception as _e:
-                        print(f"  [GPU] ⚠️ 同資料比較失敗({_e})，用分數比較")
+                        print(f"  [GPU] ❌ 同資料比較失敗({_e})，安全起見直接拒絕推送（跳過）")
+                        last_synced_improved = total_improved
+                        continue
+
+                    # 🛡️ 第 2 層：品質門檻（D）
+                    if _n_td < 50 or _n_td > 120:
+                        print(f"  [GPU] ❌ 筆數不過關：{_n_td}筆（需 50-120）（跳過）")
+                        last_synced_improved = total_improved
+                        continue
+                    if _avg_hold < 5:
+                        print(f"  [GPU] ❌ 持有天數不過關：{_avg_hold:.1f}天（需 >= 5）（跳過）")
+                        last_synced_improved = total_improved
+                        continue
+                    if _avg_ret < 5:
+                        print(f"  [GPU] ❌ 平均報酬不過關：{_avg_ret:.1f}%（需 >= 5%）（跳過）")
+                        last_synced_improved = total_improved
+                        continue
+                    # max_dd 檢查
+                    _rets = [t.get("return",0) for t in _completed_td]
+                    _max_dd = 0; _run_dd = 0
+                    for _r in _rets:
+                        if _r < 0: _run_dd += _r
+                        else: _run_dd = 0
+                        if _run_dd < _max_dd: _max_dd = _run_dd
+                    if _max_dd < -40:
+                        print(f"  [GPU] ❌ 最大連虧不過關：{_max_dd:.1f}%（需 >= -40%）（跳過）")
+                        last_synced_improved = total_improved
+                        continue
+                    print(f"  [GPU] ✅ 品質門檻：{_n_td}筆 avg持有{_avg_hold:.1f}天 avg{_avg_ret:.1f}% MaxDD{_max_dd:.1f}%")
                     # 分年統計（排除持有中）
                     yearly = {}
                     for t in _completed_td:
