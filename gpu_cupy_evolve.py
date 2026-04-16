@@ -1008,14 +1008,27 @@ def cpu_replay(pre, p):
                         hold_si[h]=best_si; hold_bp[h]=float(close[best_si,day+1])
                         hold_pk[h]=hold_bp[h]; hold_bd[h]=day+1; n_holding+=1; break
         # Phase 3 已移除（第三檔回測表現不佳）
+    # Append active holdings as "持有中"
+    for h in range(max_pos):
+        if hold_si[h] >= 0:
+            si = hold_si[h]
+            cur = float(close[si, nd-1])
+            dh = nd - 1 - hold_bd[h]
+            ret = (cur / hold_bp[h] - 1) * 100 - 0.585 if hold_bp[h] > 0 else 0
+            trades.append({"ticker":tickers[si],"name":get_name(tickers[si]),
+                "buy_date":str(dates[hold_bd[h]].date()),"sell_date":"",
+                "buy_price":round(hold_bp[h],2),"sell_price":round(cur,2),
+                "return":round(ret,2),"days":dh,"reason":"持有中",
+                "peak_price":round(hold_pk[h],2)})
     return sorted(trades, key=lambda x: x["buy_date"])
 
 def main():
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     raw = download_data()
     # 只過濾資料太短的，保留全部股票（動態 top100 mask 在 precompute 裡算）
-    data = {k:v for k,v in raw.items() if len(v) >= 900}
-    print(f"[過濾] {len(raw)} → {len(data)} 檔 (>=900天，v1 框架無均價過濾)")
+    TARGET_DAYS = 900
+    data = {k: v.tail(TARGET_DAYS) for k, v in raw.items() if len(v) >= TARGET_DAYS}
+    print(f"[過濾] {len(raw)} → {len(data)} 檔 (固定{TARGET_DAYS}天，v1 框架無均價過濾)")
     if len(data) < 10: print("資料不足"); return
     pre = precompute(data)
     ns, nd = pre["n_stocks"], pre["n_days"]
@@ -1361,9 +1374,33 @@ def main():
                     trade_details = cpu_replay(pre, best_params)
                     import math
                     trade_details = [t for t in trade_details if not math.isnan(t.get("return",0))]
-                    # 分年統計
+                    # 品質門檻：拒絕垃圾策略（排除持有中）
+                    _completed_td = [t for t in trade_details if t.get("reason") != "持有中"]
+                    _n_td = len(_completed_td)
+                    _avg_hold = sum(t.get("days",0) for t in _completed_td) / _n_td if _n_td else 0
+                    _avg_ret = sum(t.get("return",0) for t in _completed_td) / _n_td if _n_td else 0
+                    _new_total = sum(t.get("return",0) for t in _completed_td)
+                    if _n_td > 200 or _avg_hold < 5 or _avg_ret < 3:
+                        print(f"  [GPU] ❌ 品質不過關：{_n_td}筆 avg持有{_avg_hold:.1f}天 avg報酬{_avg_ret:.1f}%（跳過）")
+                        last_synced_improved = total_improved
+                        continue
+                    # 同資料比較：用 cpu_replay 跑 Gist 策略，總報酬必須更高才推
+                    try:
+                        _gist_data = json.loads(list(r.json()["files"].values())[0]["content"])
+                        _gist_params = _gist_data.get("params", {})
+                        _gist_trades = cpu_replay(pre, _gist_params)
+                        _gist_trades = [t for t in _gist_trades if not math.isnan(t.get("return",0))]
+                        _gist_total = sum(t.get("return",0) for t in _gist_trades)
+                        if _new_total < _gist_total:
+                            print(f"  [GPU] ❌ 同資料比較：新{_new_total:.0f}% < 現有{_gist_total:.0f}%（跳過）")
+                            last_synced_improved = total_improved
+                            continue
+                        print(f"  [GPU] ✅ 同資料驗證通過：新{_new_total:.0f}% > 現有{_gist_total:.0f}%")
+                    except Exception as _e:
+                        print(f"  [GPU] ⚠️ 同資料比較失敗({_e})，用分數比較")
+                    # 分年統計（排除持有中）
                     yearly = {}
-                    for t in trade_details:
+                    for t in _completed_td:
                         y = t["buy_date"][:4]
                         if y not in yearly: yearly[y] = {"n":0,"ret":0,"win":0}
                         yearly[y]["n"] += 1; yearly[y]["ret"] += t["return"]
@@ -1401,7 +1438,7 @@ def main():
                         WEB_GIST = "e1159b02a87d3c6ee9f33fb9ef61bb80"
                         web_trades = []
                         for t in trade_details:
-                            web_trades.append({
+                            wt = {
                                 "ticker": t.get("ticker", ""), "name": t.get("name", ""),
                                 "buy_price": round(t.get("buy_price", 0), 2),
                                 "sell_price": round(t.get("sell_price", 0), 2),
@@ -1409,13 +1446,17 @@ def main():
                                 "return_pct": round(t.get("return", 0), 1),
                                 "reason": t.get("reason", ""),
                                 "buy_date": t.get("buy_date", ""), "sell_date": t.get("sell_date", ""),
-                            })
-                        _rets = [t["return_pct"] for t in web_trades]
+                            }
+                            if t.get("reason") == "持有中":
+                                wt["peak_price"] = t.get("peak_price", t.get("buy_price", 0))
+                            web_trades.append(wt)
+                        _completed = [t for t in web_trades if t.get("reason") != "持有中"]
+                        _rets = [t["return_pct"] for t in _completed]
                         _wins = [r for r in _rets if r > 0]
                         _losses = [r for r in _rets if r <= 0]
                         _dates = pre["dates"]
                         bt_stats = {
-                            "total_trades": len(_rets),
+                            "total_trades": len(_completed),
                             "total_return_pct": round(sum(_rets), 1),
                             "win_rate": round(len(_wins)/len(_rets)*100, 1) if _rets else 0,
                             "avg_return": round(sum(_rets)/len(_rets), 1) if _rets else 0,
