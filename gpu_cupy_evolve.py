@@ -106,7 +106,6 @@ void backtest(
     const float* squeeze_fire, const float* new_high_60, const float* adx,
     const float* bias, const float* obv_rising, const float* atr_pct,
     const float* open_price, const float* top100_mask, const float* market_bull,
-    const float* up_days, const float* week52_pos, const float* vol_up_days, const float* mom_accel,
     const float* params, const int n_params_per_combo,
     float* results, const int n_combos,
     const int train_end
@@ -158,15 +157,10 @@ void backtest(
     int upgrade_margin = (int)p[56];
     // 多持倉
     int max_pos = (int)p[57]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
-    // 新指標
-    int w_up_days = (int)p[60]; float up_days_min = p[61];
-    int w_week52 = (int)p[62]; float week52_min = p[63];
-    int w_vol_up_days = (int)p[64]; float vol_up_days_min = p[65];
-    int w_mom_accel = (int)p[66]; float mom_accel_min = p[67];
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[68];
-    int ma_slow_idx = (int)p[69];
-    int mom_idx = (int)p[70];
+    int ma_fast_idx = (int)p[60];
+    int ma_slow_idx = (int)p[61];
+    int mom_idx = (int)p[62];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -280,10 +274,6 @@ void backtest(
                 if (w_bias > 0 && bias[d] >= 0 && bias[d] <= bias_max_th) sc += w_bias;
                 if (w_obv > 0 && obv_rising[d] > 0.5f) sc += w_obv;
                 if (w_atr > 0 && atr_pct[d] >= atr_min) sc += w_atr;
-                if (w_up_days > 0 && up_days[d] >= up_days_min) sc += w_up_days;
-                if (w_week52 > 0 && week52_pos[d] >= week52_min) sc += w_week52;
-                if (w_vol_up_days > 0 && vol_up_days[d] >= vol_up_days_min) sc += w_vol_up_days;
-                if (w_mom_accel > 0 && mom_accel[d] >= mom_accel_min) sc += w_mom_accel;
                 if (consec_green >= 1) {
                     bool ok = true;
                     for (int g = 0; g < consec_green; g++) {
@@ -324,10 +314,6 @@ void backtest(
                     if (w_bias > 0 && bias[d] >= 0 && bias[d] <= bias_max_th) sc += w_bias;
                     if (w_obv > 0 && obv_rising[d] > 0.5f) sc += w_obv;
                     if (w_atr > 0 && atr_pct[d] >= atr_min) sc += w_atr;
-                if (w_up_days > 0 && up_days[d] >= up_days_min) sc += w_up_days;
-                if (w_week52 > 0 && week52_pos[d] >= week52_min) sc += w_week52;
-                if (w_vol_up_days > 0 && vol_up_days[d] >= vol_up_days_min) sc += w_vol_up_days;
-                if (w_mom_accel > 0 && mom_accel[d] >= mom_accel_min) sc += w_mom_accel;
                     if (sc < weakest_sc) { weakest_sc = sc; weakest_h = h; }
                 }
                 // 候選分數 - 最弱持股分數 >= margin → 賣弱換強
@@ -390,10 +376,6 @@ void backtest(
                 if (w_bias > 0 && bias[d] >= 0 && bias[d] <= bias_max_th) sc += w_bias;
                 if (w_obv > 0 && obv_rising[d] > 0.5f) sc += w_obv;
                 if (w_atr > 0 && atr_pct[d] >= atr_min) sc += w_atr;
-                if (w_up_days > 0 && up_days[d] >= up_days_min) sc += w_up_days;
-                if (w_week52 > 0 && week52_pos[d] >= week52_min) sc += w_week52;
-                if (w_vol_up_days > 0 && vol_up_days[d] >= vol_up_days_min) sc += w_vol_up_days;
-                if (w_mom_accel > 0 && mom_accel[d] >= mom_accel_min) sc += w_mom_accel;
 
                 if (consec_green >= 1) {
                     bool ok = true;
@@ -570,11 +552,6 @@ PARAMS_SPACE = {
     "use_mom_exit": [0,1], "mom_exit_th": [0,1,2,3,5],
     # ====== 類股資金流向 ======
     "w_sector_flow": [0,1,2,3], "sector_flow_topn": [1,2,3,5,8],
-    # ====== 新指標（kernel + cpu_replay 同步）======
-    "w_up_days": [0,1,2,3], "up_days_min": [2,3,4,5],
-    "w_week52": [0,1,2,3], "week52_min": [0.6,0.7,0.8,0.9],
-    "w_vol_up_days": [0,1,2], "vol_up_days_min": [2,3,4],
-    "w_mom_accel": [0,1,2], "mom_accel_min": [0,2,5,8],
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10],
     # ====== 多持倉 ======
@@ -606,10 +583,6 @@ PARAM_ORDER = [
     "upgrade_margin",
     "max_positions",
     "w_sector_flow","sector_flow_topn",
-    "w_up_days","up_days_min",
-    "w_week52","week52_min",
-    "w_vol_up_days","vol_up_days_min",
-    "w_mom_accel","mom_accel_min",
 ]
 
 MA_FAST_OPTS = [3,5,10]
@@ -827,33 +800,6 @@ def precompute(data):
     _mapped = sum(1 for s in _stock_sec if s >= 0)
     print(f"  類股資金流向：{_mapped}/{n} 檔有產業映射，{_n_sec} 個產業")
 
-    # === 新指標：近 N 日連漲天數 ===
-    up_days = np.zeros_like(close)
-    for i in range(1, ml):
-        up_days[:, i] = np.where(close[:, i] > close[:, i-1], up_days[:, i-1] + 1, 0)
-
-    # === 新指標：52 週高低範圍位置（0~1，1=在最高點）===
-    week52_pos = np.zeros_like(close)
-    for i in range(250, ml):
-        h252 = np.max(high[:, i-250:i+1], axis=1)
-        l252 = np.min(low[:, i-250:i+1], axis=1)
-        rng = h252 - l252
-        week52_pos[:, i] = np.where(rng > 0, (close[:, i] - l252) / rng, 0.5)
-
-    # === 新指標：量能連續放大天數 ===
-    vol_up_days = np.zeros_like(volume)
-    for i in range(1, ml):
-        vol_up_days[:, i] = np.where(volume[:, i] > volume[:, i-1], vol_up_days[:, i-1] + 1, 0)
-
-    # === 新指標：動量加速度（5日動量的變化率）===
-    mom_accel = np.zeros_like(close)
-    if 5 in mom_d:
-        m5 = mom_d[5]
-        for i in range(5, ml):
-            mom_accel[:, i] = m5[:, i] - m5[:, i-5]
-
-    print(f"  新指標：連漲天數 / 52週位置 / 量能連續放大 / 動量加速度")
-
     # 無大盤過濾（v1 框架：commit 672bdd8 移除，全部天數允許買入）
     market_bull = np.ones(ml, dtype=np.float32)
     print(f"  大盤過濾：無（v1 框架）| {ml}/{ml} 天全部允許")
@@ -873,8 +819,6 @@ def precompute(data):
         "open":opn.astype(np.float32),
         "bb_std":bb_std.astype(np.float32),
         "sector_hot":sector_hot,
-        "up_days":up_days.astype(np.float32),"week52_pos":week52_pos.astype(np.float32),
-        "vol_up_days":vol_up_days.astype(np.float32),"mom_accel":mom_accel.astype(np.float32),
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
 REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線","停滯出場","漸進停利","鎖利出場","動量反轉","換股"]
@@ -893,8 +837,6 @@ def cpu_replay(pre, p):
     opn=pre.get("open")
     market_bull=pre.get("market_bull")
     sector_hot=pre.get("sector_hot")
-    up_days_arr=pre.get("up_days"); week52_arr=pre.get("week52_pos")
-    vol_up_days_arr=pre.get("vol_up_days"); mom_accel_arr=pre.get("mom_accel")
     maf=pre["ma_d"].get(int(p.get("ma_fast_w",5)), pre["ma_d"][5])
     mas=pre["ma_d"].get(int(p.get("ma_slow_w",20)), pre["ma_d"][20])
     ma60=pre["ma60"]
@@ -979,10 +921,6 @@ def cpu_replay(pre, p):
                 if int(p.get("w_obv",0))>0 and obv_rising_arr[si,d]>0.5: sc+=int(p["w_obv"])
                 if int(p.get("w_atr",0))>0 and atr_pct_arr[si,d]>=p.get("atr_min",2): sc+=int(p["w_atr"])
                 if int(p.get("w_sector_flow",0))>0 and sector_hot is not None and sector_hot[si,d]<p.get("sector_flow_topn",3): sc+=int(p["w_sector_flow"])
-                if int(p.get("w_up_days",0))>0 and up_days_arr is not None and up_days_arr[si,d]>=p.get("up_days_min",3): sc+=int(p["w_up_days"])
-                if int(p.get("w_week52",0))>0 and week52_arr is not None and week52_arr[si,d]>=p.get("week52_min",0.8): sc+=int(p["w_week52"])
-                if int(p.get("w_vol_up_days",0))>0 and vol_up_days_arr is not None and vol_up_days_arr[si,d]>=p.get("vol_up_days_min",3): sc+=int(p["w_vol_up_days"])
-                if int(p.get("w_mom_accel",0))>0 and mom_accel_arr is not None and mom_accel_arr[si,d]>=p.get("mom_accel_min",2): sc+=int(p["w_mom_accel"])
                 return sc
             # 找候選最高分
             cand_si=-1; cand_sc=0; cand_vol=0
@@ -1053,14 +991,6 @@ def cpu_replay(pre, p):
                 if w_atr_buy>0 and atr_pct_arr[si,day]>=atr_min_val: sc+=w_atr_buy
                 w_sf=int(p.get("w_sector_flow",0))
                 if w_sf>0 and sector_hot is not None and sector_hot[si,day]<p.get("sector_flow_topn",3): sc+=w_sf
-                _wud=int(p.get("w_up_days",0))
-                if _wud>0 and up_days_arr is not None and up_days_arr[si,day]>=p.get("up_days_min",3): sc+=_wud
-                _w52=int(p.get("w_week52",0))
-                if _w52>0 and week52_arr is not None and week52_arr[si,day]>=p.get("week52_min",0.8): sc+=_w52
-                _wvud=int(p.get("w_vol_up_days",0))
-                if _wvud>0 and vol_up_days_arr is not None and vol_up_days_arr[si,day]>=p.get("vol_up_days_min",3): sc+=_wvud
-                _wma=int(p.get("w_mom_accel",0))
-                if _wma>0 and mom_accel_arr is not None and mom_accel_arr[si,day]>=p.get("mom_accel_min",2): sc+=_wma
                 cg=int(p.get("consecutive_green",0))
                 if cg>=1:
                     ok=True
@@ -1127,8 +1057,6 @@ def main():
     d_open = cp.asarray(pre["open"])
     d_top100 = cp.asarray(pre["top100_mask"])
     d_market = cp.asarray(pre["market_bull"])
-    d_up_days = cp.asarray(pre["up_days"]); d_week52 = cp.asarray(pre["week52_pos"])
-    d_vol_up_days = cp.asarray(pre["vol_up_days"]); d_mom_accel = cp.asarray(pre["mom_accel"])
     d_ma60 = cp.asarray(pre["ma60"])
 
     print("[GPU] 開始進化！每批 500,000 組")
@@ -1380,8 +1308,6 @@ def main():
                 d_open = cp.asarray(pre["open"])
                 d_top100 = cp.asarray(pre["top100_mask"])
                 d_market = cp.asarray(pre["market_bull"])
-                d_up_days = cp.asarray(pre["up_days"]); d_week52 = cp.asarray(pre["week52_pos"])
-                d_vol_up_days = cp.asarray(pre["vol_up_days"]); d_mom_accel = cp.asarray(pre["mom_accel"])
                 d_ma60 = cp.asarray(pre["ma60"])
                 d_ma3 = cp.asarray(pre["ma_d"][3]); d_ma5 = cp.asarray(pre["ma_d"][5])
                 d_ma10 = cp.asarray(pre["ma_d"][10]); d_ma15 = cp.asarray(pre["ma_d"][15])
@@ -1539,7 +1465,6 @@ def main():
             d_ma3, d_ma5, d_ma10, d_ma15, d_ma20, d_ma30, d_ma60,
             d_vp, d_squeeze, d_newhigh, d_adx, d_bias, d_obv_rising, d_atr_pct,
             d_open, d_top100, d_market,
-            d_up_days, d_week52, d_vol_up_days, d_mom_accel,
             d_params, np.int32(N_PARAMS_FULL),
             d_results, np.int32(BATCH),
             np.int32(pre["train_end"])
