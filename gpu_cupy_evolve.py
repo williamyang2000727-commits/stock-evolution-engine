@@ -1103,9 +1103,57 @@ def main():
             _baseline_total = sum(t.get("return",0) for t in _baseline_trades)
             _baseline_n = len(_baseline_trades)
             _baseline_avg = _baseline_total / _baseline_n if _baseline_n else 0
-            print(f"[GPU] Gist 策略在當前資料上：{_baseline_n}筆 avg{_baseline_avg:.1f}% 總{_baseline_total:.0f}%")
-            # 推回 Gist 建立真實分數基準（不用 kernel score，用 -1 讓 kernel 自然超越）
+            _baseline_wr = sum(1 for t in _baseline_trades if t.get("return",0)>0) / _baseline_n * 100 if _baseline_n else 0
+            print(f"[GPU] Gist 策略在當前資料上：{_baseline_n}筆 avg{_baseline_avg:.1f}% 總{_baseline_total:.0f}% 勝率{_baseline_wr:.0f}%")
             best_params = dict(gist_best_params)
+            # 自動推送 v5 新資料結果到 GPU Gist + Web
+            _all_baseline = cpu_replay(pre, gist_best_params)  # 含持有中
+            _all_baseline = [t for t in _all_baseline if not _math.isnan(t.get("return",0))]
+            try:
+                _dates = pre["dates"]
+                # 推 GPU Gist（含 trade_details）
+                _gist_content = json.dumps({"score":0,"source":"baseline_on_new_data",
+                    "updated_at":time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "params":gist_best_params,"backtest":{
+                        "avg_return":round(_baseline_avg,2),"total_return":round(_baseline_total,2),
+                        "win_rate":round(_baseline_wr,2),"total_trades":_baseline_n},
+                    "trade_details":_all_baseline}, ensure_ascii=False, indent=2)
+                requests.patch(f"https://api.github.com/gists/{GIST_ID}", headers=headers,
+                    json={"files":{"best_strategy.json":{"content":_gist_content}}}, timeout=10)
+                # 推 Web 回測
+                WEB_GIST = "e1159b02a87d3c6ee9f33fb9ef61bb80"
+                _web_trades = []
+                for t in _all_baseline:
+                    wt = {"ticker":t.get("ticker",""),"name":t.get("name",""),
+                        "buy_price":round(t.get("buy_price",0),2),"sell_price":round(t.get("sell_price",0),2),
+                        "hold_days":t.get("days",0),"return_pct":round(t.get("return",0),1),
+                        "reason":t.get("reason",""),"buy_date":t.get("buy_date",""),"sell_date":t.get("sell_date","")}
+                    if t.get("reason") == "持有中":
+                        wt["peak_price"] = t.get("peak_price", t.get("buy_price",0))
+                    _web_trades.append(wt)
+                _web_completed = [t for t in _web_trades if t.get("reason") != "持有中"]
+                _web_rets = [t["return_pct"] for t in _web_completed]
+                _web_wins = [r for r in _web_rets if r > 0]
+                _web_losses = [r for r in _web_rets if r <= 0]
+                _bt_stats = {
+                    "total_trades":len(_web_completed),
+                    "total_return_pct":round(sum(_web_rets),1),
+                    "win_rate":round(len(_web_wins)/len(_web_rets)*100,1) if _web_rets else 0,
+                    "avg_return":round(sum(_web_rets)/len(_web_rets),1) if _web_rets else 0,
+                    "avg_win":round(sum(_web_wins)/len(_web_wins),1) if _web_wins else 0,
+                    "avg_loss":round(sum(_web_losses)/len(_web_losses),1) if _web_losses else 0,
+                    "max_win":round(max(_web_rets),1) if _web_rets else 0,
+                    "max_loss":round(min(_web_rets),1) if _web_rets else 0,
+                    "avg_hold_days":round(sum(t["hold_days"] for t in _web_completed)/len(_web_completed),1) if _web_completed else 0,
+                    "start_date":str(_dates[0].date()),"end_date":str(_dates[-1].date()),
+                    "total_days":pre["n_days"],"strategy_score":0,
+                }
+                requests.patch(f"https://api.github.com/gists/{WEB_GIST}", headers=headers,
+                    json={"files":{"backtest_results.json":{"content":json.dumps({"stats":_bt_stats,"trades":_web_trades},ensure_ascii=False)}}}, timeout=30)
+                _holding_n = sum(1 for t in _web_trades if t.get("reason") == "持有中")
+                print(f"[GPU] ✅ v5 新資料結果已推送（{len(_web_completed)}筆完成 + {_holding_n}筆持有中 → Web 會自動延續）")
+            except Exception as _e:
+                print(f"[GPU] ⚠️ 推送失敗：{_e}")
             print(f"[GPU] 載入 Gist 策略作為爬山起點（score 由 kernel 決定）")
     except Exception as _e:
         print(f"[GPU] Gist 載入失敗：{_e}")
