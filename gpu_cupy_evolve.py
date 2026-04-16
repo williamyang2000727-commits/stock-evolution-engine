@@ -158,9 +158,9 @@ void backtest(
     // 多持倉
     int max_pos = (int)p[57]; if (max_pos < 1) max_pos = 1; if (max_pos > 3) max_pos = 3;
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[68];
-    int ma_slow_idx = (int)p[69];
-    int mom_idx = (int)p[70];
+    int ma_fast_idx = (int)p[60];
+    int ma_slow_idx = (int)p[61];
+    int mom_idx = (int)p[62];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -488,7 +488,7 @@ void backtest(
                 s_consistency = min_seg_annual * 0.10f;
             }
 
-            float s_total = annual_ret * 0.15f;
+            float s_total = annual_ret * 0.25f;
             float s_sharpe = sharpe * 4.0f; if (s_sharpe > 15) s_sharpe = 15;
             float s_wr = win_rate * 0.05f;
             float s_pl = pl_ratio * 1.0f; if (s_pl > 8) s_pl = 8;
@@ -510,18 +510,18 @@ void backtest(
 ''', 'backtest')
 
 PARAMS_SPACE = {
-    # ====== 評分制買入（權重 0-3 + 門檻）======
-    "w_rsi": [0,1,2,3], "rsi_th": [60,63,65,68,70,72,75,80],
-    "w_bb": [0,1,2,3], "bb_th": [0.7,0.75,0.8,0.85,0.9,0.95,1.0],
-    "w_vol": [0,1,2,3], "vol_th": [2.0,2.5,3.0,3.5,4.0,5.0,6.0],
-    "w_ma": [0,1,2,3],
+    # ====== 評分制買入（權重 0-5 + 門檻）======
+    "w_rsi": [0,1,2,3,4,5], "rsi_th": [55,60,65,68,70,72,75,80,85],
+    "w_bb": [0,1,2,3,4], "bb_th": [0.6,0.7,0.8,0.85,0.9,0.95,1.0],
+    "w_vol": [0,1,2,3], "vol_th": [1.5,2.0,2.5,3.0,4.0,5.0],
+    "w_ma": [0,1,2,3,4],
     "w_macd": [0,1,2,3], "macd_mode": [0,1,2],
-    "w_kd": [0,1,2,3], "kd_th": [60,65,70,75,80,85], "kd_cross": [0,1],
-    "w_wr": [0,1,2,3], "wr_th": [-25,-30,-35,-40,-50],
-    "w_mom": [0,1,2,3], "mom_th": [5,8,10,12,15],
-    "w_near_high": [0,1,2], "near_high_pct": [3,5,10],
-    "w_squeeze": [0,1,2,3], "w_new_high": [0,1,2,3],
-    "w_adx": [0,1,2,3], "adx_th": [25,30,35,40],
+    "w_kd": [0,1,2,3,4], "kd_th": [50,55,60,65,70,75,80], "kd_cross": [0,1],
+    "w_wr": [0,1,2,3,4,5], "wr_th": [-20,-25,-30,-35,-40,-50],
+    "w_mom": [0,1,2,3,4], "mom_th": [3,5,8,10,12,15],
+    "w_near_high": [0,1,2,3], "near_high_pct": [2,3,5,8,10],
+    "w_squeeze": [0,1,2,3,4], "w_new_high": [0,1,2,3,4],
+    "w_adx": [0,1,2,3,4], "adx_th": [20,25,30,35,40],
     "consecutive_green": [0,1,2,3], "gap_up": [0,1],
     "above_ma60": [0,1], "vol_gt_yesterday": [0,1],
     "buy_threshold": [6,8,10,12,14,16],
@@ -552,11 +552,7 @@ PARAMS_SPACE = {
     "use_mom_exit": [0,1], "mom_exit_th": [0,1,2,3,5],
     # ====== 類股資金流向 ======
     "w_sector_flow": [0,1,2,3], "sector_flow_topn": [1,2,3,5,8],
-    # ====== 新指標 ======
-    "w_up_days": [0,1,2,3], "up_days_min": [2,3,4,5],
-    "w_week52": [0,1,2,3], "week52_min": [0.6,0.7,0.8,0.9],
-    "w_vol_up_days": [0,1,2], "vol_up_days_min": [2,3,4],
-    "w_mom_accel": [0,1,2], "mom_accel_min": [0,2,5,8],
+    # 新指標已移除（不在 kernel 裡會造成 kernel/cpu_replay 不匹配）
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10],
     # ====== 多持倉 ======
@@ -588,10 +584,6 @@ PARAM_ORDER = [
     "upgrade_margin",
     "max_positions",
     "w_sector_flow","sector_flow_topn",
-    "w_up_days","up_days_min",
-    "w_week52","week52_min",
-    "w_vol_up_days","vol_up_days_min",
-    "w_mom_accel","mom_accel_min",
 ]
 
 MA_FAST_OPTS = [3,5,10]
@@ -961,10 +953,6 @@ def cpu_replay(pre, p):
                 if int(p.get("w_obv",0))>0 and obv_rising_arr[si,d]>0.5: sc+=int(p["w_obv"])
                 if int(p.get("w_atr",0))>0 and atr_pct_arr[si,d]>=p.get("atr_min",2): sc+=int(p["w_atr"])
                 if int(p.get("w_sector_flow",0))>0 and sector_hot is not None and sector_hot[si,d]<p.get("sector_flow_topn",3): sc+=int(p["w_sector_flow"])
-                if int(p.get("w_up_days",0))>0 and up_days_arr is not None and up_days_arr[si,d]>=p.get("up_days_min",3): sc+=int(p["w_up_days"])
-                if int(p.get("w_week52",0))>0 and week52_arr is not None and week52_arr[si,d]>=p.get("week52_min",0.8): sc+=int(p["w_week52"])
-                if int(p.get("w_vol_up_days",0))>0 and vol_up_days_arr is not None and vol_up_days_arr[si,d]>=p.get("vol_up_days_min",3): sc+=int(p["w_vol_up_days"])
-                if int(p.get("w_mom_accel",0))>0 and mom_accel_arr is not None and mom_accel_arr[si,d]>=p.get("mom_accel_min",2): sc+=int(p["w_mom_accel"])
                 return sc
             # 找候選最高分
             cand_si=-1; cand_sc=0; cand_vol=0
@@ -1035,14 +1023,6 @@ def cpu_replay(pre, p):
                 if w_atr_buy>0 and atr_pct_arr[si,day]>=atr_min_val: sc+=w_atr_buy
                 w_sf=int(p.get("w_sector_flow",0))
                 if w_sf>0 and sector_hot is not None and sector_hot[si,day]<p.get("sector_flow_topn",3): sc+=w_sf
-                _wud=int(p.get("w_up_days",0))
-                if _wud>0 and up_days_arr is not None and up_days_arr[si,day]>=p.get("up_days_min",3): sc+=_wud
-                _w52=int(p.get("w_week52",0))
-                if _w52>0 and week52_arr is not None and week52_arr[si,day]>=p.get("week52_min",0.8): sc+=_w52
-                _wvud=int(p.get("w_vol_up_days",0))
-                if _wvud>0 and vol_up_days_arr is not None and vol_up_days_arr[si,day]>=p.get("vol_up_days_min",3): sc+=_wvud
-                _wma=int(p.get("w_mom_accel",0))
-                if _wma>0 and mom_accel_arr is not None and mom_accel_arr[si,day]>=p.get("mom_accel_min",2): sc+=_wma
                 cg=int(p.get("consecutive_green",0))
                 if cg>=1:
                     ok=True
@@ -1273,9 +1253,7 @@ def main():
 
         # === 2D 掃描：測試所有雙參數組合 ===
         _sweep_keys = [
-            "w_sector_flow","sector_flow_topn","w_up_days","up_days_min",
-            "w_week52","week52_min","w_vol_up_days","vol_up_days_min",
-            "w_mom_accel","mom_accel_min",
+            "w_sector_flow","sector_flow_topn",
             "above_ma60","w_new_high","use_breakeven","breakeven_trigger","buy_threshold",
             "w_rsi","w_bb","w_kd","w_wr","w_atr","w_adx","w_squeeze",
         ]
