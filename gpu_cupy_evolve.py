@@ -428,98 +428,137 @@ void backtest(
         // Phase 3 已移除（第三檔回測表現不佳）
     }
 
-    // === 新評分 v2（C+D+E）：嚴格品質門檻 + walk-forward + 精簡公式 ===
+    // === 評分 v3（真 Walk-Forward）：train 期計分、test 期盲測驗證 ===
+    // 核心：GPU 優化基於 train 期統計；test 期必須通過門檻，否則 score = -999999
     float score = -999999.0f;
-    // D: 筆數 50-120
-    if (n_trades >= 50 && n_trades <= 120) {
-        float avg_ret = total_ret / n_trades;
-        float win_rate = win_count / n_trades * 100.0f;
 
-        // D: avg_hold >= 5
-        float avg_hold = 0;
-        for (int i=0; i<n_trades; i++) avg_hold += (float)hold_days_arr[i];
-        avg_hold /= n_trades;
+    // 分 train / test（依買入日）
+    int n_train = 0, n_test = 0;
+    float rets_train[100], rets_test[100];
+    int bdays_train[100], hd_train[100];
+    float total_train = 0, total_test = 0;
+    float win_train = 0;
+    for (int i=0; i<n_trades; i++) {
+        if (trade_bdays[i] < train_end) {
+            rets_train[n_train] = rets[i];
+            bdays_train[n_train] = trade_bdays[i];
+            hd_train[n_train] = hold_days_arr[i];
+            total_train += rets[i];
+            if (rets[i] > 0) win_train += 1;
+            n_train++;
+        } else {
+            rets_test[n_test] = rets[i];
+            total_test += rets[i];
+            n_test++;
+        }
+    }
 
-        if (avg_ret >= 5 && win_rate >= 35 && avg_hold >= 5.0f) {
-            // === Sharpe ratio ===
+    // D（train）：train 筆數 30-80（train 佔 2/3 資料，比例對應全期 50-120）
+    if (n_train >= 30 && n_train <= 80) {
+        float avg_ret_train = total_train / n_train;
+        float win_rate_train = win_train / n_train * 100.0f;
+
+        // D（train）：avg_hold >= 5
+        float avg_hold_train = 0;
+        for (int i=0; i<n_train; i++) avg_hold_train += (float)hd_train[i];
+        avg_hold_train /= n_train;
+
+        if (avg_ret_train >= 5 && win_rate_train >= 35 && avg_hold_train >= 5.0f) {
+            // === Sharpe（train）===
             float sum_sq = 0;
-            for (int i=0; i<n_trades; i++) {
-                float diff = rets[i] - avg_ret;
+            for (int i=0; i<n_train; i++) {
+                float diff = rets_train[i] - avg_ret_train;
                 sum_sq += diff * diff;
             }
-            float std_ret = sqrtf(sum_sq / n_trades);
-            float sharpe = std_ret > 0.5f ? avg_ret / std_ret : avg_ret;
-            if (sharpe > 10) sharpe = 10;
+            float std_train = sqrtf(sum_sq / n_train);
+            float sharpe_train = std_train > 0.5f ? avg_ret_train / std_train : avg_ret_train;
+            if (sharpe_train > 10) sharpe_train = 10;
 
-            // === 盈虧比 (P/L ratio) ===
+            // === 盈虧比（train）===
             float avg_win=0, avg_loss=0;
             int n_win=0, n_loss=0;
-            for (int i=0; i<n_trades; i++) {
-                if (rets[i]>0) { avg_win+=rets[i]; n_win++; }
-                else { avg_loss+=fabsf(rets[i]); n_loss++; }
+            for (int i=0; i<n_train; i++) {
+                if (rets_train[i]>0) { avg_win+=rets_train[i]; n_win++; }
+                else { avg_loss+=fabsf(rets_train[i]); n_loss++; }
             }
             if (n_win>0) avg_win /= n_win;
             if (n_loss>0) avg_loss /= n_loss;
             float pl_ratio = avg_loss>0.5f ? avg_win/avg_loss : avg_win;
             if (pl_ratio > 20) pl_ratio = 20;
 
-            // === 最大連續虧損（sum）===
-            float max_dd_sum = 0, running_dd = 0;
-            for (int i=0; i<n_trades; i++) {
-                if (rets[i] < 0) running_dd += rets[i];
-                else running_dd = 0;
-                if (running_dd < max_dd_sum) max_dd_sum = running_dd;
+            // === 最大連虧（train）===
+            float max_dd_train = 0, run_dd = 0;
+            for (int i=0; i<n_train; i++) {
+                if (rets_train[i] < 0) run_dd += rets_train[i];
+                else run_dd = 0;
+                if (run_dd < max_dd_train) max_dd_train = run_dd;
             }
 
-            // D: max_dd >= -40%（連虧最深不超過 -40）
-            if (max_dd_sum >= -40.0f) {
-                // === 最長連虧 ===
+            // D（train）：max_dd >= -40%
+            if (max_dd_train >= -40.0f) {
+                // 最長連虧
                 int max_streak = 0, streak = 0;
-                for (int i=0; i<n_trades; i++) {
-                    if (rets[i] <= 0) { streak++; if (streak > max_streak) max_streak = streak; }
+                for (int i=0; i<n_train; i++) {
+                    if (rets_train[i] <= 0) { streak++; if (streak > max_streak) max_streak = streak; }
                     else streak = 0;
                 }
 
-                // === 年化報酬（全期）===
-                float n_years = (float)(n_days - 60) / 250.0f;
-                float annual_ret = n_years > 0.5f ? total_ret / n_years : total_ret;
+                // === 🔴 真 Walk-Forward 盲測門檻（核心防 overfit）===
+                // n_test >= 5（有足夠測試樣本）
+                // test_total > 0（test 期必須正報酬）
+                // test 年化 >= train 年化 * 0.4（不能退化超過 60%）
+                float train_years = (float)(train_end - 60) / 250.0f;
+                float test_years = (float)(n_days - train_end) / 250.0f;
+                float train_annual = train_years > 0.5f ? total_train / train_years : total_train;
+                float test_annual = test_years > 0.3f ? total_test / test_years : total_test;
 
-                // === 3 段一致性 ===
-                int seg_size = n_days / 3;
-                float seg_ret[3] = {0,0,0}; int seg_n[3] = {0,0,0};
-                for (int i=0; i<n_trades; i++) {
-                    int seg = trade_bdays[i] / seg_size;
-                    if (seg > 2) seg = 2;
-                    seg_ret[seg] += rets[i]; seg_n[seg]++;
-                }
-                float min_seg_annual = 9999;
-                int active_segs = 0;
-                bool wf_ok = true;  // E: walk-forward 每個活躍段都要正報酬
-                for (int s=0; s<3; s++) {
-                    if (seg_n[s] >= 5) {
-                        if (seg_ret[s] <= 0) wf_ok = false;
-                        float sa = seg_ret[s] / (n_years / 3.0f);
-                        if (sa < min_seg_annual) min_seg_annual = sa;
-                        active_segs++;
+                bool wf_pass = true;
+                if (n_test < 5) wf_pass = false;
+                if (total_test <= 0) wf_pass = false;
+                if (test_annual < train_annual * 0.4f) wf_pass = false;
+
+                if (wf_pass) {
+                    // === 3 段一致性（train 期內部）===
+                    int seg_size = (train_end - 60) / 3;
+                    if (seg_size < 10) seg_size = 10;
+                    float seg_ret[3] = {0,0,0}; int seg_n[3] = {0,0,0};
+                    for (int i=0; i<n_train; i++) {
+                        int bd_rel = bdays_train[i] - 60;
+                        if (bd_rel < 0) bd_rel = 0;
+                        int seg = bd_rel / seg_size;
+                        if (seg > 2) seg = 2;
+                        seg_ret[seg] += rets_train[i]; seg_n[seg]++;
                     }
-                }
-                // 至少要有 2 個活躍段，且都要正報酬
-                if (active_segs >= 2 && wf_ok) {
-                    float s_consistency = min_seg_annual * 0.05f;
-                    if (s_consistency > 15) s_consistency = 15;
+                    float min_seg_annual = 9999;
+                    int active_segs = 0;
+                    bool seg_ok = true;
+                    for (int s=0; s<3; s++) {
+                        if (seg_n[s] >= 4) {
+                            if (seg_ret[s] <= 0) seg_ok = false;
+                            float sa = seg_ret[s] / (train_years / 3.0f);
+                            if (sa < min_seg_annual) min_seg_annual = sa;
+                            active_segs++;
+                        }
+                    }
+                    if (active_segs >= 2 && seg_ok) {
+                        float s_consistency = min_seg_annual * 0.05f;
+                        if (s_consistency > 15) s_consistency = 15;
 
-                    // C: 新評分公式
-                    float s_total = annual_ret * 0.30f;       // 0.15 → 0.30（總報酬主導）
-                    float s_sharpe = sharpe * 3.0f; if (s_sharpe > 12) s_sharpe = 12;
-                    float s_pl = pl_ratio * 1.0f; if (s_pl > 8) s_pl = 8;
-                    float s_streak = max_streak * 1.5f;
-                    float s_dd = fabsf(max_dd_sum) * 0.1f;
-                    // avg_hold penalty：<8 天扣分（鼓勵波段）
-                    float s_hold_pen = 0;
-                    if (avg_hold < 8.0f) s_hold_pen = (8.0f - avg_hold) * 2.0f;
+                        // C: 新評分公式（基於 train 期）
+                        float s_total = train_annual * 0.30f;
+                        float s_sharpe = sharpe_train * 3.0f; if (s_sharpe > 12) s_sharpe = 12;
+                        float s_pl = pl_ratio * 1.0f; if (s_pl > 8) s_pl = 8;
+                        float s_streak = max_streak * 1.5f;
+                        float s_dd = fabsf(max_dd_train) * 0.1f;
+                        float s_hold_pen = 0;
+                        if (avg_hold_train < 8.0f) s_hold_pen = (8.0f - avg_hold_train) * 2.0f;
+                        // WF 加分：test 年化 / train 年化（越接近 1 越好，代表泛化）
+                        float wf_ratio = train_annual > 1.0f ? test_annual / train_annual : 1.0f;
+                        if (wf_ratio > 1.2f) wf_ratio = 1.2f;
+                        float s_wf = wf_ratio * 10.0f;
 
-                    // 移除 s_wr（已在門檻把關）、s_pf（和 s_pl 重複）
-                    score = s_total + s_sharpe + s_pl + s_consistency - s_streak - s_dd - s_hold_pen;
+                        score = s_total + s_sharpe + s_pl + s_consistency + s_wf - s_streak - s_dd - s_hold_pen;
+                    }
                 }
             }
         }
@@ -860,8 +899,10 @@ def precompute(data):
     market_bull = np.ones(ml, dtype=np.float32)
     print(f"  大盤過濾：無（v1 框架）| {ml}/{ml} 天全部允許")
 
-    # train_end 保留給 kernel 參數（v3 不用但 kernel 簽名還需要）
-    train_end = ml
+    # Walk-Forward：day 60 之後（開始交易），前 2/3 為 train，後 1/3 為 test（盲測）
+    # 例：900 天 → 60 天 warmup，train 560 天（2.24年），test 280 天（1.12年）
+    train_end = 60 + (ml - 60) * 2 // 3
+    print(f"  Walk-Forward 切點：day {train_end} / {ml} | train={train_end-60}天, test={ml-train_end}天")
 
     return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,"train_end":train_end,
         "close":close,"rsi":rsi,"bb_pos":bb_pos,"vol_ratio":vol_ratio,
@@ -1676,9 +1717,9 @@ def main():
                         last_synced_improved = total_improved
                         continue
 
-                    # 🛡️ 第 2 層：品質門檻（D）
-                    if _n_td < 50 or _n_td > 120:
-                        print(f"  [GPU] ❌ 筆數不過關：{_n_td}筆（需 50-120）（跳過）")
+                    # 🛡️ 第 2 層：品質門檻（D）+ Walk-Forward 驗證
+                    if _n_td < 40 or _n_td > 140:
+                        print(f"  [GPU] ❌ 筆數不過關：{_n_td}筆（需 40-140）（跳過）")
                         last_synced_improved = total_improved
                         continue
                     if _avg_hold < 5:
@@ -1689,7 +1730,7 @@ def main():
                         print(f"  [GPU] ❌ 平均報酬不過關：{_avg_ret:.1f}%（需 >= 5%）（跳過）")
                         last_synced_improved = total_improved
                         continue
-                    # max_dd 檢查
+                    # max_dd 檢查（全期）
                     _rets = [t.get("return",0) for t in _completed_td]
                     _max_dd = 0; _run_dd = 0
                     for _r in _rets:
@@ -1700,7 +1741,31 @@ def main():
                         print(f"  [GPU] ❌ 最大連虧不過關：{_max_dd:.1f}%（需 >= -40%）（跳過）")
                         last_synced_improved = total_improved
                         continue
+
+                    # 🛡️ Walk-Forward 盲測驗證（Python 端 double check）
+                    _train_end_date = pre["dates"][pre["train_end"]]
+                    _train_trades = [t for t in _completed_td if t.get("buy_date","") < str(_train_end_date.date())]
+                    _test_trades = [t for t in _completed_td if t.get("buy_date","") >= str(_train_end_date.date())]
+                    _train_total = sum(t.get("return",0) for t in _train_trades)
+                    _test_total = sum(t.get("return",0) for t in _test_trades)
+                    _train_years = (pre["train_end"] - 60) / 250.0
+                    _test_years = (pre["n_days"] - pre["train_end"]) / 250.0
+                    _train_ann = _train_total / _train_years if _train_years > 0.5 else _train_total
+                    _test_ann = _test_total / _test_years if _test_years > 0.3 else _test_total
+                    if len(_test_trades) < 5:
+                        print(f"  [GPU] ❌ Walk-Forward: test 樣本太少 {len(_test_trades)}筆（需 >= 5）（跳過）")
+                        last_synced_improved = total_improved
+                        continue
+                    if _test_total <= 0:
+                        print(f"  [GPU] ❌ Walk-Forward: test 期虧損 {_test_total:.0f}%（需 > 0）（跳過）")
+                        last_synced_improved = total_improved
+                        continue
+                    if _test_ann < _train_ann * 0.4:
+                        print(f"  [GPU] ❌ Walk-Forward: test 年化 {_test_ann:.0f}% < train {_train_ann:.0f}% x 0.4（退化太多）")
+                        last_synced_improved = total_improved
+                        continue
                     print(f"  [GPU] ✅ 品質門檻：{_n_td}筆 avg持有{_avg_hold:.1f}天 avg{_avg_ret:.1f}% MaxDD{_max_dd:.1f}%")
+                    print(f"  [GPU] ✅ Walk-Forward: train={len(_train_trades)}筆 {_train_total:.0f}%, test={len(_test_trades)}筆 {_test_total:.0f}% (年化 train={_train_ann:.0f}% vs test={_test_ann:.0f}%)")
                     # 分年統計（排除持有中）
                     yearly = {}
                     for t in _completed_td:
