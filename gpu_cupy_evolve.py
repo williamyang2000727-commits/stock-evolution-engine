@@ -1527,54 +1527,54 @@ def main():
                     _avg_ret = sum(t.get("return",0) for t in _completed_td) / _n_td if _n_td else 0
                     _new_total = sum(t.get("return",0) for t in _completed_td)
 
-                    # 🛡️ 品質門檻（NO-OVERFIT 模式）— 對齊 kernel：只檢查 train 期統計
+                    # 🛡️ Python gate：(1) 全期實盤安全 (2) WF 交叉驗證
+                    # Train-only 已在 kernel 把關，Python 只做 kernel 沒看到的面向
                     _train_end_date = pre["dates"][pre["train_end"]]
                     _train_trades = [t for t in _completed_td if t.get("buy_date","") < str(_train_end_date.date())]
                     _test_trades = [t for t in _completed_td if t.get("buy_date","") >= str(_train_end_date.date())]
                     _n_train = len(_train_trades); _n_test = len(_test_trades)
                     _train_total = sum(t.get("return",0) for t in _train_trades)
                     _test_total = sum(t.get("return",0) for t in _test_trades)
-                    _train_avg_hold = sum(t.get("days",0) for t in _train_trades) / _n_train if _n_train else 0
-                    _train_avg_ret = _train_total / _n_train if _n_train else 0
                     _train_years = (pre["train_end"] - 60) / 250.0
                     _test_years = (pre["n_days"] - pre["train_end"]) / 250.0
                     _train_ann = _train_total / _train_years if _train_years > 0.5 else _train_total
                     _test_ann = _test_total / _test_years if _test_years > 0.3 else _test_total
 
-                    # Train 期品質（跟 kernel 對齊）
-                    if _n_train < 30 or _n_train > 80:
-                        print(f"  [GPU] ❌ train 筆數不過關：{_n_train}筆（需 30-80）（跳過）")
+                    # (1) 全期實盤安全（kernel 沒看到的面向）
+                    if _n_td < 40 or _n_td > 140:
+                        print(f"  [GPU] ❌ 全期筆數：{_n_td}筆 不在 40-140（跳過）")
                         last_synced_improved = total_improved; continue
-                    if _train_avg_hold < 5:
-                        print(f"  [GPU] ❌ train 持有天數不過關：{_train_avg_hold:.1f}天（跳過）")
+                    if _avg_ret < 3:
+                        print(f"  [GPU] ❌ 全期 avg 報酬：{_avg_ret:.1f}% < 3%（跳過）")
                         last_synced_improved = total_improved; continue
-                    if _train_avg_ret < 5:
-                        print(f"  [GPU] ❌ train 平均報酬不過關：{_train_avg_ret:.1f}%（跳過）")
+                    if _avg_hold < 5:
+                        print(f"  [GPU] ❌ 全期 avg 持有：{_avg_hold:.1f}天 < 5（跳過）")
                         last_synced_improved = total_improved; continue
-                    # Train 期 MaxDD
-                    _run_dd = 0; _max_dd_train = 0
-                    for _t in _train_trades:
-                        _r = _t.get("return",0)
+                    # 全期 MaxDD（實盤真的會遇到的回撤）
+                    _rets_all = [t.get("return",0) for t in _completed_td]
+                    _run_dd = 0; _max_dd_all = 0
+                    for _r in _rets_all:
                         if _r < 0: _run_dd += _r
                         else: _run_dd = 0
-                        if _run_dd < _max_dd_train: _max_dd_train = _run_dd
-                    if _max_dd_train < -40:
-                        print(f"  [GPU] ❌ train MaxDD 不過關：{_max_dd_train:.1f}%（跳過）")
+                        if _run_dd < _max_dd_all: _max_dd_all = _run_dd
+                    if _max_dd_all < -40:
+                        print(f"  [GPU] ❌ 全期 MaxDD：{_max_dd_all:.1f}% < -40%（實盤不可接受）（跳過）")
                         last_synced_improved = total_improved; continue
 
-                    # Walk-Forward test 期盲測驗證
+                    # (2) Walk-Forward 交叉驗證
                     if _n_test < 5:
-                        print(f"  [GPU] ❌ WF: test {_n_test}筆（需 >= 5）（跳過）")
+                        print(f"  [GPU] ❌ WF: test {_n_test}筆 < 5（跳過）")
                         last_synced_improved = total_improved; continue
                     if _test_total <= 0:
                         print(f"  [GPU] ❌ WF: test 虧損 {_test_total:.0f}%（跳過）")
                         last_synced_improved = total_improved; continue
-                    if _test_ann < _train_ann * 0.4:
+                    if _train_ann > 0 and _test_ann < _train_ann * 0.4:
                         print(f"  [GPU] ❌ WF: test 年化 {_test_ann:.0f}% < train {_train_ann:.0f}% x 0.4（退化太多）（跳過）")
                         last_synced_improved = total_improved; continue
 
-                    print(f"  [GPU] ✅ train：{_n_train}筆 avg持有{_train_avg_hold:.1f}天 avg{_train_avg_ret:.1f}% MaxDD{_max_dd_train:.1f}%")
-                    print(f"  [GPU] ✅ WF：train={_n_train}筆 {_train_total:.0f}% (年化{_train_ann:.0f}%) vs test={_n_test}筆 {_test_total:.0f}% (年化{_test_ann:.0f}%) | 比例 {_test_ann/_train_ann*100:.0f}%")
+                    _ratio = (_test_ann / _train_ann * 100) if _train_ann > 0 else 0
+                    print(f"  [GPU] ✅ 全期安全：{_n_td}筆 avg{_avg_ret:.1f}% 持有{_avg_hold:.1f}天 MaxDD{_max_dd_all:.1f}%")
+                    print(f"  [GPU] ✅ WF 驗證：train={_n_train}筆 年化{_train_ann:.0f}% | test={_n_test}筆 年化{_test_ann:.0f}% | 比例{_ratio:.0f}%")
                     # 分年統計（排除持有中）
                     yearly = {}
                     for t in _completed_td:
