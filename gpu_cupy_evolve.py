@@ -514,11 +514,11 @@ void backtest(
                 float train_annual = train_years > 0.5f ? total_train / train_years : total_train;
                 float test_annual = test_years > 0.3f ? total_test / test_years : total_test;
 
-                // Walk-Forward 盲測門檻：test 必須有效正報酬、不退化太多
+                // Walk-Forward 盲測門檻：test 必須有效正報酬、不退化超過 50%
                 bool wf_pass = true;
                 if (n_test < 5) wf_pass = false;
                 if (total_test <= 0) wf_pass = false;
-                if (test_annual < train_annual * 0.4f) wf_pass = false;
+                if (test_annual < train_annual * 0.5f) wf_pass = false;  // 0.4 → 0.5（擋掉過度依賴 bull 期的策略）
 
                 if (wf_pass) {
                     // 3 段一致性（train 期內部）
@@ -543,7 +543,15 @@ void backtest(
                             active_segs++;
                         }
                     }
-                    if (active_segs >= 2 && seg_ok) {
+                    // 加檢：train 最後 1/3 段不能崩（seg[2] avg/筆 >= seg[0] avg/筆 x 0.6）
+                    // 擋掉「前期超賺、後期淡掉」的老化策略
+                    bool late_seg_ok = true;
+                    if (seg_n[0] >= 4 && seg_n[2] >= 4) {
+                        float seg0_avg = seg_ret[0] / seg_n[0];
+                        float seg2_avg = seg_ret[2] / seg_n[2];
+                        if (seg2_avg < seg0_avg * 0.6f) late_seg_ok = false;
+                    }
+                    if (active_segs >= 2 && seg_ok && late_seg_ok) {
                         float s_consistency = min_seg_annual * 0.05f;
                         if (s_consistency > 15) s_consistency = 15;
 
@@ -1487,7 +1495,7 @@ def main():
             _ts_y = (pre["n_days"]-pre["train_end"])/250.0
             _tr_ann = _ctr_tot/_tr_y if _tr_y > 0.5 else _ctr_tot
             _ts_ann = _cts_tot/_ts_y if _ts_y > 0.3 else _cts_tot
-            if _tr_ann > 0 and _ts_ann < _tr_ann * 0.4: continue
+            if _tr_ann > 0 and _ts_ann < _tr_ann * 0.5: continue  # WF 嚴化 0.4 → 0.5
             # 過了所有 gate，接受
             best_score = _sc
             best_nt = int(results[_ti, 1])
