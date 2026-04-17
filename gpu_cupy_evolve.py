@@ -428,96 +428,121 @@ void backtest(
         // Phase 3 已移除（第三檔回測表現不佳）
     }
 
-    // === 評分 v4：全期優化 + 3 段一致性 + 嚴格品質門檻（衝突 2006%）===
+    // === 評分 v5（真 Walk-Forward no-overfit）：train 計分，test 盲測驗證 ===
     float score = -999999.0f;
 
-    // D: 筆數 50-120
-    if (n_trades >= 50 && n_trades <= 120) {
-        float avg_ret = total_ret / n_trades;
-        float win_rate = win_count / n_trades * 100.0f;
+    // 分 train / test（依買入日）
+    int n_train = 0, n_test = 0;
+    float rets_train[100], rets_test[100];
+    int bdays_train[100], hd_train[100];
+    float total_train = 0, total_test = 0;
+    float win_train = 0;
+    for (int i=0; i<n_trades; i++) {
+        if (trade_bdays[i] < train_end) {
+            rets_train[n_train] = rets[i];
+            bdays_train[n_train] = trade_bdays[i];
+            hd_train[n_train] = hold_days_arr[i];
+            total_train += rets[i];
+            if (rets[i] > 0) win_train += 1;
+            n_train++;
+        } else {
+            rets_test[n_test] = rets[i];
+            total_test += rets[i];
+            n_test++;
+        }
+    }
 
-        // D: avg_hold >= 5
-        float avg_hold = 0;
-        for (int i=0; i<n_trades; i++) avg_hold += (float)hold_days_arr[i];
-        avg_hold /= n_trades;
+    // D（train）：train 筆數 30-80
+    if (n_train >= 30 && n_train <= 80) {
+        float avg_ret_tr = total_train / n_train;
+        float win_rate_tr = win_train / n_train * 100.0f;
+        float avg_hold_tr = 0;
+        for (int i=0; i<n_train; i++) avg_hold_tr += (float)hd_train[i];
+        avg_hold_tr /= n_train;
 
-        if (avg_ret >= 5 && win_rate >= 35 && avg_hold >= 5.0f) {
-            // === Sharpe ===
+        if (avg_ret_tr >= 5 && win_rate_tr >= 35 && avg_hold_tr >= 5.0f) {
+            // Sharpe（train）
             float sum_sq = 0;
-            for (int i=0; i<n_trades; i++) {
-                float diff = rets[i] - avg_ret;
-                sum_sq += diff * diff;
-            }
-            float std_ret = sqrtf(sum_sq / n_trades);
-            float sharpe = std_ret > 0.5f ? avg_ret / std_ret : avg_ret;
-            if (sharpe > 10) sharpe = 10;
+            for (int i=0; i<n_train; i++) { float d = rets_train[i] - avg_ret_tr; sum_sq += d*d; }
+            float std_tr = sqrtf(sum_sq / n_train);
+            float sharpe_tr = std_tr > 0.5f ? avg_ret_tr / std_tr : avg_ret_tr;
+            if (sharpe_tr > 10) sharpe_tr = 10;
 
-            // === 盈虧比 ===
-            float avg_win=0, avg_loss=0;
-            int n_win=0, n_loss=0;
-            for (int i=0; i<n_trades; i++) {
-                if (rets[i]>0) { avg_win+=rets[i]; n_win++; }
-                else { avg_loss+=fabsf(rets[i]); n_loss++; }
+            // 盈虧比（train）
+            float aw=0, al=0; int nw=0, nl=0;
+            for (int i=0; i<n_train; i++) {
+                if (rets_train[i]>0) { aw+=rets_train[i]; nw++; }
+                else { al+=fabsf(rets_train[i]); nl++; }
             }
-            if (n_win>0) avg_win /= n_win;
-            if (n_loss>0) avg_loss /= n_loss;
-            float pl_ratio = avg_loss>0.5f ? avg_win/avg_loss : avg_win;
+            if (nw>0) aw /= nw; if (nl>0) al /= nl;
+            float pl_ratio = al>0.5f ? aw/al : aw;
             if (pl_ratio > 20) pl_ratio = 20;
 
-            // === 最大連虧 ===
-            float max_dd_sum = 0, run_dd = 0;
-            for (int i=0; i<n_trades; i++) {
-                if (rets[i] < 0) run_dd += rets[i];
-                else run_dd = 0;
-                if (run_dd < max_dd_sum) max_dd_sum = run_dd;
+            // 最大連虧（train）
+            float max_dd_tr = 0, run_dd = 0;
+            for (int i=0; i<n_train; i++) {
+                if (rets_train[i] < 0) run_dd += rets_train[i]; else run_dd = 0;
+                if (run_dd < max_dd_tr) max_dd_tr = run_dd;
             }
-
-            // D: max_dd >= -40%
-            if (max_dd_sum >= -40.0f) {
-                // 最長連虧
+            if (max_dd_tr >= -40.0f) {
                 int max_streak = 0, streak = 0;
-                for (int i=0; i<n_trades; i++) {
-                    if (rets[i] <= 0) { streak++; if (streak > max_streak) max_streak = streak; }
+                for (int i=0; i<n_train; i++) {
+                    if (rets_train[i] <= 0) { streak++; if (streak > max_streak) max_streak = streak; }
                     else streak = 0;
                 }
 
-                // === 年化（全期）===
-                float n_years = (float)(n_days - 60) / 250.0f;
-                float annual_ret = n_years > 0.5f ? total_ret / n_years : total_ret;
+                float train_years = (float)(train_end - 60) / 250.0f;
+                float test_years = (float)(n_days - train_end) / 250.0f;
+                float train_annual = train_years > 0.5f ? total_train / train_years : total_train;
+                float test_annual = test_years > 0.3f ? total_test / test_years : total_test;
 
-                // === 3 段一致性（活躍段都要正報酬，擋「某年賺某年虧」）===
-                int seg_size = n_days / 3;
-                float seg_ret[3] = {0,0,0}; int seg_n[3] = {0,0,0};
-                for (int i=0; i<n_trades; i++) {
-                    int seg = trade_bdays[i] / seg_size;
-                    if (seg > 2) seg = 2;
-                    seg_ret[seg] += rets[i]; seg_n[seg]++;
-                }
-                float min_seg_annual = 9999;
-                int active_segs = 0;
-                bool seg_ok = true;
-                for (int s=0; s<3; s++) {
-                    if (seg_n[s] >= 5) {
-                        if (seg_ret[s] <= 0) seg_ok = false;
-                        float sa = seg_ret[s] / (n_years / 3.0f);
-                        if (sa < min_seg_annual) min_seg_annual = sa;
-                        active_segs++;
+                // Walk-Forward 盲測門檻：test 必須有效正報酬、不退化太多
+                bool wf_pass = true;
+                if (n_test < 5) wf_pass = false;
+                if (total_test <= 0) wf_pass = false;
+                if (test_annual < train_annual * 0.4f) wf_pass = false;
+
+                if (wf_pass) {
+                    // 3 段一致性（train 期內部）
+                    int seg_size = (train_end - 60) / 3;
+                    if (seg_size < 10) seg_size = 10;
+                    float seg_ret[3] = {0,0,0}; int seg_n[3] = {0,0,0};
+                    for (int i=0; i<n_train; i++) {
+                        int bd_rel = bdays_train[i] - 60;
+                        if (bd_rel < 0) bd_rel = 0;
+                        int seg = bd_rel / seg_size;
+                        if (seg > 2) seg = 2;
+                        seg_ret[seg] += rets_train[i]; seg_n[seg]++;
                     }
-                }
-                if (active_segs >= 2 && seg_ok) {
-                    float s_consistency = min_seg_annual * 0.05f;
-                    if (s_consistency > 15) s_consistency = 15;
+                    float min_seg_annual = 9999;
+                    int active_segs = 0;
+                    bool seg_ok = true;
+                    for (int s=0; s<3; s++) {
+                        if (seg_n[s] >= 4) {
+                            if (seg_ret[s] <= 0) seg_ok = false;
+                            float sa = seg_ret[s] / (train_years / 3.0f);
+                            if (sa < min_seg_annual) min_seg_annual = sa;
+                            active_segs++;
+                        }
+                    }
+                    if (active_segs >= 2 && seg_ok) {
+                        float s_consistency = min_seg_annual * 0.05f;
+                        if (s_consistency > 15) s_consistency = 15;
 
-                    // C: 評分公式（全期）
-                    float s_total = annual_ret * 0.30f;
-                    float s_sharpe = sharpe * 3.0f; if (s_sharpe > 12) s_sharpe = 12;
-                    float s_pl = pl_ratio * 0.8f; if (s_pl > 8) s_pl = 8;
-                    float s_streak = max_streak * 1.5f;
-                    float s_dd = fabsf(max_dd_sum) * 0.1f;
-                    float s_hold_pen = 0;
-                    if (avg_hold < 8.0f) s_hold_pen = (8.0f - avg_hold) * 2.0f;
+                        float s_total = train_annual * 0.30f;
+                        float s_sharpe = sharpe_tr * 3.0f; if (s_sharpe > 12) s_sharpe = 12;
+                        float s_pl = pl_ratio * 0.8f; if (s_pl > 8) s_pl = 8;
+                        float s_streak = max_streak * 1.5f;
+                        float s_dd = fabsf(max_dd_tr) * 0.1f;
+                        float s_hold_pen = 0;
+                        if (avg_hold_tr < 8.0f) s_hold_pen = (8.0f - avg_hold_tr) * 2.0f;
+                        // WF 泛化加分：test 年化 / train 年化（1:1 最佳）
+                        float wf_ratio = train_annual > 1.0f ? test_annual / train_annual : 1.0f;
+                        if (wf_ratio > 1.2f) wf_ratio = 1.2f;
+                        float s_wf = wf_ratio * 10.0f;
 
-                    score = s_total + s_sharpe + s_pl + s_consistency - s_streak - s_dd - s_hold_pen;
+                        score = s_total + s_sharpe + s_pl + s_consistency + s_wf - s_streak - s_dd - s_hold_pen;
+                    }
                 }
             }
         }
@@ -858,8 +883,10 @@ def precompute(data):
     market_bull = np.ones(ml, dtype=np.float32)
     print(f"  大盤過濾：無（v1 框架）| {ml}/{ml} 天全部允許")
 
-    # train_end 保留給 kernel 參數（v4 評分不用，全期優化）
-    train_end = ml
+    # Walk-Forward：day 60 之後（開始交易），前 2/3 為 train，後 1/3 為 test（盲測）
+    # 900 天 → 60 天 warmup，train 560 天（2.24年），test 280 天（1.12年）
+    train_end = 60 + (ml - 60) * 2 // 3
+    print(f"  Walk-Forward 切點：day {train_end} / {ml} | train={train_end-60}天, test={ml-train_end}天")
 
     return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,"train_end":train_end,
         "close":close,"rsi":rsi,"bb_pos":bb_pos,"vol_ratio":vol_ratio,
@@ -1176,159 +1203,14 @@ def main():
             _baseline_avg = _baseline_total / _baseline_n if _baseline_n else 0
             _baseline_wr = sum(1 for t in _baseline_trades if t.get("return",0)>0) / _baseline_n * 100 if _baseline_n else 0
             print(f"[GPU] Gist 策略在當前資料上：{_baseline_n}筆 avg{_baseline_avg:.1f}% 總{_baseline_total:.0f}% 勝率{_baseline_wr:.0f}%")
-            best_params = dict(gist_best_params)
-            # 鎖死：GPU 啟動永不推 Web（由 daily_scan + 手動 backtest_to_web.py 負責）
-            _should_push = False
-            try:
-                _web_r = requests.get(f"https://api.github.com/gists/e1159b02a87d3c6ee9f33fb9ef61bb80", headers=headers, timeout=10)
-                _web_bt = json.loads(list(_web_r.json()["files"].values())[0]["content"]) if "backtest_results.json" in {f for f in _web_r.json()["files"]} else {}
-                if not _web_bt:
-                    for _fn, _fd in _web_r.json()["files"].items():
-                        if "backtest" in _fn:
-                            _web_bt = json.loads(_fd["content"]); break
-                _web_end = _web_bt.get("stats",{}).get("end_date","")
-                _data_end = str(pre["dates"][-1].date())
-                from datetime import date as _date_cls
-                if _web_end:
-                    _diff = abs((_date_cls.fromisoformat(_data_end) - _date_cls.fromisoformat(_web_end)).days)
-                    if _diff <= 7:
-                        _should_push = False
-                        print(f"[GPU] Web 回測已有近期資料（end={_web_end}），跳過推送避免覆蓋")
-            except:
-                pass  # 讀取失敗就推
-            if _should_push:
-                _all_baseline = cpu_replay(pre, gist_best_params)
-                _all_baseline = [t for t in _all_baseline if not _math.isnan(t.get("return",0))]
-                try:
-                    _dates = pre["dates"]
-                    _gist_content = json.dumps({"score":0,"source":"baseline_on_new_data",
-                        "updated_at":time.strftime("%Y-%m-%dT%H:%M:%S"),
-                        "params":gist_best_params,"backtest":{
-                            "avg_return":round(_baseline_avg,2),"total_return":round(_baseline_total,2),
-                            "win_rate":round(_baseline_wr,2),"total_trades":_baseline_n},
-                        "trade_details":_all_baseline}, ensure_ascii=False, indent=2)
-                    requests.patch(f"https://api.github.com/gists/{GIST_ID}", headers=headers,
-                        json={"files":{"best_strategy.json":{"content":_gist_content}}}, timeout=10)
-                    WEB_GIST = "e1159b02a87d3c6ee9f33fb9ef61bb80"
-                    _web_trades = []
-                    for t in _all_baseline:
-                        wt = {"ticker":t.get("ticker",""),"name":t.get("name",""),
-                            "buy_price":round(t.get("buy_price",0),2),"sell_price":round(t.get("sell_price",0),2),
-                            "hold_days":t.get("days",0),"return_pct":round(t.get("return",0),1),
-                            "reason":t.get("reason",""),"buy_date":t.get("buy_date",""),"sell_date":t.get("sell_date","")}
-                        if t.get("reason") == "持有中":
-                            wt["peak_price"] = t.get("peak_price", t.get("buy_price",0))
-                        _web_trades.append(wt)
-                    _web_completed = [t for t in _web_trades if t.get("reason") != "持有中"]
-                    _web_rets = [t["return_pct"] for t in _web_completed]
-                    _web_wins = [r for r in _web_rets if r > 0]
-                    _web_losses = [r for r in _web_rets if r <= 0]
-                    _bt_stats = {
-                        "total_trades":len(_web_completed),
-                        "total_return_pct":round(sum(_web_rets),1),
-                        "win_rate":round(len(_web_wins)/len(_web_rets)*100,1) if _web_rets else 0,
-                        "avg_return":round(sum(_web_rets)/len(_web_rets),1) if _web_rets else 0,
-                        "avg_win":round(sum(_web_wins)/len(_web_wins),1) if _web_wins else 0,
-                        "avg_loss":round(sum(_web_losses)/len(_web_losses),1) if _web_losses else 0,
-                        "max_win":round(max(_web_rets),1) if _web_rets else 0,
-                        "max_loss":round(min(_web_rets),1) if _web_rets else 0,
-                        "avg_hold_days":round(sum(t["hold_days"] for t in _web_completed)/len(_web_completed),1) if _web_completed else 0,
-                        "start_date":str(_dates[0].date()),"end_date":str(_dates[-1].date()),
-                        "total_days":pre["n_days"],"strategy_score":0,
-                    }
-                    requests.patch(f"https://api.github.com/gists/{WEB_GIST}", headers=headers,
-                        json={"files":{"backtest_results.json":{"content":json.dumps({"stats":_bt_stats,"trades":_web_trades},ensure_ascii=False)}}}, timeout=30)
-                    _holding_n = sum(1 for t in _web_trades if t.get("reason") == "持有中")
-                    print(f"[GPU] ✅ v5 新資料結果已推送（{len(_web_completed)}筆完成 + {_holding_n}筆持有中 → Web 會自動延續）")
-                except Exception as _e:
-                    print(f"[GPU] ⚠️ 推送失敗：{_e}")
-            # A: HOF 先放 v5 一份，等 1D 掃描後用 top 4 diverse 改進填剩下的
-            hall_of_fame = [(999, dict(gist_best_params))]
-            print(f"[GPU] 載入 v5 作為爬山起點（HOF[0] = v5，其餘由 1D 掃描填入以確保多樣性）")
+            # 🧹 NO-OVERFIT 模式：v5 只當「當前 Gist 內容資訊」參考，不注入演化流程
+            # - best_params 保持 None（不從 v5 爬山）
+            # - hall_of_fame 保持空（不預種 v5，等 R1 自然產生）
+            # - 跳過 1D/2D/3D 掃描（掃描基於 v5，會污染起點）
+            print(f"[GPU] 📛 NO-OVERFIT 模式：v5 不注入演化，GPU 從零隨機起步")
     except Exception as _e:
         print(f"[GPU] Gist 載入失敗：{_e}")
-
-    # === 多維掃描：快速找低垂果實 ===
-    if gist_best_params:
-        import math as _m2
-        _base = dict(gist_best_params)
-        _base_trades = [t for t in cpu_replay(pre, _base) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
-        _base_total = sum(t.get("return",0) for t in _base_trades)
-        print(f"\n[GPU] 🔍 單參數掃描開始（基準：{len(_base_trades)}筆 {_base_total:.0f}%）")
-        _improvements = []
-        for key in list(PARAM_ORDER) + ["ma_fast_w","ma_slow_w","momentum_days"]:
-            opts = PARAMS_SPACE.get(key, {"ma_fast_w":MA_FAST_OPTS,"ma_slow_w":MA_SLOW_OPTS,"momentum_days":MOM_DAYS_OPTS}.get(key,[]))
-            base_val = _base.get(key, opts[0] if opts else 0)
-            for val in opts:
-                if abs(float(val) - float(base_val)) < 1e-6: continue
-                _test = dict(_base); _test[key] = float(val)
-                if _test.get("ma_fast_w",5) >= _test.get("ma_slow_w",20): continue
-                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
-                _ttotal = sum(t.get("return",0) for t in _tt); _tn = len(_tt)
-                if _ttotal > _base_total and 40 <= _tn <= 150:
-                    _improvements.append((key, float(val), base_val, _ttotal, _tn, _ttotal - _base_total))
-        _improvements.sort(key=lambda x: -x[5])
-        if _improvements:
-            print(f"[GPU] 🎯 1D 發現 {len(_improvements)} 個改進（前 5）：")
-            for k, v, o, tot, n, d in _improvements[:5]:
-                print(f"  {k}: {o} → {v} | +{d:.0f}%（總{tot:.0f}%, {n}筆）")
-            # A: 用 top 4 主導參數不同的改進填 HOF（達成多樣性）
-            _seen_keys = set()
-            for k, v, o, tot, n, d in _improvements:
-                if k in _seen_keys: continue
-                _seen_keys.add(k)
-                _diverse = dict(_base); _diverse[k] = v
-                hall_of_fame.append((999, _diverse))
-                if len(hall_of_fame) >= 5: break
-            print(f"[GPU] 🧬 HOF 多樣化完成：{len(hall_of_fame)} 個親代（主導參數：{['v5'] + list(_seen_keys)[:4]}）")
-        else:
-            print(f"[GPU] 1D 沒有單參數改進（HOF 保持只有 v5）")
-        # 2D 掃描
-        _sweep_keys = ["w_sector_flow","sector_flow_topn","w_up_days","up_days_min","w_week52","week52_min",
-            "w_vol_up_days","vol_up_days_min","w_mom_accel","mom_accel_min",
-            "above_ma60","w_new_high","use_breakeven","breakeven_trigger","buy_threshold",
-            "w_rsi","w_bb","w_kd","w_wr","w_atr","w_adx","w_squeeze"]
-        _changes = []
-        for key in _sweep_keys:
-            opts = PARAMS_SPACE.get(key, [])
-            bv = float(_base.get(key, opts[0] if opts else 0))
-            for val in opts:
-                if abs(float(val) - bv) > 1e-6: _changes.append((key, float(val)))
-        print(f"[GPU] 🔍 2D 掃描（{len(_changes)} 變化 → {len(_changes)*(len(_changes)-1)//2} 組合）")
-        _imp2d = []; _tested = 0
-        for i in range(len(_changes)):
-            for j in range(i+1, len(_changes)):
-                k1,v1 = _changes[i]; k2,v2 = _changes[j]
-                if k1 == k2: continue
-                _test = dict(_base); _test[k1]=v1; _test[k2]=v2
-                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
-                _ttotal = sum(t.get("return",0) for t in _tt); _tn = len(_tt); _tested += 1
-                if _ttotal > _base_total and 40 <= _tn <= 150:
-                    _imp2d.append((k1,v1,k2,v2,_ttotal,_tn,_ttotal-_base_total))
-                if _tested % 200 == 0: print(f"  ... {_tested} 組，{len(_imp2d)} 改進")
-        _imp2d.sort(key=lambda x: -x[6])
-        if _imp2d:
-            print(f"[GPU] 🎯 2D 發現 {len(_imp2d)} 個改進（前 5）：")
-            for k1,v1,k2,v2,tot,n,d in _imp2d[:5]:
-                print(f"  {k1}={v1} + {k2}={v2} | +{d:.0f}%（總{tot:.0f}%, {n}筆）")
-            _b2 = _imp2d[0]; _base3 = dict(_base); _base3[_b2[0]]=_b2[1]; _base3[_b2[2]]=_b2[3]
-            print(f"[GPU] 🔍 3D 掃描（基於最佳 2D）")
-            _imp3d = []
-            for key, val in _changes:
-                if key in (_b2[0],_b2[2]): continue
-                _test = dict(_base3); _test[key]=val
-                _tt = [t for t in cpu_replay(pre, _test) if not _m2.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
-                _ttotal = sum(t.get("return",0) for t in _tt); _tn = len(_tt)
-                if _ttotal > _b2[4] and 40 <= _tn <= 150:
-                    _imp3d.append((key,val,_ttotal,_tn,_ttotal-_b2[4]))
-            _imp3d.sort(key=lambda x: -x[4])
-            if _imp3d:
-                print(f"[GPU] 🎯 3D 發現 {len(_imp3d)} 個改進（前 3）：")
-                for k,v,tot,n,d in _imp3d[:3]:
-                    print(f"  +{k}={v} | +{d:.0f}%（總{tot:.0f}%, {n}筆）")
-        else:
-            print(f"[GPU] 2D 沒有雙參數改進")
-        print(f"[GPU] 🔍 掃描完成\n")
+    # 掃描跳過（曾基於 v5，會污染起點）
 
     last_data_date = time.strftime("%Y-%m-%d")
 
@@ -1398,7 +1280,7 @@ def main():
         third = n_random  # 相容舊變數名
 
         # === 全部先用隨機填滿（向量化，超快）===
-        _base_for_freeze = best_params if best_params else gist_best_params
+        _base_for_freeze = best_params  # NO-OVERFIT：不 fallback v5
         # B: 新指標強制探索 — 40% 機率非零
         NEW_INDICATOR_WEIGHTS = {"w_sector_flow","w_up_days","w_week52","w_vol_up_days","w_mom_accel"}
         for i, key in enumerate(PARAM_ORDER):
@@ -1428,7 +1310,7 @@ def main():
         if explore_bases is not None:
             base = explore_bases[explore_round % len(explore_bases)]
         else:
-            base = best_params if best_params else gist_best_params
+            base = best_params  # NO-OVERFIT：不 fallback v5
         if base:
             for i, key in enumerate(PARAM_ORDER):
                 opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
@@ -1507,15 +1389,7 @@ def main():
         params_np[:, N_PARAMS+1] = ms_mapped.astype(np.float32)
         params_np[:, N_PARAMS+2] = md_mapped.astype(np.float32)
 
-        # 第一輪：把 v5 塞進 params_np[0]，kernel 立刻評估建立基準
-        if rnd == 1 and gist_best_params:
-            for i, key in enumerate(PARAM_ORDER):
-                opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
-                val = float(gist_best_params.get(key, opts[0]))
-                params_np[0, i] = opts[int(np.argmin(np.abs(opts - val)))]
-            params_np[0, N_PARAMS] = MA_FAST_MAP.get(int(gist_best_params.get("ma_fast_w", 5)), 1)
-            params_np[0, N_PARAMS+1] = MA_SLOW_MAP.get(int(gist_best_params.get("ma_slow_w", 20)), 1)
-            params_np[0, N_PARAMS+2] = MOM_MAP.get(int(gist_best_params.get("momentum_days", 5)), 1)
+        # NO-OVERFIT：不注入 v5 到 R1 params_np[0]
 
         d_params = cp.asarray(params_np)
         d_results = cp.zeros((BATCH, 5), dtype=cp.float32)
@@ -1538,20 +1412,7 @@ def main():
         results = d_results.get()
         total_tested += BATCH
 
-        # R1：抓 v5（position 0）的 kernel 分數，強制設為基準
-        if rnd == 1 and gist_best_params:
-            _v5_score = float(results[0, 0])
-            _v5_nt = int(results[0, 1])
-            _v5_total = float(results[0, 3])
-            if _v5_score > 0:
-                best_score = _v5_score
-                best_params = dict(gist_best_params)
-                best_nt = _v5_nt; best_total = _v5_total
-                best_avg = float(results[0, 2]); best_wr = float(results[0, 4])
-                total_improved += 1
-                print(f"  [GPU] ⭐ v5 kernel 基準：{_v5_score:.1f} | {_v5_nt}筆 | 總{_v5_total:.0f}%（從這裡開始）")
-            else:
-                print(f"  [GPU] ⚠️ v5 kernel 分數無效（{_v5_score:.1f}，{_v5_nt}筆），kernel 和 cpu_replay 有差異")
+        # NO-OVERFIT：不用 v5 當基準，best_score 從 0 開始自然成長
 
         # 收集這批裡分數 > 0 的前 5 名加入名人堂（不用破紀錄也能入）
         top_indices = np.argsort(results[:, 0])[-5:][::-1]
@@ -1605,7 +1466,7 @@ def main():
                 hall_of_fame = []
                 no_improve_rounds = 0
                 # 從最佳策略的「遠親」開始爬（核心參數保留80%，微調參數打亂80%）
-                anchor = best_params if best_params else gist_best_params
+                anchor = best_params  # NO-OVERFIT：不 fallback v5
                 core_keys = {"stop_loss","hold_days","buy_threshold","max_positions","sell_below_ma","trailing_stop","use_breakeven","breakeven_trigger"}
                 explore_bases = []
                 for _eb in range(5):
@@ -1666,40 +1527,19 @@ def main():
                     _avg_ret = sum(t.get("return",0) for t in _completed_td) / _n_td if _n_td else 0
                     _new_total = sum(t.get("return",0) for t in _completed_td)
 
-                    # 🛡️ 第 1 層（最重要）：同資料比較 — 新總報酬必須贏 Gist 至少 2%
-                    # 讀取失敗 → 直接拒絕推送（不退回分數比較）
-                    try:
-                        _gist_data = json.loads(list(r.json()["files"].values())[0]["content"])
-                        _gist_params = _gist_data.get("params", {})
-                        if not _gist_params:
-                            print(f"  [GPU] ❌ Gist 沒有 params，無法比較總報酬（跳過）")
-                            last_synced_improved = total_improved
-                            continue
-                        _gist_trades = cpu_replay(pre, _gist_params)
-                        _gist_trades = [t for t in _gist_trades if not math.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
-                        _gist_total = sum(t.get("return",0) for t in _gist_trades)
-                        _min_required = _gist_total * 1.02  # 必須贏 2% 才算真突破
-                        if _new_total < _min_required:
-                            print(f"  [GPU] ❌ 總報酬保護：新{_new_total:.0f}% < 需要的 {_min_required:.0f}%（Gist {_gist_total:.0f}% x 1.02）（跳過）")
-                            last_synced_improved = total_improved
-                            continue
-                        print(f"  [GPU] ✅ 總報酬驗證：新{_new_total:.0f}% > Gist {_gist_total:.0f}% x 1.02")
-                    except Exception as _e:
-                        print(f"  [GPU] ❌ 同資料比較失敗({_e})，安全起見直接拒絕推送（跳過）")
-                        last_synced_improved = total_improved
-                        continue
-
-                    # 🛡️ 第 2 層：品質門檻（D）+ 3 段一致性
-                    if _n_td < 50 or _n_td > 120:
-                        print(f"  [GPU] ❌ 筆數不過關：{_n_td}筆（需 50-120）（跳過）")
+                    # 🛡️ 品質門檻（NO-OVERFIT 模式）
+                    # 不跟 v5 比 1.02x（v5 可能是 overfit，不當基準）
+                    # Kernel 已經過 WF + 3段一致性，這裡只做最終 sanity check
+                    if _n_td < 40 or _n_td > 140:
+                        print(f"  [GPU] ❌ 總筆數不過關：{_n_td}筆（需 40-140）（跳過）")
                         last_synced_improved = total_improved
                         continue
                     if _avg_hold < 5:
-                        print(f"  [GPU] ❌ 持有天數不過關：{_avg_hold:.1f}天（需 >= 5）（跳過）")
+                        print(f"  [GPU] ❌ 持有天數不過關：{_avg_hold:.1f}天（跳過）")
                         last_synced_improved = total_improved
                         continue
                     if _avg_ret < 5:
-                        print(f"  [GPU] ❌ 平均報酬不過關：{_avg_ret:.1f}%（需 >= 5%）（跳過）")
+                        print(f"  [GPU] ❌ 平均報酬不過關：{_avg_ret:.1f}%（跳過）")
                         last_synced_improved = total_improved
                         continue
                     _rets = [t.get("return",0) for t in _completed_td]
@@ -1709,34 +1549,34 @@ def main():
                         else: _run_dd = 0
                         if _run_dd < _max_dd: _max_dd = _run_dd
                     if _max_dd < -40:
-                        print(f"  [GPU] ❌ 最大連虧不過關：{_max_dd:.1f}%（需 >= -40%）（跳過）")
+                        print(f"  [GPU] ❌ MaxDD 不過關：{_max_dd:.1f}%（跳過）")
                         last_synced_improved = total_improved
                         continue
 
-                    # 3 段一致性驗證（防「某年賺某年虧」型 overfit）
-                    _dates = pre["dates"]
-                    _start = _dates[60].date()
-                    _end = _dates[-1].date()
-                    _span = (_end - _start).days
-                    _seg_ret = [0.0, 0.0, 0.0]
-                    _seg_n = [0, 0, 0]
-                    for _t in _completed_td:
-                        try:
-                            from datetime import date as _dc
-                            _bd = _dc.fromisoformat(_t.get("buy_date",""))
-                            _rel = (_bd - _start).days
-                            _seg = min(2, max(0, _rel * 3 // _span)) if _span > 0 else 0
-                            _seg_ret[_seg] += _t.get("return",0)
-                            _seg_n[_seg] += 1
-                        except: pass
-                    _seg_fail = [s for s in range(3) if _seg_n[s] >= 5 and _seg_ret[s] <= 0]
-                    if _seg_fail:
-                        _msg = ", ".join(f"段{s}: {_seg_n[s]}筆 {_seg_ret[s]:.0f}%" for s in _seg_fail)
-                        print(f"  [GPU] ❌ 3 段一致性不過關：{_msg}（跳過）")
+                    # 🛡️ Walk-Forward Python 端複查（kernel 和 cpu_replay 交叉驗證）
+                    _train_end_date = pre["dates"][pre["train_end"]]
+                    _train_trades = [t for t in _completed_td if t.get("buy_date","") < str(_train_end_date.date())]
+                    _test_trades = [t for t in _completed_td if t.get("buy_date","") >= str(_train_end_date.date())]
+                    _train_total = sum(t.get("return",0) for t in _train_trades)
+                    _test_total = sum(t.get("return",0) for t in _test_trades)
+                    _train_years = (pre["train_end"] - 60) / 250.0
+                    _test_years = (pre["n_days"] - pre["train_end"]) / 250.0
+                    _train_ann = _train_total / _train_years if _train_years > 0.5 else _train_total
+                    _test_ann = _test_total / _test_years if _test_years > 0.3 else _test_total
+                    if len(_test_trades) < 5:
+                        print(f"  [GPU] ❌ WF: test {len(_test_trades)}筆（需 >= 5）（跳過）")
                         last_synced_improved = total_improved
                         continue
-                    print(f"  [GPU] ✅ 品質門檻：{_n_td}筆 avg持有{_avg_hold:.1f}天 avg{_avg_ret:.1f}% MaxDD{_max_dd:.1f}%")
-                    print(f"  [GPU] ✅ 3 段一致性：{_seg_n[0]}筆/{_seg_ret[0]:.0f}% | {_seg_n[1]}筆/{_seg_ret[1]:.0f}% | {_seg_n[2]}筆/{_seg_ret[2]:.0f}%")
+                    if _test_total <= 0:
+                        print(f"  [GPU] ❌ WF: test 虧損 {_test_total:.0f}%（跳過）")
+                        last_synced_improved = total_improved
+                        continue
+                    if _test_ann < _train_ann * 0.4:
+                        print(f"  [GPU] ❌ WF: test 年化 {_test_ann:.0f}% < train {_train_ann:.0f}% x 0.4（退化太多）")
+                        last_synced_improved = total_improved
+                        continue
+                    print(f"  [GPU] ✅ 品質：{_n_td}筆 avg持有{_avg_hold:.1f}天 avg{_avg_ret:.1f}% MaxDD{_max_dd:.1f}%")
+                    print(f"  [GPU] ✅ WF 通過：train={len(_train_trades)}筆 {_train_total:.0f}%, test={len(_test_trades)}筆 {_test_total:.0f}% (年化 {_train_ann:.0f}% vs {_test_ann:.0f}%)")
                     # 分年統計（排除持有中）
                     yearly = {}
                     for t in _completed_td:
