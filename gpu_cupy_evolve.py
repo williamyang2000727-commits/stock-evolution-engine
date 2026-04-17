@@ -448,6 +448,22 @@ void backtest(
             if (max_dd_all >= -40.0f) all_pass = true;
         }
     }
+    // 近期 60 天崩盤檢查：抓「train 強、test 前段強、test 後段崩」型策略
+    // 如近 60 天有 >= 3 筆但平均 < 5%，拒絕（實盤上線立刻會遇到的品質）
+    if (all_pass) {
+        int recent_start = n_days - 60;
+        float recent_total = 0; int recent_n = 0;
+        for (int i=0; i<n_trades; i++) {
+            if (trade_bdays[i] >= recent_start) {
+                recent_total += rets[i];
+                recent_n++;
+            }
+        }
+        if (recent_n >= 3) {
+            float recent_avg = recent_total / recent_n;
+            if (recent_avg < 5.0f) all_pass = false;
+        }
+    }
 
     // 分 train / test（依買入日）
     int n_train = 0, n_test = 0;
@@ -1499,6 +1515,13 @@ def main():
             _tr_ann = _ctr_tot/_tr_y if _tr_y > 0.5 else _ctr_tot
             _ts_ann = _cts_tot/_ts_y if _ts_y > 0.3 else _cts_tot
             if _tr_ann > 0 and _ts_ann < _tr_ann * 0.7: continue  # WF 0.5 → 0.7（擋 reward hacking）
+            # 近期 60 天崩盤檢查（抓 183 這種 2026 avg 3.9% 的）
+            _recent_cutoff = str(pre["dates"][pre["n_days"] - 60].date())
+            _recent = [t for t in _cmp if t.get("buy_date","") >= _recent_cutoff]
+            if len(_recent) >= 3:
+                _recent_avg = sum(t.get("return",0) for t in _recent) / len(_recent)
+                if _recent_avg < 5:
+                    continue  # 近期崩盤，拒絕
             # 過了所有 gate，接受
             best_score = _sc
             best_nt = int(results[_ti, 1])
