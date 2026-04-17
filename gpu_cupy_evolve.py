@@ -555,7 +555,10 @@ void backtest(
                         float s_consistency = min_seg_annual * 0.05f;
                         if (s_consistency > 15) s_consistency = 15;
 
-                        float s_total = train_annual * 0.30f;
+                        // s_total 用 min(train, test)：train 再高，被 test 拖的策略就拿不到好分
+                        // 這才是真正殺死 reward hacking — GPU 無法靠 train 爆炸賺分數
+                        float effective_annual = train_annual < test_annual ? train_annual : test_annual;
+                        float s_total = effective_annual * 0.30f;
                         float s_sharpe = sharpe_tr * 3.0f; if (s_sharpe > 12) s_sharpe = 12;
                         float s_pl = pl_ratio * 0.8f; if (s_pl > 8) s_pl = 8;
                         float s_streak = max_streak * 1.5f;
