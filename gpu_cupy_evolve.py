@@ -1446,23 +1446,63 @@ def main():
         hall_of_fame.sort(key=lambda x: -x[0])
         hall_of_fame = hall_of_fame[:15]
 
-        bi = np.argmax(results[:, 0])
-        if results[bi, 0] > best_score:
-            best_score = float(results[bi, 0])
-            best_nt = int(results[bi, 1])
-            best_avg = float(results[bi, 2])
-            best_total = float(results[bi, 3])
-            best_wr = float(results[bi, 4])
-            bp = params_np[bi]
-            best_params = {PARAM_ORDER[i]: float(bp[i]) for i in range(N_PARAMS)}
-            best_params["ma_fast_w"] = int(mf_choices[bi])
-            best_params["ma_slow_w"] = int(ms_choices[bi])
-            best_params["momentum_days"] = int(md_choices[bi])
+        # 🔍 掃 kernel 前 20 名，用 cpu_replay 當最終判官（kernel 和 cpu_replay 有分歧，以 cpu_replay 為準）
+        _top_n_idx = np.argsort(results[:, 0])[-20:][::-1]
+        _candidate_found = False
+        _candidate_trades = None  # 保留，Gist 推送區可直接用
+        import math as _mc
+        for _ti in _top_n_idx:
+            _sc = float(results[_ti, 0])
+            if _sc <= best_score or _sc <= 0:
+                break  # 剩下都更低
+            _tp = params_np[_ti]
+            _cp = {PARAM_ORDER[_i]: float(_tp[_i]) for _i in range(N_PARAMS)}
+            _cp["ma_fast_w"] = int(mf_choices[_ti])
+            _cp["ma_slow_w"] = int(ms_choices[_ti])
+            _cp["momentum_days"] = int(md_choices[_ti])
+            _tds = cpu_replay(pre, _cp)
+            _tds = [t for t in _tds if not _mc.isnan(t.get("return",0))]
+            _cmp = [t for t in _tds if t.get("reason") != "持有中"]
+            _cnt = len(_cmp)
+            if _cnt < 40 or _cnt > 140: continue
+            _cavg = sum(t.get("return",0) for t in _cmp) / _cnt
+            if _cavg < 3: continue
+            _cah = sum(t.get("days",0) for t in _cmp) / _cnt
+            if _cah < 5: continue
+            _crun = 0; _cmdd = 0
+            for _t in _cmp:
+                _r = _t.get("return",0)
+                if _r < 0: _crun += _r
+                else: _crun = 0
+                if _crun < _cmdd: _cmdd = _crun
+            if _cmdd < -40: continue
+            _ted = pre["dates"][pre["train_end"]]
+            _ctr = [t for t in _cmp if t.get("buy_date","") < str(_ted.date())]
+            _cts = [t for t in _cmp if t.get("buy_date","") >= str(_ted.date())]
+            if len(_cts) < 5: continue
+            _cts_tot = sum(t.get("return",0) for t in _cts)
+            _ctr_tot = sum(t.get("return",0) for t in _ctr)
+            if _cts_tot <= 0: continue
+            _tr_y = (pre["train_end"]-60)/250.0
+            _ts_y = (pre["n_days"]-pre["train_end"])/250.0
+            _tr_ann = _ctr_tot/_tr_y if _tr_y > 0.5 else _ctr_tot
+            _ts_ann = _cts_tot/_ts_y if _ts_y > 0.3 else _cts_tot
+            if _tr_ann > 0 and _ts_ann < _tr_ann * 0.4: continue
+            # 過了所有 gate，接受
+            best_score = _sc
+            best_nt = int(results[_ti, 1])
+            best_avg = float(results[_ti, 2])
+            best_total = float(results[_ti, 3])
+            best_wr = float(results[_ti, 4])
+            best_params = _cp
+            _candidate_trades = _tds
+            _candidate_found = True
             total_improved += 1
             no_improve_rounds = 0
-            hof_top = hall_of_fame[0][0] if hall_of_fame else best_score
-            print(f"  [GPU] 新紀錄！{best_score:.1f} | avg{best_avg:.1f}% | 總{best_total:.0f}% | 勝率{best_wr:.0f}% | {best_nt}筆")
-        else:
+            _wf_pct = _ts_ann/_tr_ann*100 if _tr_ann>0 else 0
+            print(f"  [GPU] ✅ 新紀錄（cpu_replay 驗證）！{best_score:.1f} | {_cnt}筆 總{_ctr_tot+_cts_tot:.0f}% MaxDD{_cmdd:.1f}% WF比{_wf_pct:.0f}%")
+            break
+        if not _candidate_found:
             no_improve_rounds += 1
             # B+ 週期擾動：每 10 輪無突破，替換最弱 HOF 為隨機策略（打破局部最佳）
             if no_improve_rounds > 0 and no_improve_rounds % 10 == 0 and len(hall_of_fame) >= 2:
@@ -1528,116 +1568,62 @@ def main():
         explore_tag = f" | 探索{explore_round}/15" if explore_bases is not None else ""
         print(f"[GPU] R{rnd} | {total_tested:,}組 | {elapsed:.0f}秒 | {speed:,.0f}組/秒 | 突破{total_improved} | 變異率{mutate_rate:.0%}{explore_tag}")
 
-        # Gist 同步（只在這輪有突破時才檢查）
-        if total_improved > last_synced_improved and best_score > 0 and GH_TOKEN and GIST_ID:
+        # Pending push（新突破已在上面的 cpu_replay 驗證通過）
+        if total_improved > last_synced_improved and _candidate_trades is not None:
             try:
-                headers = {"Authorization": f"token {GH_TOKEN}"}
-                r = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers=headers, timeout=10)
-                cs = json.loads(list(r.json()["files"].values())[0]["content"]).get("score", 0)
-                if best_score > cs + 0.01:
-                    # CPU 重跑一次拿完整交易明細
-                    trade_details = cpu_replay(pre, best_params)
-                    import math
-                    trade_details = [t for t in trade_details if not math.isnan(t.get("return",0))]
-                    _completed_td = [t for t in trade_details if t.get("reason") != "持有中"]
-                    _n_td = len(_completed_td)
-                    _avg_hold = sum(t.get("days",0) for t in _completed_td) / _n_td if _n_td else 0
-                    _avg_ret = sum(t.get("return",0) for t in _completed_td) / _n_td if _n_td else 0
-                    _new_total = sum(t.get("return",0) for t in _completed_td)
+                trade_details = _candidate_trades
+                _completed_td = [t for t in trade_details if t.get("reason") != "持有中"]
+                _train_end_date = pre["dates"][pre["train_end"]]
+                _train_trades = [t for t in _completed_td if t.get("buy_date","") < str(_train_end_date.date())]
+                _test_trades = [t for t in _completed_td if t.get("buy_date","") >= str(_train_end_date.date())]
+                _train_total = sum(t.get("return",0) for t in _train_trades)
+                _test_total = sum(t.get("return",0) for t in _test_trades)
+                _train_years = (pre["train_end"] - 60) / 250.0
+                _test_years = (pre["n_days"] - pre["train_end"]) / 250.0
+                _train_ann = _train_total / _train_years if _train_years > 0.5 else _train_total
+                _test_ann = _test_total / _test_years if _test_years > 0.3 else _test_total
+                _ratio = (_test_ann / _train_ann * 100) if _train_ann > 0 else 0
 
-                    # 🛡️ Python gate：(1) 全期實盤安全 (2) WF 交叉驗證
-                    # Train-only 已在 kernel 把關，Python 只做 kernel 沒看到的面向
-                    _train_end_date = pre["dates"][pre["train_end"]]
-                    _train_trades = [t for t in _completed_td if t.get("buy_date","") < str(_train_end_date.date())]
-                    _test_trades = [t for t in _completed_td if t.get("buy_date","") >= str(_train_end_date.date())]
-                    _n_train = len(_train_trades); _n_test = len(_test_trades)
-                    _train_total = sum(t.get("return",0) for t in _train_trades)
-                    _test_total = sum(t.get("return",0) for t in _test_trades)
-                    _train_years = (pre["train_end"] - 60) / 250.0
-                    _test_years = (pre["n_days"] - pre["train_end"]) / 250.0
-                    _train_ann = _train_total / _train_years if _train_years > 0.5 else _train_total
-                    _test_ann = _test_total / _test_years if _test_years > 0.3 else _test_total
-
-                    # (1) 全期實盤安全（kernel 沒看到的面向）
-                    if _n_td < 40 or _n_td > 140:
-                        print(f"  [GPU] ❌ 全期筆數：{_n_td}筆 不在 40-140（跳過）")
-                        last_synced_improved = total_improved; continue
-                    if _avg_ret < 3:
-                        print(f"  [GPU] ❌ 全期 avg 報酬：{_avg_ret:.1f}% < 3%（跳過）")
-                        last_synced_improved = total_improved; continue
-                    if _avg_hold < 5:
-                        print(f"  [GPU] ❌ 全期 avg 持有：{_avg_hold:.1f}天 < 5（跳過）")
-                        last_synced_improved = total_improved; continue
-                    # 全期 MaxDD（實盤真的會遇到的回撤）
-                    _rets_all = [t.get("return",0) for t in _completed_td]
-                    _run_dd = 0; _max_dd_all = 0
-                    for _r in _rets_all:
-                        if _r < 0: _run_dd += _r
-                        else: _run_dd = 0
-                        if _run_dd < _max_dd_all: _max_dd_all = _run_dd
-                    if _max_dd_all < -40:
-                        print(f"  [GPU] ❌ 全期 MaxDD：{_max_dd_all:.1f}% < -40%（實盤不可接受）（跳過）")
-                        last_synced_improved = total_improved; continue
-
-                    # (2) Walk-Forward 交叉驗證
-                    if _n_test < 5:
-                        print(f"  [GPU] ❌ WF: test {_n_test}筆 < 5（跳過）")
-                        last_synced_improved = total_improved; continue
-                    if _test_total <= 0:
-                        print(f"  [GPU] ❌ WF: test 虧損 {_test_total:.0f}%（跳過）")
-                        last_synced_improved = total_improved; continue
-                    if _train_ann > 0 and _test_ann < _train_ann * 0.4:
-                        print(f"  [GPU] ❌ WF: test 年化 {_test_ann:.0f}% < train {_train_ann:.0f}% x 0.4（退化太多）（跳過）")
-                        last_synced_improved = total_improved; continue
-
-                    _ratio = (_test_ann / _train_ann * 100) if _train_ann > 0 else 0
-                    print(f"  [GPU] ✅ 全期安全：{_n_td}筆 avg{_avg_ret:.1f}% 持有{_avg_hold:.1f}天 MaxDD{_max_dd_all:.1f}%")
-                    print(f"  [GPU] ✅ WF 驗證：train={_n_train}筆 年化{_train_ann:.0f}% | test={_n_test}筆 年化{_test_ann:.0f}% | 比例{_ratio:.0f}%")
-                    # 分年統計（排除持有中）
-                    yearly = {}
-                    for t in _completed_td:
-                        y = t["buy_date"][:4]
-                        if y not in yearly: yearly[y] = {"n":0,"ret":0,"win":0}
-                        yearly[y]["n"] += 1; yearly[y]["ret"] += t["return"]
-                        if t["return"] > 0: yearly[y]["win"] += 1
-                    n_all = len(_completed_td)
-                    total_r = sum(t["return"] for t in _completed_td)
-                    avg_r = total_r / n_all if n_all else 0
-                    wr_r = sum(1 for t in _completed_td if t["return"]>0) / n_all * 100 if n_all else 0
-                    content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060_v3_consistency",
-                        "updated_at":time.strftime("%Y-%m-%dT%H:%M:%S"),
-                        "params":best_params,"backtest":{
-                            "avg_return":round(avg_r,2),"total_return":round(total_r,2),
-                            "win_rate":round(wr_r,2),"total_trades":n_all},
-                        "trade_details":trade_details},
-                        ensure_ascii=False, indent=2)
-                    # 🔒 GPU 不自動推 Gist（Web/daily_scan 讀 Gist，推了就直接進實盤）
-                    # 改為儲存到本機 pending 檔，Telegram 通知用戶手動審核後再推
-                    _pending_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_push.json")
-                    with open(_pending_path, "w", encoding="utf-8") as _f:
-                        _f.write(content)
-                    # 分年績效（Telegram 不超過 4096）
-                    year_lines = "\n".join([
-                        f"  {y}: {d['n']}筆 avg{d['ret']/d['n']:.1f}% 總{d['ret']:.0f}% 勝率{d['win']/d['n']*100:.0f}%"
-                        for y, d in sorted(yearly.items())
-                    ])
-                    telegram_push(
-                        f"🎯 GPU 找到新策略（待審核）\n"
-                        f"━━━━━━━━━━━━\n"
-                        f"分數：{best_score:.2f} > Gist {cs:.2f}\n"
-                        f"全期：{n_all}筆 avg{avg_r:.1f}% 總{total_r:.0f}% 勝率{wr_r:.0f}%\n"
-                        f"WF：train 年化{_train_ann:.0f}% vs test 年化{_test_ann:.0f}% ({_ratio:.0f}%)\n"
-                        f"停損{best_params.get('stop_loss',0):.0f}% | 持倉{best_params.get('max_positions',2):.0f}檔\n"
-                        f"⚡ {total_tested:,}組/{elapsed:.0f}秒\n\n"
-                        f"📊 分年績效：\n{year_lines}\n\n"
-                        f"💾 已存 pending_push.json\n"
-                        f"✅ 審核 OK → python push_pending.py"
-                    )
-                    print(f"  [GPU] 💾 儲存到 pending_push.json（未推 Gist）")
-                    print(f"  [GPU] 👉 審核 OK 後手動推：python push_pending.py")
+                yearly = {}
+                for t in _completed_td:
+                    y = t["buy_date"][:4]
+                    if y not in yearly: yearly[y] = {"n":0,"ret":0,"win":0}
+                    yearly[y]["n"] += 1; yearly[y]["ret"] += t["return"]
+                    if t["return"] > 0: yearly[y]["win"] += 1
+                n_all = len(_completed_td)
+                total_r = sum(t["return"] for t in _completed_td)
+                avg_r = total_r / n_all if n_all else 0
+                wr_r = sum(1 for t in _completed_td if t["return"]>0) / n_all * 100 if n_all else 0
+                content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060_v3_consistency",
+                    "updated_at":time.strftime("%Y-%m-%dT%H:%M:%S"),
+                    "params":best_params,"backtest":{
+                        "avg_return":round(avg_r,2),"total_return":round(total_r,2),
+                        "win_rate":round(wr_r,2),"total_trades":n_all},
+                    "trade_details":trade_details},
+                    ensure_ascii=False, indent=2)
+                _pending_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_push.json")
+                with open(_pending_path, "w", encoding="utf-8") as _f:
+                    _f.write(content)
+                year_lines = "\n".join([
+                    f"  {y}: {d['n']}筆 avg{d['ret']/d['n']:.1f}% 總{d['ret']:.0f}% 勝率{d['win']/d['n']*100:.0f}%"
+                    for y, d in sorted(yearly.items())
+                ])
+                telegram_push(
+                    f"🎯 GPU 找到新策略（待審核）\n"
+                    f"━━━━━━━━━━━━\n"
+                    f"分數：{best_score:.2f}\n"
+                    f"全期：{n_all}筆 avg{avg_r:.1f}% 總{total_r:.0f}% 勝率{wr_r:.0f}%\n"
+                    f"WF：train 年化{_train_ann:.0f}% vs test 年化{_test_ann:.0f}% ({_ratio:.0f}%)\n"
+                    f"停損{best_params.get('stop_loss',0):.0f}% | 持倉{best_params.get('max_positions',2):.0f}檔\n"
+                    f"⚡ {total_tested:,}組/{elapsed:.0f}秒\n\n"
+                    f"📊 分年績效：\n{year_lines}\n\n"
+                    f"💾 已存 pending_push.json\n"
+                    f"✅ 審核 OK → python push_pending.py"
+                )
+                print(f"  [GPU] 💾 pending_push.json 已更新，Telegram 通知已發")
                 last_synced_improved = total_improved
             except Exception as e:
-                print(f"  [GPU] Gist 錯誤: {e}")
+                print(f"  [GPU] pending 寫入錯誤: {e}")
 
 if __name__ == "__main__":
     main()
