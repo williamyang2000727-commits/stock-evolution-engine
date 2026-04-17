@@ -775,8 +775,9 @@ def precompute(data):
         l14[:,i]=np.min(low[:,i-14:i+1],axis=1); h14[:,i]=np.max(high[:,i-14:i+1],axis=1)
     wr=np.where((h14-l14)>0,(h14-close)/(h14-l14)*-100,-50).astype(np.float32)
 
+    # 近 20 日新高：h20 排除今日（否則今天創新高時 near_high=0，跟 w_new_high_60 重複抓新高）
     h20=np.zeros_like(close)
-    for i in range(20,close.shape[1]): h20[:,i]=np.max(high[:,i-20:i+1],axis=1)
+    for i in range(20,close.shape[1]): h20[:,i]=np.max(high[:,i-20:i],axis=1)
     nh=np.where(h20>0,(close/h20-1)*100,0).astype(np.float32)
 
     # ATR (14) — for Keltner Channel
