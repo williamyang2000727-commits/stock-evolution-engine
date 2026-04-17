@@ -433,12 +433,12 @@ void backtest(
 
     // 先檢查全期實盤安全（實盤會遇到的回撤/筆數/持有/報酬）— 不過就拒絕，不進訓練評分
     bool all_pass = false;
-    if (n_trades >= 40 && n_trades <= 110) {  // 波段目標：40-110 筆（avg_hold ~15+ 天）
+    if (n_trades >= 40 && n_trades <= 140) {
         float avg_ret_all = total_ret / n_trades;
         float avg_hold_all = 0;
         for (int i=0; i<n_trades; i++) avg_hold_all += (float)hold_days_arr[i];
         avg_hold_all /= n_trades;
-        if (avg_ret_all >= 3.0f && avg_hold_all >= 10.0f) {  // 波段：持有 >= 10 天
+        if (avg_ret_all >= 3.0f && avg_hold_all >= 5.0f) {
             float max_dd_all = 0, run_dd_all = 0;
             for (int i=0; i<n_trades; i++) {
                 if (rets[i] < 0) run_dd_all += rets[i];
@@ -470,15 +470,15 @@ void backtest(
         }
     }
 
-    // D（train）：train 筆數 30-100 + 全期必須先過
-    if (all_pass && n_train >= 25 && n_train <= 70) {  // 波段：train 25-70 筆
+    // D（train）：train 筆數 30-80 + 全期必須先過
+    if (all_pass && n_train >= 30 && n_train <= 80) {
         float avg_ret_tr = total_train / n_train;
         float win_rate_tr = win_train / n_train * 100.0f;
         float avg_hold_tr = 0;
         for (int i=0; i<n_train; i++) avg_hold_tr += (float)hd_train[i];
         avg_hold_tr /= n_train;
 
-        if (avg_ret_tr >= 5 && win_rate_tr >= 35 && avg_hold_tr >= 10.0f) {  // 波段：train 持有 >= 10 天
+        if (avg_ret_tr >= 5 && win_rate_tr >= 35 && avg_hold_tr >= 5.0f) {
             // Sharpe（train）
             float sum_sq = 0;
             for (int i=0; i<n_train; i++) { float d = rets_train[i] - avg_ret_tr; sum_sq += d*d; }
@@ -514,11 +514,11 @@ void backtest(
                 float train_annual = train_years > 0.5f ? total_train / train_years : total_train;
                 float test_annual = test_years > 0.3f ? total_test / test_years : total_test;
 
-                // Walk-Forward 盲測門檻：test 必須有效正報酬、不退化超過 50%
+                // Walk-Forward 盲測門檻：test 必須有效正報酬、不退化太多
                 bool wf_pass = true;
                 if (n_test < 5) wf_pass = false;
                 if (total_test <= 0) wf_pass = false;
-                if (test_annual < train_annual * 0.5f) wf_pass = false;  // 0.4 → 0.5（擋掉過度依賴 bull 期的策略）
+                if (test_annual < train_annual * 0.4f) wf_pass = false;
 
                 if (wf_pass) {
                     // 3 段一致性（train 期內部）
@@ -543,7 +543,6 @@ void backtest(
                             active_segs++;
                         }
                     }
-                    // seg[2] 檢查移除：功能跟 WF 0.5 ratio 重複，雙重門檻過濾太兇
                     if (active_segs >= 2 && seg_ok) {
                         float s_consistency = min_seg_annual * 0.05f;
                         if (s_consistency > 15) s_consistency = 15;
@@ -554,18 +553,13 @@ void backtest(
                         float s_streak = max_streak * 1.5f;
                         float s_dd = fabsf(max_dd_tr) * 0.1f;
                         float s_hold_pen = 0;
-                        // 波段：鼓勵 14+ 天持有（低於就扣分）
-                        if (avg_hold_tr < 14.0f) s_hold_pen = (14.0f - avg_hold_tr) * 2.0f;
-                        // 新加：勝率獎勵（推 WR 往 50%+ 爬，避免 49% 這種心理壓力大的）
-                        float s_wr = 0;
-                        if (win_rate_tr >= 45.0f) s_wr = (win_rate_tr - 45.0f) * 0.5f;
-                        if (s_wr > 10.0f) s_wr = 10.0f;
+                        if (avg_hold_tr < 8.0f) s_hold_pen = (8.0f - avg_hold_tr) * 2.0f;
                         // WF 泛化加分：test 年化 / train 年化（1:1 最佳）
                         float wf_ratio = train_annual > 1.0f ? test_annual / train_annual : 1.0f;
                         if (wf_ratio > 1.2f) wf_ratio = 1.2f;
                         float s_wf = wf_ratio * 10.0f;
 
-                        score = s_total + s_sharpe + s_pl + s_consistency + s_wf + s_wr - s_streak - s_dd - s_hold_pen;
+                        score = s_total + s_sharpe + s_pl + s_consistency + s_wf - s_streak - s_dd - s_hold_pen;
                     }
                 }
             }
@@ -605,11 +599,11 @@ PARAMS_SPACE = {
     "use_macd_sell": [0,1], "use_kd_sell": [0,1],
     "sell_vol_shrink": [0,0.3,0.5,0.7],
     "sell_below_ma": [0,1,2,3],
-    "hold_days": [10,15,20,25,30],  # 移除 5,7（太短線，不是波段）
+    "hold_days": [5,7,10,15,20,25,30],
     # ====== BIAS 乖離率 ======
     "w_bias": [0,1,2,3], "bias_max": [3,5,8,10,15,20,30],
     # ====== 停滯出場 ======
-    "use_stagnation_exit": [0,1], "stagnation_days": [10,15], "stagnation_min_ret": [0,1,3,5],  # 刪 5,7（會太快出場）
+    "use_stagnation_exit": [0,1], "stagnation_days": [5,7,10,15], "stagnation_min_ret": [0,1,3,5],
     # ====== 保本停損 ======
     "use_breakeven": [0,1], "breakeven_trigger": [10,15,20,25,30],
     # ====== OBV 能量潮 ======
@@ -1470,11 +1464,11 @@ def main():
             _tds = [t for t in _tds if not _mc.isnan(t.get("return",0))]
             _cmp = [t for t in _tds if t.get("reason") != "持有中"]
             _cnt = len(_cmp)
-            if _cnt < 40 or _cnt > 110: continue  # 波段：40-110 筆
+            if _cnt < 40 or _cnt > 140: continue
             _cavg = sum(t.get("return",0) for t in _cmp) / _cnt
             if _cavg < 3: continue
             _cah = sum(t.get("days",0) for t in _cmp) / _cnt
-            if _cah < 10: continue  # 波段：avg_hold >= 10 天
+            if _cah < 5: continue
             _crun = 0; _cmdd = 0
             for _t in _cmp:
                 _r = _t.get("return",0)
@@ -1493,7 +1487,7 @@ def main():
             _ts_y = (pre["n_days"]-pre["train_end"])/250.0
             _tr_ann = _ctr_tot/_tr_y if _tr_y > 0.5 else _ctr_tot
             _ts_ann = _cts_tot/_ts_y if _ts_y > 0.3 else _cts_tot
-            if _tr_ann > 0 and _ts_ann < _tr_ann * 0.5: continue  # WF 嚴化 0.4 → 0.5
+            if _tr_ann > 0 and _ts_ann < _tr_ann * 0.4: continue
             # 過了所有 gate，接受
             best_score = _sc
             best_nt = int(results[_ti, 1])
