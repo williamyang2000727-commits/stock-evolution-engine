@@ -1248,11 +1248,11 @@ def main():
             _baseline_avg = _baseline_total / _baseline_n if _baseline_n else 0
             _baseline_wr = sum(1 for t in _baseline_trades if t.get("return",0)>0) / _baseline_n * 100 if _baseline_n else 0
             print(f"[GPU] Gist 策略在當前資料上：{_baseline_n}筆 avg{_baseline_avg:.1f}% 總{_baseline_total:.0f}% 勝率{_baseline_wr:.0f}%")
-            # 🧹 NO-OVERFIT 模式：v5 只當「當前 Gist 內容資訊」參考，不注入演化流程
-            # - best_params 保持 None（不從 v5 爬山）
-            # - hall_of_fame 保持空（不預種 v5，等 R1 自然產生）
-            # - 跳過 1D/2D/3D 掃描（掃描基於 v5，會污染起點）
-            print(f"[GPU] 📛 NO-OVERFIT 模式：v5 不注入演化，GPU 從零隨機起步")
+            # 🌱 SEED 模式：Gist 策略（已通過所有 WF / 防 overfit gate）當起點加速進化
+            # gates 不放寬，只是給 GPU 好起點。有新策略需通過所有 gate 才能推 Gist。
+            best_params = dict(gist_best_params)
+            hall_of_fame = [(999, dict(gist_best_params))]  # HOF[0] = Gist strategy
+            print(f"[GPU] 🌱 SEED 模式：Gist 策略當起點（HOF[0] = 現策略），GPU 從此處爬山 + 4 個隨機多樣化")
     except Exception as _e:
         print(f"[GPU] Gist 載入失敗：{_e}")
     # 掃描跳過（曾基於 v5，會污染起點）
@@ -1434,7 +1434,15 @@ def main():
         params_np[:, N_PARAMS+1] = ms_mapped.astype(np.float32)
         params_np[:, N_PARAMS+2] = md_mapped.astype(np.float32)
 
-        # NO-OVERFIT：不注入 v5 到 R1 params_np[0]
+        # SEED：R1 把 Gist 策略放到 params_np[0]，讓 kernel 給它新公式下的分數作 baseline
+        if rnd == 1 and gist_best_params:
+            for _i, _key in enumerate(PARAM_ORDER):
+                _opts = np.array(PARAMS_SPACE[_key], dtype=np.float32)
+                _val = float(gist_best_params.get(_key, _opts[0]))
+                params_np[0, _i] = _opts[int(np.argmin(np.abs(_opts - _val)))]
+            params_np[0, N_PARAMS] = MA_FAST_MAP.get(int(gist_best_params.get("ma_fast_w", 5)), 1)
+            params_np[0, N_PARAMS+1] = MA_SLOW_MAP.get(int(gist_best_params.get("ma_slow_w", 20)), 1)
+            params_np[0, N_PARAMS+2] = MOM_MAP.get(int(gist_best_params.get("momentum_days", 5)), 1)
 
         d_params = cp.asarray(params_np)
         d_results = cp.zeros((BATCH, 5), dtype=cp.float32)
@@ -1457,7 +1465,21 @@ def main():
         results = d_results.get()
         total_tested += BATCH
 
-        # NO-OVERFIT：不用 v5 當基準，best_score 從 0 開始自然成長
+        # SEED：R1 抓 Gist 策略（position 0）的 kernel 分數當 baseline
+        if rnd == 1 and gist_best_params:
+            _seed_score = float(results[0, 0])
+            _seed_nt = int(results[0, 1])
+            _seed_total = float(results[0, 3])
+            if _seed_score > 0:
+                best_score = _seed_score
+                best_nt = _seed_nt
+                best_avg = float(results[0, 2])
+                best_total = _seed_total
+                best_wr = float(results[0, 4])
+                total_improved += 1
+                print(f"  [GPU] 🌱 SEED baseline：{_seed_score:.1f} | {_seed_nt}筆 | 總{_seed_total:.0f}%（新公式下 Gist 策略分數，要超過它才算進步）")
+            else:
+                print(f"  [GPU] ⚠️ SEED 策略新公式下分數無效（{_seed_score:.1f}，{_seed_nt}筆）— 可能門檻變嚴，GPU 從零找")
 
         # 收集這批裡分數 > 0 的前 5 名加入名人堂（不用破紀錄也能入）
         top_indices = np.argsort(results[:, 0])[-5:][::-1]
