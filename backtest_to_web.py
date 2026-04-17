@@ -39,10 +39,15 @@ n = len(trades)
 if n == 0:
     print("No trades!"); sys.exit(1)
 
-total = sum(t["return"] for t in trades)
-avg = total / n
-wins = sum(1 for t in trades if t["return"] > 0)
-print(f"\nTrades: {n} | Avg: {avg:.2f}% | Total: {total:.2f}% | Win Rate: {wins/n*100:.1f}%")
+# Bug fix: 排除持有中再計算 total / avg / win_rate（避免把未實現損益混入統計）
+_completed_calc = [t for t in trades if t.get("reason") != "持有中"]
+_holding_calc = [t for t in trades if t.get("reason") == "持有中"]
+n_completed = len(_completed_calc)
+total = sum(t["return"] for t in _completed_calc)
+avg = total / n_completed if n_completed else 0
+wins = sum(1 for t in _completed_calc if t["return"] > 0)
+print(f"\nTotal items: {n}（{n_completed} 完成 + {len(_holding_calc)} 持有中）")
+print(f"Completed: Avg {avg:.2f}% | Total {total:.2f}% | Win Rate {wins/n_completed*100:.1f}%" if n_completed else "No completed trades")
 
 # === Format for Web ===
 web_trades = []
