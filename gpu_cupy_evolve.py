@@ -461,7 +461,7 @@ void backtest(
         }
         if (recent_n >= 3) {
             float recent_avg = recent_total / recent_n;
-            if (recent_avg < 5.0f) all_pass = false;
+            if (recent_avg < 8.0f) all_pass = false;  // 5 → 8（swing 策略近期 avg 應接近全期 15%+）
         }
     }
 
@@ -1520,8 +1520,8 @@ def main():
             _recent = [t for t in _cmp if t.get("buy_date","") >= _recent_cutoff]
             if len(_recent) >= 3:
                 _recent_avg = sum(t.get("return",0) for t in _recent) / len(_recent)
-                if _recent_avg < 5:
-                    continue  # 近期崩盤，拒絕
+                if _recent_avg < 8:
+                    continue  # 近期 avg < 8% 拒絕（swing 策略近期不該退化到全期的一半）
             # 過了所有 gate，接受
             best_score = _sc
             best_nt = int(results[_ti, 1])
