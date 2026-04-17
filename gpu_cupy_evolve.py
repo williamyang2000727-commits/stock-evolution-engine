@@ -863,7 +863,12 @@ def precompute(data):
     ranks = np.argsort(np.argsort(-volume, axis=0), axis=0)  # 每天的排名（0=最大）
     top100_mask = (ranks < 100).astype(np.float32)
 
-    # 類股資金流向（sector flow）
+    # 類股相對強度（Sector Relative Strength）
+    # 舊版（成交金額 ratio）的 3 大問題：
+    #   1. 大盤漲跌日全部類股都爆量 → 排名洗牌無意義
+    #   2. 沒「資金從 A 流向 B」概念，只看類股自身爆量
+    #   3. Silent bug：sector_hot 初始化 0 = rank 最熱 → 沒映射股票永遠加分
+    # 新版：類股 20d 平均報酬 - 大盤 20d 平均報酬 → 真正的 RS
     try:
         sf_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tw_sector_mapping.json")
         with open(sf_path, "r", encoding="utf-8") as f:
@@ -878,29 +883,48 @@ def precompute(data):
         sec = _sec_map.get(t, "")
         if sec in _sec_id:
             _stock_sec[si] = _sec_id[sec]
-    # Compute sector trading value per day
-    _sec_val = np.zeros((_n_sec, ml), dtype=np.float64)
+    # 每檔股票 20d return（收盤對 20 天前）
+    _stock_ret = np.zeros((n, ml), dtype=np.float32)
+    _prev20 = np.zeros_like(close)
+    _prev20[:, 20:] = close[:, :-20]
+    _ret_valid = (_prev20 > 0) & (close > 0)
+    _stock_ret[:, 20:] = np.where(_ret_valid[:, 20:],
+                                  (close[:, 20:] / np.where(_prev20[:, 20:] > 0, _prev20[:, 20:], 1.0) - 1.0) * 100,
+                                  0).astype(np.float32)
+    # 類股平均報酬：每日把類股所有成份股的 20d return 平均
+    _sec_sum = np.zeros((_n_sec, ml), dtype=np.float64)
+    _sec_cnt = np.zeros((_n_sec, ml), dtype=np.float64)
     for si in range(n):
         sid = _stock_sec[si]
         if sid >= 0:
-            _sec_val[sid] += close[si] * volume[si]
-    # 20-day rolling average → rank top N sectors per day
-    # sector_hot[stock][day] = 1 if stock's sector is in top N by flow ratio
-    sector_hot = np.zeros((n, ml), dtype=np.float32)
+            _mask = _ret_valid[si].astype(np.float64)
+            _sec_sum[sid] += _stock_ret[si] * _mask
+            _sec_cnt[sid] += _mask
+    _sec_avg = np.where(_sec_cnt > 0, _sec_sum / np.where(_sec_cnt > 0, _sec_cnt, 1.0), 0).astype(np.float32)
+    # 大盤 = 所有類股等權平均（過濾當日有資料的類股）
+    _mkt_cnt = (_sec_cnt > 0).astype(np.float32).sum(axis=0)
+    _mkt_sum = _sec_avg.sum(axis=0)
+    _mkt_ret = np.where(_mkt_cnt > 0, _mkt_sum / np.where(_mkt_cnt > 0, _mkt_cnt, 1.0), 0)
+    # 相對強度 RS = 類股報酬 - 大盤報酬
+    _sec_rs = _sec_avg - _mkt_ret[np.newaxis, :]
+    # 按 RS 排名每天（0 = RS 最強）+ sector_hot 初始化 999（silent bug 修正）
+    sector_hot = np.full((n, ml), 999.0, dtype=np.float32)
+    _sec_rank = np.full(_n_sec, 999, dtype=np.int32)
     for d in range(20, ml):
-        _avg = np.mean(_sec_val[:, d-20:d], axis=1)
-        _ratios = np.where(_avg > 0, _sec_val[:, d] / _avg, 0)
-        # Top N sectors by flow ratio (N is a parameter, precompute all ranks)
-        _rank = np.argsort(-_ratios)  # sector IDs sorted by ratio descending
-        _sec_rank = np.full(_n_sec, 999, dtype=np.int32)
+        # 排除當天無資料的類股（_sec_cnt[:, d] == 0 的給極大 RS 值才不會誤進 topN 是錯的，應設 -inf 才對）
+        _rs_day = np.where(_sec_cnt[:, d] > 0, _sec_rs[:, d], -1e9)
+        _rank = np.argsort(-_rs_day)
+        _sec_rank[:] = 999
         for r, sid in enumerate(_rank):
-            _sec_rank[sid] = r  # rank 0 = hottest
+            if _sec_cnt[sid, d] > 0:
+                _sec_rank[sid] = r
         for si in range(n):
             sid = _stock_sec[si]
             if sid >= 0:
-                sector_hot[si, d] = float(_sec_rank[sid])  # store rank (0=hottest)
-    _mapped = sum(1 for s in _stock_sec if s >= 0)
-    print(f"  類股資金流向：{_mapped}/{n} 檔有產業映射，{_n_sec} 個產業")
+                sector_hot[si, d] = float(_sec_rank[sid])
+            # sid < 0 → 保持 999（修 silent bug：舊版保持 0 會被誤判為 top 1）
+    _mapped = int((_stock_sec >= 0).sum())
+    print(f"  類股相對強度：{_mapped}/{n} 檔有產業映射，{_n_sec} 個產業（RS = 類股20d報酬 - 大盤20d報酬）")
 
     # 連續上漲天數（close[i] > close[i-1]）
     up_days = np.zeros((n, ml), dtype=np.float32)
