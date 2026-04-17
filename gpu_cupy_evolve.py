@@ -1611,24 +1611,30 @@ def main():
                             "win_rate":round(wr_r,2),"total_trades":n_all},
                         "trade_details":trade_details},
                         ensure_ascii=False, indent=2)
-                    requests.patch(f"https://api.github.com/gists/{GIST_ID}", headers=headers,
-                        json={"files":{"best_strategy.json":{"content":content}}}, timeout=10)
+                    # 🔒 GPU 不自動推 Gist（Web/daily_scan 讀 Gist，推了就直接進實盤）
+                    # 改為儲存到本機 pending 檔，Telegram 通知用戶手動審核後再推
+                    _pending_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_push.json")
+                    with open(_pending_path, "w", encoding="utf-8") as _f:
+                        _f.write(content)
                     # 分年績效（Telegram 不超過 4096）
                     year_lines = "\n".join([
                         f"  {y}: {d['n']}筆 avg{d['ret']/d['n']:.1f}% 總{d['ret']:.0f}% 勝率{d['win']/d['n']*100:.0f}%"
                         for y, d in sorted(yearly.items())
                     ])
                     telegram_push(
-                        f"🚀 GPU v3 強一致性突破！\n"
+                        f"🎯 GPU 找到新策略（待審核）\n"
                         f"━━━━━━━━━━━━\n"
-                        f"分數：{best_score:.2f} > {cs:.2f}\n"
+                        f"分數：{best_score:.2f} > Gist {cs:.2f}\n"
                         f"全期：{n_all}筆 avg{avg_r:.1f}% 總{total_r:.0f}% 勝率{wr_r:.0f}%\n"
+                        f"WF：train 年化{_train_ann:.0f}% vs test 年化{_test_ann:.0f}% ({_ratio:.0f}%)\n"
                         f"停損{best_params.get('stop_loss',0):.0f}% | 持倉{best_params.get('max_positions',2):.0f}檔\n"
                         f"⚡ {total_tested:,}組/{elapsed:.0f}秒\n\n"
-                        f"📊 分年績效：\n{year_lines}"
+                        f"📊 分年績效：\n{year_lines}\n\n"
+                        f"💾 已存 pending_push.json\n"
+                        f"✅ 審核 OK → python push_pending.py"
                     )
-                    print(f"  [GPU] ✅ Gist 同步！({best_score:.2f} > {cs:.2f})")
-                    print(f"  [GPU] ⚠️ Web 不自動推送，用 backtest_to_web.py 手動推")
+                    print(f"  [GPU] 💾 儲存到 pending_push.json（未推 Gist）")
+                    print(f"  [GPU] 👉 審核 OK 後手動推：python push_pending.py")
                 last_synced_improved = total_improved
             except Exception as e:
                 print(f"  [GPU] Gist 錯誤: {e}")
