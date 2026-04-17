@@ -949,7 +949,7 @@ def precompute(data):
         "vol_up_days":vol_up_days,"mom_accel":mom_accel,
         "ma_d":ma_d,"mom_d":mom_d,"ma60":ma_d[60]}
 
-REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線","停滯出場","漸進停利","鎖利出場","動量反轉","換股"]
+REASON_NAMES = ["到期","停利","停損","RSI超買","移動停利","MACD死叉","KD死叉","量縮","跌破均線","停滯出場","漸進停利","鎖利出場","動量反轉","換股","保本出場"]
 
 def cpu_replay(pre, p):
     """用 CPU 重跑一次最佳參數，拿完整交易明細（股票名、日期、價格）"""
@@ -985,8 +985,9 @@ def cpu_replay(pre, p):
             if cur>hold_pk[h]: hold_pk[h]=cur
             sell=False; reason=0
             eff_stop=p["stop_loss"]
-            if p.get("use_breakeven",0) and (hold_pk[h]/hold_bp[h]-1)*100>=p.get("breakeven_trigger",20): eff_stop=0
-            if ret<=eff_stop: sell=True; reason=2
+            _is_breakeven = p.get("use_breakeven",0) and (hold_pk[h]/hold_bp[h]-1)*100>=p.get("breakeven_trigger",20)
+            if _is_breakeven: eff_stop=0
+            if ret<=eff_stop: sell=True; reason=14 if _is_breakeven else 2  # 14=保本, 2=停損
             if not sell and p.get("use_take_profit",1) and ret>=p["take_profit"]: sell=True; reason=1
             if not sell and p.get("trailing_stop",0)>0 and hold_pk[h]>hold_bp[h]:
                 if (cur/hold_pk[h]-1)*100<=-p["trailing_stop"]: sell=True; reason=4
