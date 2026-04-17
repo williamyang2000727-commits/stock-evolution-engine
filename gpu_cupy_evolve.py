@@ -543,15 +543,8 @@ void backtest(
                             active_segs++;
                         }
                     }
-                    // 加檢：train 最後 1/3 段不能崩（seg[2] avg/筆 >= seg[0] avg/筆 x 0.6）
-                    // 擋掉「前期超賺、後期淡掉」的老化策略
-                    bool late_seg_ok = true;
-                    if (seg_n[0] >= 4 && seg_n[2] >= 4) {
-                        float seg0_avg = seg_ret[0] / seg_n[0];
-                        float seg2_avg = seg_ret[2] / seg_n[2];
-                        if (seg2_avg < seg0_avg * 0.6f) late_seg_ok = false;
-                    }
-                    if (active_segs >= 2 && seg_ok && late_seg_ok) {
+                    // seg[2] 檢查移除：功能跟 WF 0.5 ratio 重複，雙重門檻過濾太兇
+                    if (active_segs >= 2 && seg_ok) {
                         float s_consistency = min_seg_annual * 0.05f;
                         if (s_consistency > 15) s_consistency = 15;
 
