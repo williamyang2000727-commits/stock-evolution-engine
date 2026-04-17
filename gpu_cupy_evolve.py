@@ -433,7 +433,7 @@ void backtest(
 
     // 先檢查全期實盤安全（實盤會遇到的回撤/筆數/持有/報酬）— 不過就拒絕，不進訓練評分
     bool all_pass = false;
-    if (n_trades >= 40 && n_trades <= 140) {
+    if (n_trades >= 40 && n_trades <= 180) {  // 上限 140 → 180
         float avg_ret_all = total_ret / n_trades;
         float avg_hold_all = 0;
         for (int i=0; i<n_trades; i++) avg_hold_all += (float)hold_days_arr[i];
@@ -470,8 +470,8 @@ void backtest(
         }
     }
 
-    // D（train）：train 筆數 30-80 + 全期必須先過
-    if (all_pass && n_train >= 30 && n_train <= 80) {
+    // D（train）：train 筆數 30-100 + 全期必須先過
+    if (all_pass && n_train >= 30 && n_train <= 100) {  // 上限 80 → 100
         float avg_ret_tr = total_train / n_train;
         float win_rate_tr = win_train / n_train * 100.0f;
         float avg_hold_tr = 0;
@@ -562,12 +562,16 @@ void backtest(
                         float s_dd = fabsf(max_dd_tr) * 0.1f;
                         float s_hold_pen = 0;
                         if (avg_hold_tr < 8.0f) s_hold_pen = (8.0f - avg_hold_tr) * 2.0f;
+                        // 新加：勝率獎勵（推 WR 往 50%+ 爬，避免 49% 這種心理壓力大的）
+                        float s_wr = 0;
+                        if (win_rate_tr >= 45.0f) s_wr = (win_rate_tr - 45.0f) * 0.5f;
+                        if (s_wr > 10.0f) s_wr = 10.0f;
                         // WF 泛化加分：test 年化 / train 年化（1:1 最佳）
                         float wf_ratio = train_annual > 1.0f ? test_annual / train_annual : 1.0f;
                         if (wf_ratio > 1.2f) wf_ratio = 1.2f;
                         float s_wf = wf_ratio * 10.0f;
 
-                        score = s_total + s_sharpe + s_pl + s_consistency + s_wf - s_streak - s_dd - s_hold_pen;
+                        score = s_total + s_sharpe + s_pl + s_consistency + s_wf + s_wr - s_streak - s_dd - s_hold_pen;
                     }
                 }
             }
@@ -1472,7 +1476,7 @@ def main():
             _tds = [t for t in _tds if not _mc.isnan(t.get("return",0))]
             _cmp = [t for t in _tds if t.get("reason") != "持有中"]
             _cnt = len(_cmp)
-            if _cnt < 40 or _cnt > 140: continue
+            if _cnt < 40 or _cnt > 180: continue  # 同步 kernel 改放寬
             _cavg = sum(t.get("return",0) for t in _cmp) / _cnt
             if _cavg < 3: continue
             _cah = sum(t.get("days",0) for t in _cmp) / _cnt
