@@ -518,7 +518,7 @@ void backtest(
                 bool wf_pass = true;
                 if (n_test < 5) wf_pass = false;
                 if (total_test <= 0) wf_pass = false;
-                if (test_annual < train_annual * 0.5f) wf_pass = false;  // 0.4 → 0.5（擋掉過度依賴 bull 期的策略）
+                if (test_annual < train_annual * 0.7f) wf_pass = false;  // 0.5 → 0.7（擋 reward hacking：train 爆炸 test 退化）
 
                 if (wf_pass) {
                     // 3 段一致性（train 期內部）
@@ -562,10 +562,10 @@ void backtest(
                         float s_dd = fabsf(max_dd_tr) * 0.1f;
                         float s_hold_pen = 0;
                         if (avg_hold_tr < 8.0f) s_hold_pen = (8.0f - avg_hold_tr) * 2.0f;
-                        // WF 泛化加分：test 年化 / train 年化（1:1 最佳）
+                        // WF 泛化加分：權重大幅上調，直接抵掉 s_total 的 reward hacking 誘惑
                         float wf_ratio = train_annual > 1.0f ? test_annual / train_annual : 1.0f;
                         if (wf_ratio > 1.2f) wf_ratio = 1.2f;
-                        float s_wf = wf_ratio * 10.0f;
+                        float s_wf = wf_ratio * 25.0f;  // 10 → 25（WF 100% 拿 25 分、75% 拿 18.75 分，差距變明顯）
 
                         score = s_total + s_sharpe + s_pl + s_consistency + s_wf - s_streak - s_dd - s_hold_pen;
                     }
@@ -1495,7 +1495,7 @@ def main():
             _ts_y = (pre["n_days"]-pre["train_end"])/250.0
             _tr_ann = _ctr_tot/_tr_y if _tr_y > 0.5 else _ctr_tot
             _ts_ann = _cts_tot/_ts_y if _ts_y > 0.3 else _cts_tot
-            if _tr_ann > 0 and _ts_ann < _tr_ann * 0.5: continue  # WF 嚴化 0.4 → 0.5
+            if _tr_ann > 0 and _ts_ann < _tr_ann * 0.7: continue  # WF 0.5 → 0.7（擋 reward hacking）
             # 過了所有 gate，接受
             best_score = _sc
             best_nt = int(results[_ti, 1])
