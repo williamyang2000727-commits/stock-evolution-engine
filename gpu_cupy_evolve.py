@@ -991,7 +991,7 @@ def cpu_replay(pre, p):
             if not sell and p.get("use_take_profit",1) and ret>=p["take_profit"]: sell=True; reason=1
             if not sell and p.get("trailing_stop",0)>0 and hold_pk[h]>hold_bp[h]:
                 if (cur/hold_pk[h]-1)*100<=-p["trailing_stop"]: sell=True; reason=4
-            if not sell and p.get("use_rsi_sell",1) and rsi[si,day]>=p.get("rsi_sell",90): sell=True; reason=3
+            if not sell and p.get("use_rsi_sell",0) and rsi[si,day]>=p.get("rsi_sell",90): sell=True; reason=3
             if not sell and p.get("use_macd_sell",0) and day>=1:
                 if macd_hist[si,day]<0 and macd_hist[si,day-1]>=0: sell=True; reason=5
             if not sell and p.get("use_kd_sell",0) and day>=1:

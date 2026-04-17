@@ -99,7 +99,7 @@ stats = {
     "avg_loss": round(np.mean(losses_r), 1) if losses_r else 0,
     "max_win": round(max(rets), 1) if rets else 0,
     "max_loss": round(min(rets), 1) if rets else 0,
-    "avg_hold_days": round(np.mean([t["hold_days"] for t in web_trades]), 1),
+    "avg_hold_days": round(np.mean([t["hold_days"] for t in completed]), 1) if completed else 0,
     "start_date": str(dates[0].date()),
     "end_date": _smart_end_date,
     "total_days": nd,
