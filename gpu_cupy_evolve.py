@@ -428,8 +428,26 @@ void backtest(
         // Phase 3 已移除（第三檔回測表現不佳）
     }
 
-    // === 評分 v5（真 Walk-Forward no-overfit）：train 計分，test 盲測驗證 ===
+    // === 評分 v6（真 Walk-Forward + 全期實盤安全）：train 計分，全期+test 雙重驗證 ===
     float score = -999999.0f;
+
+    // 先檢查全期實盤安全（實盤會遇到的回撤/筆數/持有/報酬）— 不過就拒絕，不進訓練評分
+    bool all_pass = false;
+    if (n_trades >= 40 && n_trades <= 140) {
+        float avg_ret_all = total_ret / n_trades;
+        float avg_hold_all = 0;
+        for (int i=0; i<n_trades; i++) avg_hold_all += (float)hold_days_arr[i];
+        avg_hold_all /= n_trades;
+        if (avg_ret_all >= 3.0f && avg_hold_all >= 5.0f) {
+            float max_dd_all = 0, run_dd_all = 0;
+            for (int i=0; i<n_trades; i++) {
+                if (rets[i] < 0) run_dd_all += rets[i];
+                else run_dd_all = 0;
+                if (run_dd_all < max_dd_all) max_dd_all = run_dd_all;
+            }
+            if (max_dd_all >= -40.0f) all_pass = true;
+        }
+    }
 
     // 分 train / test（依買入日）
     int n_train = 0, n_test = 0;
@@ -452,8 +470,8 @@ void backtest(
         }
     }
 
-    // D（train）：train 筆數 30-80
-    if (n_train >= 30 && n_train <= 80) {
+    // D（train）：train 筆數 30-80 + 全期必須先過
+    if (all_pass && n_train >= 30 && n_train <= 80) {
         float avg_ret_tr = total_train / n_train;
         float win_rate_tr = win_train / n_train * 100.0f;
         float avg_hold_tr = 0;
