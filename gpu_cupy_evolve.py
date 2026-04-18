@@ -794,7 +794,7 @@ PARAMS_SPACE = {
     # ====== 賣出（全自由探索，靠 120 筆上限 + 品質門檻 + 同資料比較防刷分）======
     "stop_loss": [-5,-7,-10,-12,-15,-20],  # 移除 -3（實盤滑價吃不住，GPU 鑽 Sharpe 公式漏洞）
     "use_take_profit": [0,1], "take_profit": [20,30,40,50,60,80,100,150],
-    "trailing_stop": [0,3,5,7,10,15,20],
+    "trailing_stop": [0,3,5,7,10,15,20,25],  # 加 25：超寬 trailing 讓波段跑
     "use_rsi_sell": [0,1], "rsi_sell": [70,75,80,85,90,95],
     "use_macd_sell": [0,1], "use_kd_sell": [0,1],
     "sell_vol_shrink": [0,0.3,0.5,0.7],
@@ -805,7 +805,7 @@ PARAMS_SPACE = {
     # ====== 停滯出場 ======
     "use_stagnation_exit": [0,1], "stagnation_days": [5,7,10,15], "stagnation_min_ret": [0,1,3,5],
     # ====== 保本停損 ======
-    "use_breakeven": [0,1], "breakeven_trigger": [10,15,20,25,30],
+    "use_breakeven": [0,1], "breakeven_trigger": [10,15,20,25,30,35],  # 加 35：晚點啟動保本，讓波段跑
     # ====== OBV 能量潮 ======
     "w_obv": [0,1,2,3], "obv_rising_days": [3,5,10],
     # ====== 漸進式最低報酬 ======
@@ -813,7 +813,7 @@ PARAMS_SPACE = {
     # ====== ATR 波動率門檻（過濾低波動股）======
     "w_atr": [0,1,2,3], "atr_min": [1.0,1.5,2.0,2.5,3.0,4.0],
     # ====== 鎖利出場 ======
-    "use_profit_lock": [0,1], "lock_trigger": [15,20,30,40,50], "lock_floor": [3,5,8,10,15],  # GPU 自由選擇
+    "use_profit_lock": [0,1], "lock_trigger": [15,20,30,40,50], "lock_floor": [3,5,8,10,15,20],  # 加 20：鎖大贏家更精準
     # ====== 動量反轉出場 ======
     "use_mom_exit": [0,1], "mom_exit_th": [0,1,2,3,5],
     # ====== 類股資金流向 ======
@@ -1844,8 +1844,15 @@ def main():
                 tp_dict["ma_slow_w"] = int(ms_choices[ti])
                 tp_dict["momentum_days"] = int(md_choices[ti])
                 hall_of_fame.append((sc, tp_dict))
-        hall_of_fame.sort(key=lambda x: -x[0])
-        hall_of_fame = hall_of_fame[:15]
+        # 🌱 保護種子（前 3 個初始 seed：89.90 + 189 + 88.60），避免配種基因池退化
+        if explore_bases is None:  # 多起點爬山時不保護（那時在重新探索）
+            _seeds = hall_of_fame[:3] if len(hall_of_fame) >= 3 else hall_of_fame[:]
+            _rest = hall_of_fame[3:] if len(hall_of_fame) > 3 else []
+            _rest.sort(key=lambda x: -x[0])
+            hall_of_fame = _seeds + _rest[:12]  # 3 保護 + 12 開放 slot
+        else:
+            hall_of_fame.sort(key=lambda x: -x[0])
+            hall_of_fame = hall_of_fame[:15]
 
         # 🔍 掃 kernel 前 20 名，用 cpu_replay 當最終判官（kernel 和 cpu_replay 有分歧，以 cpu_replay 為準）
         _top_n_idx = np.argsort(results[:, 0])[-20:][::-1]
