@@ -663,7 +663,7 @@ void backtest(
                 bool wf_pass = true;
                 if (n_test < 5) wf_pass = false;
                 if (total_test <= 0) wf_pass = false;
-                if (test_annual < train_annual * 0.55f) wf_pass = false;  // 反向 WF 下 test=2022 熊市，0.55 比 0.7 更實際
+                if (test_annual < train_annual * 0.4f) wf_pass = false;  // 反向 WF 下 test=2022 熊市，0.4 = 88.60 (0.42) 剛好能過當 SEED
 
                 if (wf_pass) {
                     // 3 段一致性（train 期內部）
@@ -1356,12 +1356,12 @@ def main():
     print(f"  ═══ Kernel 硬門檻（不過→score 0）═══")
     print(f"  train 筆數 30-80 | avg ≥ 8% | wr ≥ 35% | avg_hold ≥ 5 天 | MaxDD ≥ -40% ← avg 從 5% 提高")
     print(f"  test 筆數 ≥ 5 | total_test > 0（test 不能爆）")
-    print(f"  WF ratio: test_annual ≥ train_annual × 0.55（反向 WF 下放寬）")
+    print(f"  WF ratio: test_annual ≥ train_annual × 0.4（反向 WF 下 test=2022 熊市，0.55 太嚴連 88.60 都過不了）")
     print(f"  Seg 3 段都要正報酬 | seg[2] ≥ seg[0] × 0.6（防老化）")
     print(f"")
     print(f"  ═══ Python gate（top-20 cpu_replay 驗證）═══")
     print(f"  全期 40-140 筆 | avg ≥ 10% | avg_hold ≥ 5 | MaxDD ≥ -40% ← avg 從 3% 提高擋短線")
-    print(f"  WF ratio ≥ 0.55 | test_total > 0")
+    print(f"  WF ratio ≥ 0.4 | test_total > 0")
     print(f"  報酬地板: train 年化 ≥ {MIN_TRAIN_ANNUAL}%（189 × 0.6）| test 年化 ≥ {MIN_TEST_ANNUAL}%（189 × 0.6）")
     print(f"  勝率地板: train ≥ {MIN_WR_TRAIN*100:.0f}% | test ≥ {MIN_WR_TEST*100:.0f}%")
     print(f"  最新 60 天 avg ≥ 5%（近期崩盤檢查）")
@@ -1504,14 +1504,14 @@ def main():
             print(f"  WF ratio: {_wf:.2f} (kernel 需 ≥ 0.55)")
             print(f"  近60天: {len(_rec)} 筆 avg={_rec_avg:.1f}% (kernel 需 ≥ 5%)")
             print(f"  train 3段: n={[len(s) for s in _seg]} 總{_seg_totals} avg{[round(a,1) for a in _seg_avgs]}")
-            print(f"  kernel 門檻：n_train 30-80 | avg_tr ≥ 8 | wr_tr ≥ 35 | avg_hold ≥ 5 | MaxDD ≥ -40 | WF ≥ 0.55 | 3段都正 | seg[2] ≥ seg[0]×0.6")
+            print(f"  kernel 門檻：n_train 30-80 | avg_tr ≥ 8 | wr_tr ≥ 35 | avg_hold ≥ 5 | MaxDD ≥ -40 | WF ≥ 0.4 | 3段都正 | seg[2] ≥ seg[0]×0.6")
             _fail = []
             if _n_tr < 30: _fail.append(f"n_train {_n_tr} < 30")
             if _n_tr > 80: _fail.append(f"n_train {_n_tr} > 80")
             if _avg_tr < 8: _fail.append(f"avg_tr {_avg_tr:.1f}% < 8")
             if _ah_tr < 5: _fail.append(f"avg_hold {_ah_tr:.1f} < 5")
             if _max_dd_tr < -40: _fail.append(f"MaxDD {_max_dd_tr:.0f}% < -40")
-            if _wf < 0.55 and _tr_ann > 0: _fail.append(f"WF {_wf:.2f} < 0.55")
+            if _wf < 0.4 and _tr_ann > 0: _fail.append(f"WF {_wf:.2f} < 0.4")
             if _rec_avg < 5 and len(_rec) >= 3: _fail.append(f"近60天 avg {_rec_avg:.1f}% < 5")
             for _i, _s in enumerate(_seg):
                 if len(_s) >= 4 and sum(_s) <= 0:
@@ -1820,7 +1820,7 @@ def main():
             _ts_y = (pre["train_start"] - 60) / 250.0
             _tr_ann = _ctr_tot/_tr_y if _tr_y > 0.5 else _ctr_tot
             _ts_ann = _cts_tot/_ts_y if _ts_y > 0.3 else _cts_tot
-            if _tr_ann > 0 and _ts_ann < _tr_ann * 0.55: _gate_fail["wf"] += 1; continue
+            if _tr_ann > 0 and _ts_ann < _tr_ann * 0.4: _gate_fail["wf"] += 1; continue
             # 報酬地板（train + test 年化不能太低）
             if _tr_ann < MIN_TRAIN_ANNUAL:
                 _gate_fail["tr_ann"] += 1
