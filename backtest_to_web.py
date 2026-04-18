@@ -14,9 +14,18 @@ sys.modules['cupy'] = mock_cp
 
 from gpu_cupy_evolve import precompute, cpu_replay, download_data, get_name
 
-# === Load strategy ===
-with open("best_strategy.json", encoding="utf-8") as f:
-    strategy = json.load(f)
+# === Load strategy (從 GPU Gist 拉最新，不讀本地舊檔) ===
+import urllib.request
+GPU_GIST = "c1bef892d33589baef2142ce250d18c2"
+try:
+    _r = urllib.request.urlopen(f"https://api.github.com/gists/{GPU_GIST}", timeout=15)
+    _gist_data = json.load(_r)
+    strategy = json.loads(list(_gist_data["files"].values())[0]["content"])
+    print(f"[策略來源] GPU Gist（最新）")
+except Exception as _e:
+    print(f"[策略來源] Gist 讀取失敗 ({_e})，退回本地 best_strategy.json")
+    with open("best_strategy.json", encoding="utf-8") as f:
+        strategy = json.load(f)
 p = strategy["params"]
 print(f"Strategy: v{strategy.get('version','?')} | score={strategy.get('score',0):.2f}")
 
