@@ -15,24 +15,27 @@ GH_TOKEN = os.environ.get("GH_TOKEN", "")
 DATA_GIST_ID = "a300b9e29372ac76f79eda39a2a86321"
 CACHE_PATH = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_data_cache.pkl")
 
-# === 評分哲學（2026-04-18 重寫：勝率優先 + 報酬地板）===
-# 搜尋目標：勝率高且報酬不能太低（穩定複利）的策略
+# === 評分哲學（2026-04-18 更嚴：勝率優先 + 189 7 折報酬地板）===
+# 搜尋目標：勝率超過 189（60-67%）且報酬至少 189 7 折的策略
 #
-# 評分主軸：
-#   - s_wr × 1.5         勝率 65% = +22.5 分，75% = +37.5 分（主導排名）
-#   - s_return × 0.05    年化 400% 封頂 = +20 分（報酬不會反客為主）
-#   - s_wf × 15          走前校驗（防老化）
+# 基於 189 在反向 WF 下實測：
+#   Train（新）年化 543% 勝率 60%
+#   Test（舊）年化 462% 勝率 67%
 #
-# 硬門檻（不能太低的底線）：
-#   - train_win_rate >= 0.60，test_win_rate >= 0.55
-#   - train_annual >= 60%，test_annual >= 30%
+# 評分主軸（勝率再加重）：
+#   - s_wr × 2.0 (cap 80)  勝率 65% = +30，75% = +50，80% = +60，90% = +80
+#   - s_return × 0.05      年化 400% 封頂 = +20
+#   - s_wf × 15            走前校驗
+#
+# 硬門檻（189 × 0.7，接受下限）：
+#   - train 勝率 >= 0.65、test 勝率 >= 0.60（超過 189 才算）
+#   - train 年化 >= 380%（= 543 × 0.7）
+#   - test 年化 >= 324%（= 462 × 0.7）
 #   - WF ratio >= 0.7、recent-60d avg >= 5%
-#
-# 結果：GPU 會找「勝率 65-80% + 年化 150-350%」類型策略，不會追 1700% 總報酬的 overfit
-MIN_WR_TRAIN = 0.60    # train 勝率硬門檻
-MIN_WR_TEST = 0.55     # test 容許 5% 寬容
-MIN_TRAIN_ANNUAL = 60  # train 年化 60%（報酬地板）
-MIN_TEST_ANNUAL = 30   # test 年化 30%（報酬地板）
+MIN_WR_TRAIN = 0.65     # 超過 189 的 60%
+MIN_WR_TEST = 0.60      # test 容許 5% 寬容，仍比 189 test 67% 嚴
+MIN_TRAIN_ANNUAL = 380  # 189 train 年化 543% × 0.7
+MIN_TEST_ANNUAL = 324   # 189 test 年化 462% × 0.7
 
 CN_NAMES = {}
 # 從完整名單載入（1958 檔台灣上市櫃股票）
@@ -591,12 +594,12 @@ void backtest(
                         float s_consistency = min_seg_annual * 0.03f;
                         if (s_consistency > 10) s_consistency = 10;
 
-                        // === 勝率優先 scoring（2026-04-18 重寫）===
-                        // 主軸：s_wr 權重 1.5 → 勝率 65%=+22.5, 70%=+30, 75%=+37.5, 80%=+45
+                        // === 勝率優先 scoring（2026-04-18 更嚴）===
+                        // 主軸：s_wr 權重 2.0 → 勝率 65%=+30, 70%=+40, 75%=+50, 80%=+60, 90%=+80
                         // 封頂：s_return 年化 400% 以上不加分（防報酬反客為主）
-                        float s_wr = (win_rate_tr - 50.0f) * 1.5f;
+                        float s_wr = (win_rate_tr - 50.0f) * 2.0f;
                         if (s_wr < 0) s_wr = 0;
-                        if (s_wr > 60.0f) s_wr = 60.0f;  // 100% 勝率封頂 60 分
+                        if (s_wr > 80.0f) s_wr = 80.0f;  // 90% 勝率封頂 80 分
 
                         // s_return 用 min(train, test)，封頂 400% 年化
                         float effective_annual = train_annual < test_annual ? train_annual : test_annual;
@@ -1227,9 +1230,9 @@ def main():
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     print(f"[GPU-CuPy] 🎯 勝率優先 + 反向 Walk-Forward")
     print(f"")
-    print(f"  ═══ Scoring ═══")
-    print(f"  主軸 s_wr × 1.5    勝率 65%=+22.5 / 75%=+37.5 / 80%=+45 分")
-    print(f"  報酬 s_return × 0.05    年化 400% 封頂 = +20（不會反客為主）")
+    print(f"  ═══ Scoring（勝率再加重）═══")
+    print(f"  主軸 s_wr × 2.0 (cap 80)  勝率 65%=+30 / 75%=+50 / 80%=+60 / 90%=+80")
+    print(f"  報酬 s_return × 0.05 (cap 20)  年化 400% 封頂（不會反客為主）")
     print(f"  輔助 s_wf×15 / s_sharpe×2 / s_pl×0.5 / s_consistency×0.03 / penalties")
     print(f"")
     print(f"  ═══ 反向 Walk-Forward 切點（900 天資料）═══")
