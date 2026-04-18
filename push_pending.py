@@ -55,12 +55,33 @@ if ans != "y":
     print("取消")
     sys.exit(0)
 
+# === Step 0: 確保 Windows cache 最新（補到今天）===
+print()
+print("=" * 50)
+print("  📥 Step 0: 確認 cache 最新（Windows cache → 今天）")
+print("=" * 50)
+import subprocess
+_here = os.path.dirname(os.path.abspath(__file__))
+_uc_path = os.path.join(_here, "update_cache.py")
+if os.path.exists(_uc_path):
+    try:
+        subprocess.run([sys.executable, _uc_path], cwd=_here, timeout=600)
+    except Exception as _e:
+        print(f"⚠️ update_cache 失敗：{_e}，繼續但 end_date 可能不到今天")
+else:
+    print("⚠️ 找不到 update_cache.py，略過 cache 更新")
+print()
+
 payload = json.dumps({"files": {"best_strategy.json": {"content": open(PENDING, encoding="utf-8").read()}}}).encode()
 req = urllib.request.Request(
     f"https://api.github.com/gists/{GIST_ID}",
     data=payload, method="PATCH",
     headers={"Authorization": f"token {GH_TOKEN}", "Content-Type": "application/json"}
 )
+print()
+print("=" * 50)
+print("  📤 Step 1: 推 GPU Gist（策略 params）")
+print("=" * 50)
 r = urllib.request.urlopen(req, timeout=30)
 print(f"✅ GPU Gist 推送成功：{r.status}")
 dst = PENDING + ".pushed"
@@ -71,10 +92,8 @@ print(f"pending_push.json → pending_push.json.pushed")
 # === 自動跑 backtest_to_web.py 補完整歷史 + 觸發 daily-scan workflow ===
 print()
 print("=" * 50)
-print("  🚀 自動執行 backtest_to_web.py 補完整歷史到今天")
+print("  🚀 Step 2: 執行 backtest_to_web.py 補完整歷史到今天")
 print("=" * 50)
-import subprocess
-_here = os.path.dirname(os.path.abspath(__file__))
 _bt_path = os.path.join(_here, "backtest_to_web.py")
 if not os.path.exists(_bt_path):
     print(f"⚠️ 找不到 backtest_to_web.py，略過。請手動執行。")
@@ -98,7 +117,7 @@ else:
 # === 自動觸發 daily-scan workflow（讓 Web 立刻延續到今天）===
 print()
 print("=" * 50)
-print("  🔔 觸發 GitHub Actions daily-scan workflow")
+print("  🔔 Step 3: 觸發 GitHub Actions daily-scan workflow")
 print("=" * 50)
 try:
     result = subprocess.run(
