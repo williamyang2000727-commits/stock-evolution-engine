@@ -826,7 +826,7 @@ PARAMS_SPACE = {
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10],
     # ====== 多持倉 ======
-    "max_positions": [2],  # 鎖定 2 檔（v1 框架）
+    "max_positions": [2],  # 鎖定 2 檔（v1 框架，memory 寫過 3 檔資金效率差不可破）
 }
 
 PARAM_ORDER = [
@@ -1568,8 +1568,36 @@ def main():
             else:
                 print(f"  ✅ 所有 gate 都過（kernel 分數若還 0，可能是 warmup 期指標未到位）")
             best_params = dict(gist_best_params)
-            hall_of_fame = [(0, dict(gist_best_params))]  # 不保護，讓 GPU 搜到更高勝率自然取代
-            print(f"[GPU] 🌱 舊策略當 HOF reference（不保護，勝率優先 scoring 下更高勝率策略會自然取代）")
+            # 多起點播種：現 Gist 策略 + 歷史名策略（189 / 88.60 的關鍵參數）
+            # 讓 HOF 有基因多樣性，配種才有效
+            SEED_189 = {"stop_loss":-12,"take_profit":40,"trailing_stop":15,"hold_days":30,
+                        "use_breakeven":0,"breakeven_trigger":20,"sell_below_ma":3,
+                        "buy_threshold":14,"above_ma60":0,
+                        "w_rsi":1,"rsi_th":65,"w_ma":3,"w_macd":3,"macd_mode":0,
+                        "w_kd":2,"kd_th":80,"w_mom":2,"mom_th":8,"w_new_high":2,
+                        "w_adx":2,"adx_th":40,"w_obv":2,"obv_rising_days":10,
+                        "w_atr":2,"atr_min":3,"w_up_days":2,"up_days_min":5,
+                        "w_week52":2,"week52_min":0.6,"w_bias":1,"bias_max":8,
+                        "w_mom_accel":1,"mom_accel_min":8,"consecutive_green":1,"gap_up":1,
+                        "ma_fast_w":5,"ma_slow_w":60,"momentum_days":3,"max_positions":2}
+            SEED_88 = {"stop_loss":-20,"take_profit":40,"trailing_stop":15,"hold_days":30,
+                       "use_breakeven":1,"breakeven_trigger":10,"sell_below_ma":0,
+                       "buy_threshold":6,"above_ma60":1,
+                       "w_rsi":3,"rsi_th":65,"w_ma":3,"w_macd":3,"macd_mode":0,
+                       "w_kd":2,"kd_th":80,"w_wr":3,"wr_th":-40,"w_mom":3,"mom_th":8,
+                       "w_near_high":2,"near_high_pct":10,"w_new_high":2,
+                       "w_adx":2,"adx_th":40,"w_bias":2,"bias_max":3,
+                       "w_obv":1,"w_atr":3,"atr_min":3,"w_bb":1,"bb_th":0.9,
+                       "w_up_days":2,"up_days_min":5,"w_week52":3,"week52_min":0.7,
+                       "w_vol_up_days":1,"vol_up_days_min":2,"w_mom_accel":1,"mom_accel_min":0,
+                       "consecutive_green":1,"gap_up":1,
+                       "ma_fast_w":3,"ma_slow_w":15,"momentum_days":3,"max_positions":2}
+            hall_of_fame = [
+                (0, dict(gist_best_params)),   # 當前 Gist 策略（89.90）
+                (0, dict(SEED_189)),           # 波段強（高 avg）
+                (0, dict(SEED_88)),            # 勝率強
+            ]
+            print(f"[GPU] 🌱 多起點播種 HOF：當前 Gist + 189 + 88.60（基因多樣性配種更有效）")
     except Exception as _e:
         print(f"[GPU] Gist 載入失敗：{_e}")
     # 掃描跳過（曾基於 v5，會污染起點）
@@ -1891,19 +1919,19 @@ def main():
                 if _recent_avg < 5:
                     _gate_fail["recent"] += 1
                     continue
-            # 🆕 近 2 年 avg ≥ 15% 門檻（擋退化策略，要求當前市場表現強勢）
+            # 🆕 近 2 年 avg ≥ 12% 門檻（擋退化策略，放寬讓更多策略有機會）
             _recent_2y_idx = max(pre["n_days"] - 500, pre["train_start"])
             _recent_2y_cutoff = str(pre["dates"][_recent_2y_idx].date())
             _recent_2y = [t for t in _cmp if t.get("buy_date","") >= _recent_2y_cutoff]
             if len(_recent_2y) >= 5:
                 _recent_2y_avg = sum(t.get("return",0) for t in _recent_2y) / len(_recent_2y)
-                if _recent_2y_avg < 15:
+                if _recent_2y_avg < 12:
                     _gate_fail["recent_2y"] = _gate_fail.get("recent_2y", 0) + 1
                     continue
-            # 🆕 Calmar 比 ≥ 2（CAGR / MaxDD，風險調整後必須足夠好）
+            # 🆕 Calmar 比 ≥ 1.5（放寬，讓更多策略進 scoring 階段）
             _abs_dd = abs(_cmdd) if _cmdd < 0 else 1.0
             _train_calmar = _tr_ann / _abs_dd if _abs_dd > 1 else 0
-            if _train_calmar < 2.0:
+            if _train_calmar < 1.5:
                 _gate_fail["calmar"] = _gate_fail.get("calmar", 0) + 1
                 continue
             # 過了所有 gate，接受
