@@ -1576,15 +1576,15 @@ def main():
 
         rnd += 1
         params_np = np.zeros((BATCH, N_PARAMS_FULL), dtype=np.float32)
-        mutate_rate = min(0.5, 0.15 + no_improve_rounds * 0.02)
+        mutate_rate = min(0.4, 0.08 + no_improve_rounds * 0.015)  # 初期 8% 只動 ~4 個參數（精緻微調 SEED）
         # 多起點爬山：80% 爬山（從隨機起點）+ 20% 隨機，不配種（名人堂還在重建）
         if explore_bases is not None:
             n_random = BATCH // 5
             n_climb = BATCH - n_random
             n_breed = 0
         elif len(hall_of_fame) < 3:
-            # 早期：50% 隨機 + 50% 爬山（名人堂不夠，不配種）
-            n_random = BATCH // 2
+            # 早期：25% 隨機 + 75% 爬山（HOF 不夠就集中微調 SEED，配種無效）
+            n_random = BATCH // 4
             n_climb = BATCH - n_random
             n_breed = 0
         elif no_improve_rounds < 5:
@@ -1642,7 +1642,7 @@ def main():
                 if key in FROZEN_PARAMS:
                     radius = 1  # 只能微調到鄰近一格
                 else:
-                    radius = 2 + min(no_improve_rounds // 3, 4)  # 自由參數越久沒突破鄰域越大
+                    radius = 1 + min(no_improve_rounds // 3, 4)  # 初期 1 格（±1 鄰域），每 3 輪 +1 cap 5
                 lo = max(0, base_idx - radius)
                 hi = min(len(opts) - 1, base_idx + radius)
                 nearby = np.random.randint(lo, hi + 1, n_climb)
