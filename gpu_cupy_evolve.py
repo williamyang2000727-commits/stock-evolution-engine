@@ -561,7 +561,7 @@ void backtest(
 
     // 先檢查全期實盤安全（實盤會遇到的回撤/筆數/持有/報酬）— 不過就拒絕，不進訓練評分
     bool all_pass = false;
-    if (n_trades >= 40 && n_trades <= 140) {
+    if (n_trades >= 40 && n_trades <= 200) {  // 1500 天下筆數可能 140-180
         float avg_ret_all = total_ret / n_trades;
         float avg_hold_all = 0;
         for (int i=0; i<n_trades; i++) avg_hold_all += (float)hold_days_arr[i];
@@ -1360,7 +1360,7 @@ def main():
     print(f"  Seg 3 段都要正報酬 | seg[2] ≥ seg[0] × 0.6（防老化）")
     print(f"")
     print(f"  ═══ Python gate（top-20 cpu_replay 驗證）═══")
-    print(f"  全期 40-140 筆 | avg ≥ 10% | avg_hold ≥ 5 | MaxDD ≥ -50% ← 適配 1500 天")
+    print(f"  全期 40-200 筆 | avg ≥ 10% | avg_hold ≥ 5 | MaxDD ≥ -50% ← 適配 1500 天")
     print(f"  WF ratio ≥ 0.4 | test_total > 0")
     print(f"  報酬地板: train 年化 ≥ {MIN_TRAIN_ANNUAL}%（189 × 0.6）| test 年化 ≥ {MIN_TEST_ANNUAL}%（189 × 0.6）")
     print(f"  勝率地板: train ≥ {MIN_WR_TRAIN*100:.0f}% | test ≥ {MIN_WR_TEST*100:.0f}%")
@@ -1515,6 +1515,9 @@ def main():
             print(f"  train 3段: n={[len(s) for s in _seg]} 總{_seg_totals} avg{[round(a,1) for a in _seg_avgs]}")
             print(f"  kernel 門檻：n_train 30-140 | avg_tr ≥ 8 | wr_tr ≥ 35 | avg_hold ≥ 5 | MaxDD ≥ -50 | WF ≥ 0.4 | 3段都正 | seg[2] ≥ seg[0]×0.6")
             _fail = []
+            _n_all = len(_baseline_trades)
+            if _n_all < 40: _fail.append(f"n_all {_n_all} < 40")
+            if _n_all > 200: _fail.append(f"n_all {_n_all} > 200")
             if _n_tr < 30: _fail.append(f"n_train {_n_tr} < 30")
             if _n_tr > 140: _fail.append(f"n_train {_n_tr} > 140")
             if _avg_tr < 8: _fail.append(f"avg_tr {_avg_tr:.1f}% < 8")
@@ -1805,7 +1808,7 @@ def main():
             _tds = [t for t in _tds if not _mc.isnan(t.get("return",0))]
             _cmp = [t for t in _tds if t.get("reason") != "持有中"]
             _cnt = len(_cmp)
-            if _cnt < 40 or _cnt > 140: _gate_fail["cnt"] += 1; continue
+            if _cnt < 40 or _cnt > 200: _gate_fail["cnt"] += 1; continue
             _cavg = sum(t.get("return",0) for t in _cmp) / _cnt
             if _cavg < 10: _gate_fail["avg"] += 1; continue
             _cah = sum(t.get("days",0) for t in _cmp) / _cnt
