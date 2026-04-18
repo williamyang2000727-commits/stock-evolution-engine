@@ -11,6 +11,21 @@ from datetime import date
 import pandas as pd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+
+# 載入股票中文名
+_CN_NAMES = {}
+_names_file = os.path.join(HERE, "tw_stock_names.json")
+if os.path.exists(_names_file):
+    try:
+        with open(_names_file, "r", encoding="utf-8") as f:
+            _CN_NAMES = json.load(f)
+    except Exception:
+        pass
+
+
+def get_name(ticker):
+    n = _CN_NAMES.get(ticker, "")
+    return n if n else ticker.replace(".TW", "").replace(".TWO", "")
 TOKEN = os.environ.get("GH_TOKEN", "")
 if not TOKEN:
     # Try gh CLI
@@ -190,16 +205,17 @@ def main():
 
     for h in holdings:
         res = replay_holding(h["ticker"], h["buy_date"], float(h["buy_price"]), cache, params)
+        name = get_name(res.get("ticker", h.get("ticker", "")))
         print()
         if "error" in res:
-            print(f"⚠️ {res['ticker']}: {res['error']}")
+            print(f"⚠️ {res['ticker']} {name}: {res['error']}")
             continue
         if res["status"] == "safe":
-            print(f"✅ {res['ticker']}（買 {res['buy_date']} @ {res['buy_price']}）")
+            print(f"✅ {res['ticker']} {name}（買 {res['buy_date']} @ {res['buy_price']}）")
             print(f"   至今 {res['days']} 交易日，現 {res['cur']:.2f}，peak {res['peak']:.2f}")
             print(f"   報酬 {res['return_pct']:+.1f}% — 當前策略下仍可繼續持有")
         else:
-            print(f"❗ {res['ticker']}（買 {res['buy_date']} @ {res['buy_price']}）")
+            print(f"❗ {res['ticker']} {name}（買 {res['buy_date']} @ {res['buy_price']}）")
             print(f"   在 {res['date']}（第 {res['days']} 交易日）觸發「{res['reason']}」")
             print(f"   出場價 {res['cur']:.2f}（peak {res['peak']:.2f}）")
             print(f"   該出場報酬：{res['return_pct']:+.1f}%")
