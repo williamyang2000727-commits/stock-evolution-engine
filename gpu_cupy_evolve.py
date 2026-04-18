@@ -589,7 +589,7 @@ void backtest(
         }
         if (recent_n >= 3) {
             float recent_avg = recent_total / recent_n;
-            if (recent_avg < 10.0f) all_pass = false;  // 8 → 10（164 能 26%、177 能 51%，10% 是合格下限）
+            if (recent_avg < 5.0f) all_pass = false;  // 跟 Python gate 對齊（勝率策略每筆期望值低，5% 是合理地板）
         }
     }
 
