@@ -139,10 +139,22 @@ def append_new_days(cache_path):
                     df = cache[ticker]
                     if df.index.tz is not None:
                         df.index = df.index.tz_localize(None)
+                    # 防呆：yfinance 假日抓會返回前一交易日資料，那筆會跟 df 最後一天重複
+                    # 強制過濾 new 只保留 > df 最後一天的 row
+                    df_last = df.index[-1]
+                    new = new[new.index > df_last]
+                    # 再過濾 Close 為 NaN 的 row（有時 yfinance 返回帶 Dividends=0 的空 row）
+                    if 'Close' in new.columns:
+                        new = new[new['Close'].notna()]
+                    if len(new) == 0: continue
                     common_cols = [c for c in df.columns if c in new.columns]
                     if not common_cols: continue
                     new = new[common_cols]
-                    cache[ticker] = pd.concat([df, new])
+                    merged = pd.concat([df, new])
+                    # 保險：即使 concat 有重複 index，keep='first' 保舊資料不動
+                    if merged.index.duplicated().any():
+                        merged = merged[~merged.index.duplicated(keep='first')]
+                    cache[ticker] = merged
                     updated += 1
                 except Exception as e:
                     if not first_err_printed:

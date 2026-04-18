@@ -37,6 +37,29 @@ with open(CACHE_PATH, "rb") as f:
 print("=== 更新前 ===")
 dump_summary("最後一天分布", before)
 
+# 重複日期檢查 + 自動清理（修舊 bug 造成的重複 row）
+print()
+dup_count = 0
+cleaned = 0
+for t in before:
+    df = before[t]
+    if df is None or len(df) == 0: continue
+    n_dup = df.index.duplicated().sum()
+    if n_dup > 0:
+        dup_count += n_dup
+        before[t] = df[~df.index.duplicated(keep='first')]
+        cleaned += 1
+if cleaned > 0:
+    print(f"⚠️ 發現 {cleaned} 檔 cache 有重複日期（共 {dup_count} 筆），已用 keep='first' 清理（保留最早那筆）")
+    # 寫回
+    tmp = CACHE_PATH + ".tmp"
+    with open(tmp, "wb") as f:
+        pickle.dump(before, f)
+    os.replace(tmp, CACHE_PATH)
+    print(f"✅ 清理後寫回 cache")
+else:
+    print(f"✅ 無重複日期，cache 乾淨")
+
 # 抓幾檔樣本存起來比對（確認舊資料沒變）
 sample_tickers = list(before.keys())[:3]
 sample_before = {t: before[t].copy() for t in sample_tickers}
