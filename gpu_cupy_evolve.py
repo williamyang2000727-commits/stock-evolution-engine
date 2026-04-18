@@ -1458,6 +1458,71 @@ def main():
             _baseline_avg = _baseline_total / _baseline_n if _baseline_n else 0
             _baseline_wr = sum(1 for t in _baseline_trades if t.get("return",0)>0) / _baseline_n * 100 if _baseline_n else 0
             print(f"[GPU] Gist 策略在當前資料上：{_baseline_n}筆 avg{_baseline_avg:.1f}% 總{_baseline_total:.0f}% 勝率{_baseline_wr:.0f}%")
+
+            # === SEED 診斷：逐一檢查 kernel gate，找出卡在哪 ===
+            _ts_date = pre["dates"][pre["train_start"]]
+            _ts_str = str(_ts_date.date())
+            _tr_end_day = pre["train_end"]
+            _tr_start_day = pre["train_start"]
+            _tr_tr = [t for t in _baseline_trades if t.get("buy_date","") >= _ts_str]
+            _te_tr = [t for t in _baseline_trades if t.get("buy_date","") < _ts_str]
+            _n_tr, _n_te = len(_tr_tr), len(_te_tr)
+            _tot_tr = sum(t.get("return",0) for t in _tr_tr)
+            _tot_te = sum(t.get("return",0) for t in _te_tr)
+            _avg_tr = _tot_tr/_n_tr if _n_tr else 0
+            _wr_tr = sum(1 for t in _tr_tr if t.get("return",0)>0)/_n_tr*100 if _n_tr else 0
+            _ah_tr = sum(t.get("days",0) for t in _tr_tr)/_n_tr if _n_tr else 0
+            _tr_y = (_tr_end_day - _tr_start_day) / 250.0
+            _te_y = (_tr_start_day - 60) / 250.0
+            _tr_ann = _tot_tr/_tr_y if _tr_y > 0.5 else _tot_tr
+            _te_ann = _tot_te/_te_y if _te_y > 0.3 else _tot_te
+            _wf = _te_ann/_tr_ann if _tr_ann > 0 else 0
+            _max_dd_tr = 0; _run = 0
+            for _t in _tr_tr:
+                _r = _t.get("return",0)
+                _run = _run + _r if _r < 0 else 0
+                if _run < _max_dd_tr: _max_dd_tr = _run
+            _rec_str = str(pre["dates"][pre["n_days"]-60].date())
+            _rec = [t for t in _baseline_trades if t.get("buy_date","") >= _rec_str]
+            _rec_avg = sum(t.get("return",0) for t in _rec)/len(_rec) if _rec else 0
+            # seg 3 段（train 期內部）
+            _seg_size = max(10, (_tr_end_day - _tr_start_day) // 3)
+            _seg = [[],[],[]]
+            _date_to_day = {str(d.date()): i for i,d in enumerate(pre["dates"])}
+            for _t in _tr_tr:
+                _bd = _date_to_day.get(_t.get("buy_date",""), -1)
+                if _bd < 0: continue
+                _rel = max(0, _bd - _tr_start_day)
+                _s = min(2, _rel // _seg_size)
+                _seg[_s].append(_t.get("return",0))
+            _seg_totals = [sum(s) for s in _seg]
+            _seg_avgs = [sum(s)/len(s) if s else 0 for s in _seg]
+
+            print(f"[診斷] SEED 在反向 WF 下的分解（看卡哪個 gate）：")
+            print(f"  train (新 {_ts_str} ~): n={_n_tr} avg={_avg_tr:.1f}% wr={_wr_tr:.0f}% avg_hold={_ah_tr:.1f}天 MaxDD={_max_dd_tr:.0f}% 總{_tot_tr:.0f}% 年化{_tr_ann:.0f}%")
+            print(f"  test  (舊 < {_ts_str}): n={_n_te} 總{_tot_te:.0f}% 年化{_te_ann:.0f}%")
+            print(f"  WF ratio: {_wf:.2f} (kernel 需 ≥ 0.55)")
+            print(f"  近60天: {len(_rec)} 筆 avg={_rec_avg:.1f}% (kernel 需 ≥ 5%)")
+            print(f"  train 3段: n={[len(s) for s in _seg]} 總{_seg_totals} avg{[round(a,1) for a in _seg_avgs]}")
+            print(f"  kernel 門檻：n_train 30-80 | avg_tr ≥ 8 | wr_tr ≥ 35 | avg_hold ≥ 5 | MaxDD ≥ -40 | WF ≥ 0.55 | 3段都正 | seg[2] ≥ seg[0]×0.6")
+            _fail = []
+            if _n_tr < 30: _fail.append(f"n_train {_n_tr} < 30")
+            if _n_tr > 80: _fail.append(f"n_train {_n_tr} > 80")
+            if _avg_tr < 8: _fail.append(f"avg_tr {_avg_tr:.1f}% < 8")
+            if _ah_tr < 5: _fail.append(f"avg_hold {_ah_tr:.1f} < 5")
+            if _max_dd_tr < -40: _fail.append(f"MaxDD {_max_dd_tr:.0f}% < -40")
+            if _wf < 0.55 and _tr_ann > 0: _fail.append(f"WF {_wf:.2f} < 0.55")
+            if _rec_avg < 5 and len(_rec) >= 3: _fail.append(f"近60天 avg {_rec_avg:.1f}% < 5")
+            for _i, _s in enumerate(_seg):
+                if len(_s) >= 4 and sum(_s) <= 0:
+                    _fail.append(f"seg[{_i}] total {sum(_s):.0f}% ≤ 0")
+            if len(_seg[0]) >= 4 and len(_seg[2]) >= 4:
+                if _seg_avgs[2] < _seg_avgs[0] * 0.6:
+                    _fail.append(f"seg[2] avg {_seg_avgs[2]:.1f}% < seg[0] {_seg_avgs[0]:.1f}% × 0.6")
+            if _fail:
+                print(f"  ⛔ 卡在：{' | '.join(_fail)}")
+            else:
+                print(f"  ✅ 所有 gate 都過（kernel 分數若還 0，可能是 warmup 期指標未到位）")
             best_params = dict(gist_best_params)
             hall_of_fame = [(0, dict(gist_best_params))]  # 不保護，讓 GPU 搜到更高勝率自然取代
             print(f"[GPU] 🌱 舊策略當 HOF reference（不保護，勝率優先 scoring 下更高勝率策略會自然取代）")
