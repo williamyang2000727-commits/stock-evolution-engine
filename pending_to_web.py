@@ -50,8 +50,27 @@ rets = [t["return_pct"] for t in completed]
 wins_r = [r for r in rets if r > 0]
 losses_r = [r for r in rets if r <= 0]
 
-# end_date = 最後一筆已完成交易的賣出日（daily_scan 從這之後延續）
-end_date = max((t.get("sell_date", "") for t in completed), default="")
+# end_date = 資料最後一天（GPU cache 的 last date），不是最後賣出日
+# 推法：從持倉 buy_date + 持有天數（交易日）推導
+# 若沒持倉，用最後完成交易的賣出日 + 持倉空出後的 safe margin
+import pandas as pd
+candidates = []
+for h in holding:
+    try:
+        bd = pd.Timestamp(h["buy_date"])
+        # 持有 days 是交易日數；簡化用 days × 1.4 當日曆日推算（保守）
+        approx_last = bd + pd.Timedelta(days=int(h["hold_days"] * 1.4 + 1))
+        candidates.append(str(approx_last.date()))
+    except Exception:
+        pass
+for c in completed:
+    if c.get("sell_date"):
+        candidates.append(c["sell_date"])
+end_date = max(candidates) if candidates else ""
+# 不能超過今天
+_today_str = pd.Timestamp.now().normalize().strftime("%Y-%m-%d")
+if end_date > _today_str:
+    end_date = _today_str
 start_date = min((t.get("buy_date", "") for t in web_trades), default="")
 
 stats = {
@@ -114,3 +133,26 @@ except Exception as e:
     with open(backup_path, "w", encoding="utf-8") as f:
         f.write(content)
     print(f"已存本地：{backup_path}")
+    sys.exit(1)
+
+# 自動觸發 GitHub Actions daily-scan 延續到今天（不用人工去網頁按 Run workflow）
+print()
+print("觸發 daily-scan workflow 延續到今天...")
+try:
+    import subprocess
+    result = subprocess.run(
+        ["gh", "workflow", "run", "daily-scan.yml",
+         "--repo", "williamyang2000727-commits/stock-web-app"],
+        capture_output=True, text=True, timeout=15
+    )
+    if result.returncode == 0:
+        print("✅ daily-scan 已自動觸發")
+        print("   5-10 分鐘後 Web Tab 3 會自動更新 end_date 到最新交易日")
+        print("   監看：https://github.com/williamyang2000727-commits/stock-web-app/actions")
+    else:
+        raise RuntimeError(result.stderr or "gh command failed")
+except Exception as _e:
+    print(f"⚠️ 自動觸發失敗（{_e}）")
+    print("手動觸發（二擇一）：")
+    print("  A. 網頁：https://github.com/williamyang2000727-commits/stock-web-app/actions/workflows/daily-scan.yml")
+    print("  B. 指令：gh workflow run daily-scan.yml --repo williamyang2000727-commits/stock-web-app")
