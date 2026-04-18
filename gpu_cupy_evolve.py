@@ -76,43 +76,46 @@ def append_new_days(cache_path):
     """只 append 從 cache 最後一天到今天的新資料；舊資料一個 byte 都不動。
     回傳 (data_dict, n_tickers_updated)。舊 cache 不存在會回 (None, 0)。
     """
-    import pandas as pd
+    import pandas as pd, traceback
     if not os.path.exists(cache_path):
         return None, 0
     with open(cache_path, "rb") as f:
         cache = pickle.load(f)
-    today = pd.Timestamp.now(tz="Asia/Taipei").normalize()
+    today = pd.Timestamp.now().normalize()  # naive，避免跟舊 cache 比較時 tz 衝突
     updated = 0
-    fail = 0
+    first_err_printed = False
     for ticker, df in cache.items():
         if df is None or len(df) == 0: continue
         try:
+            # 讀最後一天，剝 tz 統一成 naive
             last = df.index[-1]
-            if last.tz is None:
-                # cache 舊資料可能無 tz，當台北時區處理
-                last = last.tz_localize("Asia/Taipei")
-            else:
-                last = last.tz_convert("Asia/Taipei")
-            if last.normalize() >= today:
+            if getattr(last, 'tz', None) is not None:
+                last = last.tz_localize(None)
+            last = pd.Timestamp(last).normalize()
+            if last >= today:
                 continue  # 已有今天，不動
             start = (last + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
             end = (today + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
             new = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
             if new is None or len(new) == 0:
-                continue  # 停牌/假日/下市 — 跳過，舊 cache 不動
-            # 確保時區一致再 concat（避免 pd.concat 時 index 衝突）
-            if new.index.tz is None:
-                new.index = new.index.tz_localize("Asia/Taipei")
-            else:
-                new.index = new.index.tz_convert("Asia/Taipei")
-            if df.index.tz is None:
-                df.index = df.index.tz_localize("Asia/Taipei")
-            else:
-                df.index = df.index.tz_convert("Asia/Taipei")
+                continue  # 假日/停牌/下市 — 跳過
+            # 統一 naive 再 concat（剝任一邊的 tz）
+            if new.index.tz is not None:
+                new.index = new.index.tz_localize(None)
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            # 只保留舊 cache 既有欄位（避免 yfinance 新版多帶欄位破壞 schema）
+            common_cols = [c for c in df.columns if c in new.columns]
+            if not common_cols:
+                continue
+            new = new[common_cols]
             cache[ticker] = pd.concat([df, new])
             updated += 1
-        except Exception:
-            fail += 1
+        except Exception as e:
+            if not first_err_printed:
+                print(f"  [append_new_days] 第一個 ticker 失敗 ({ticker}): {type(e).__name__}: {e}")
+                traceback.print_exc()
+                first_err_printed = True
             continue
     # 原子寫回（temp → rename，避免中斷損壞）
     if updated > 0:
