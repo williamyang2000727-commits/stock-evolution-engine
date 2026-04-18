@@ -307,9 +307,9 @@ void backtest(
     int hold_bd[3]; hold_bd[0]=0; hold_bd[1]=0; hold_bd[2]=0;
     int n_holding = 0, n_trades = 0;
     float total_ret = 0, win_count = 0, wasted_count = 0;
-    float rets[100];
-    int trade_bdays[100];
-    int hold_days_arr[100];
+    float rets[200];
+    int trade_bdays[200];
+    int hold_days_arr[200];
 
     for (int day = 60; day < n_days - 1; day++) {
         // === Phase 1: 檢查所有持倉的賣出條件（用 day 收盤價判斷）===
@@ -356,7 +356,7 @@ void backtest(
             if (!sell && dh >= hold_days_max) sell = true;
 
             // 賣出用 D+1 開盤價（跟實戰一致：收到訊號隔天一開盤賣）
-            if (sell && day + 1 < n_days && n_trades < 100) {
+            if (sell && day + 1 < n_days && n_trades < 200) {
                 float sell_price = open_price[si * n_days + day + 1];
                 float actual_ret = (sell_price / hold_bp[h] - 1.0f) * 100.0f - 0.585f;  // 扣手續費+證交稅
                 rets[n_trades] = actual_ret;
@@ -461,7 +461,7 @@ void backtest(
                     if (sc < weakest_sc) { weakest_sc = sc; weakest_h = h; }
                 }
                 // 候選分數 - 最弱持股分數 >= margin → 賣弱換強
-                if (weakest_h >= 0 && cand_sc - weakest_sc >= upgrade_margin && n_trades < 100) {
+                if (weakest_h >= 0 && cand_sc - weakest_sc >= upgrade_margin && n_trades < 200) {
                     int si = hold_si[weakest_h];
                     float sell_price = open_price[si * n_days + day + 1];
                     float actual_ret = (sell_price / hold_bp[weakest_h] - 1.0f) * 100.0f - 0.585f;  // 扣手續費+證交稅
@@ -595,8 +595,8 @@ void backtest(
 
     // 分 train / test（反向 WF：test 段在前=舊，train 段在後=新）
     int n_train = 0, n_test = 0;
-    float rets_train[100], rets_test[100];
-    int bdays_train[100], hd_train[100];
+    float rets_train[200], rets_test[200];
+    int bdays_train[200], hd_train[200];
     float total_train = 0, total_test = 0;
     float win_train = 0;
     for (int i=0; i<n_trades; i++) {
