@@ -719,6 +719,33 @@ void backtest(
                         if (s_avg < 0) s_avg = 0;
                         if (s_avg > 30.0f) s_avg = 30.0f;
 
+                        // 近 2 年勝率獎勵（最後 500 天，當前市場強勢鼓勵）
+                        // 60%=0, 65%=+3, 70%=+6, 75%=+9, 80%=+12, 90%=+15
+                        int recent_start = n_days - 500;
+                        if (recent_start < train_start) recent_start = train_start;
+                        float rec_wins = 0; int rec_n = 0;
+                        for (int i=0; i<n_train; i++) {
+                            if (bdays_train[i] >= recent_start) {
+                                rec_n++;
+                                if (rets_train[i] > 0) rec_wins += 1;
+                            }
+                        }
+                        float s_recent = 0;
+                        if (rec_n >= 5) {
+                            float rec_wr = rec_wins / rec_n * 100.0f;
+                            s_recent = (rec_wr - 60.0f) * 0.5f;
+                            if (s_recent < 0) s_recent = 0;
+                            if (s_recent > 15.0f) s_recent = 15.0f;
+                        }
+
+                        // Calmar 獎勵（CAGR 高 + MaxDD 低 = 風險調整後報酬）
+                        // train_ann 400% / MaxDD 20% = 20 → 超頂，cap 10
+                        float abs_dd = fabsf(max_dd_tr);
+                        float calmar = abs_dd > 1.0f ? (train_annual / abs_dd) : 0;
+                        float s_calmar = 0;
+                        if (calmar > 2.0f) s_calmar = (calmar - 2.0f) * 1.5f;
+                        if (s_calmar > 10.0f) s_calmar = 10.0f;
+
                         // 輔助評分（權重都降低，讓 s_wr 主導）
                         float s_sharpe = sharpe_tr * 2.0f; if (s_sharpe > 10) s_sharpe = 10;
                         float s_pl = pl_ratio * 0.5f; if (s_pl > 5) s_pl = 5;
@@ -732,7 +759,7 @@ void backtest(
                         if (wf_ratio > 1.2f) wf_ratio = 1.2f;
                         float s_wf = wf_ratio * 15.0f;
 
-                        score = s_wr + s_return + s_avg + s_sharpe + s_pl + s_consistency + s_wf - s_streak - s_dd - s_hold_pen;
+                        score = s_wr + s_return + s_avg + s_recent + s_calmar + s_sharpe + s_pl + s_consistency + s_wf - s_streak - s_dd - s_hold_pen;
                     }
                 }
             }
@@ -1345,7 +1372,9 @@ def main():
     print(f"  ═══ Scoring（勝率主軸 + 波段副軸）═══")
     print(f"  主軸 s_wr × 2.0 (cap 80)  勝率 65%=+30 / 75%=+50 / 80%=+60 / 90%=+80")
     print(f"  報酬 s_return × 0.05 (cap 20)  年化 400% 封頂（不會反客為主）")
-    print(f"  波段 s_avg × 2.0 (cap 30)  avg 15%=0 / 20%=+10 / 25%=+20 / 30%=+30 ← 新")
+    print(f"  波段 s_avg × 2.0 (cap 30)  avg 15%=0 / 20%=+10 / 25%=+20 / 30%=+30")
+    print(f"  近期 s_recent × 0.5 (cap 15)  近 2 年勝率 65%=+3 / 70%=+6 / 75%=+9 / 80%=+12 ← 新")
+    print(f"  風調 s_calmar × 1.5 (cap 10)  Calmar 3=+1.5 / 5=+4.5 / 8=+9 ← 新")
     print(f"  輔助 s_wf×15 / s_sharpe×2 / s_pl×0.5 / s_consistency×0.03 / penalties")
     print(f"")
     print(f"  ═══ 反向 Walk-Forward 切點（動態依 cache 長度）═══")
@@ -1365,6 +1394,9 @@ def main():
     print(f"  報酬地板: train 年化 ≥ {MIN_TRAIN_ANNUAL}%（189 × 0.6）| test 年化 ≥ {MIN_TEST_ANNUAL}%（189 × 0.6）")
     print(f"  勝率地板: train ≥ {MIN_WR_TRAIN*100:.0f}% | test ≥ {MIN_WR_TEST*100:.0f}%")
     print(f"  最新 60 天 avg ≥ 5%（近期崩盤檢查）")
+    print(f"  🆕 近 2 年 avg ≥ 15%（擋退化策略）")
+    print(f"  🆕 train Calmar ≥ 2（CAGR/MaxDD，風險調整）")
+    print(f"  🆕 use_mom_exit 強制 40% 探索（解決 22 筆保本出場）")
     print(f"  ═══ 診斷 ═══ 每 5 輪無突破時印 gate fail 分布，看卡在哪")
     print(f"")
 
@@ -1614,7 +1646,8 @@ def main():
         # === 全部先用隨機填滿（向量化，超快）===
         _base_for_freeze = best_params  # NO-OVERFIT：不 fallback v5
         # B: 新指標強制探索 — 40% 機率非零
-        NEW_INDICATOR_WEIGHTS = {"w_sector_flow","w_up_days","w_week52","w_vol_up_days","w_mom_accel"}
+        # 加入 use_mom_exit 讓 GPU 真的探索動量反轉出場（解決 22 筆保本出場的問題）
+        NEW_INDICATOR_WEIGHTS = {"w_sector_flow","w_up_days","w_week52","w_vol_up_days","w_mom_accel","use_mom_exit"}
         for i, key in enumerate(PARAM_ORDER):
             opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
             if key in FROZEN_PARAMS and _base_for_freeze:
@@ -1858,6 +1891,21 @@ def main():
                 if _recent_avg < 5:
                     _gate_fail["recent"] += 1
                     continue
+            # 🆕 近 2 年 avg ≥ 15% 門檻（擋退化策略，要求當前市場表現強勢）
+            _recent_2y_idx = max(pre["n_days"] - 500, pre["train_start"])
+            _recent_2y_cutoff = str(pre["dates"][_recent_2y_idx].date())
+            _recent_2y = [t for t in _cmp if t.get("buy_date","") >= _recent_2y_cutoff]
+            if len(_recent_2y) >= 5:
+                _recent_2y_avg = sum(t.get("return",0) for t in _recent_2y) / len(_recent_2y)
+                if _recent_2y_avg < 15:
+                    _gate_fail["recent_2y"] = _gate_fail.get("recent_2y", 0) + 1
+                    continue
+            # 🆕 Calmar 比 ≥ 2（CAGR / MaxDD，風險調整後必須足夠好）
+            _abs_dd = abs(_cmdd) if _cmdd < 0 else 1.0
+            _train_calmar = _tr_ann / _abs_dd if _abs_dd > 1 else 0
+            if _train_calmar < 2.0:
+                _gate_fail["calmar"] = _gate_fail.get("calmar", 0) + 1
+                continue
             # 過了所有 gate，接受
             best_score = _sc
             best_nt = int(results[_ti, 1])
