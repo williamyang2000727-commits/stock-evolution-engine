@@ -31,9 +31,19 @@ print(f"Strategy: v{strategy.get('version','?')} | score={strategy.get('score',0
 
 # === Load data ===
 data = download_data()
-TARGET_DAYS = 900
+# 動態 TARGET_DAYS 跟 gpu_cupy_evolve.py 一致（1500 天優先，fallback 1200 / 900）
+_lens = [len(v) for v in data.values()]
+_n_1500 = sum(1 for l in _lens if l >= 1500)
+_n_1200 = sum(1 for l in _lens if l >= 1200)
+_n_900 = sum(1 for l in _lens if l >= 900)
+if _n_1500 >= 500:
+    TARGET_DAYS = 1500
+elif _n_1200 >= 800:
+    TARGET_DAYS = 1200
+else:
+    TARGET_DAYS = 900
 data = {k: v.tail(TARGET_DAYS) for k, v in data.items() if len(v) >= TARGET_DAYS}
-print(f"Stocks with 900+ days: {len(data)}")
+print(f"Stocks with {TARGET_DAYS}+ days: {len(data)} (1500-q {_n_1500} / 1200-q {_n_1200} / 900-q {_n_900})")
 
 # === Precompute + Run ===
 pre = precompute(data)
