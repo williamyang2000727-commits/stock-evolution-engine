@@ -15,13 +15,24 @@ GH_TOKEN = os.environ.get("GH_TOKEN", "")
 DATA_GIST_ID = "a300b9e29372ac76f79eda39a2a86321"
 CACHE_PATH = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_data_cache.pkl")
 
-# === 評分模式 ===
-# normal：報酬優先（s_total × 0.30, s_wr_bonus × 0.0）— 會找出高報酬/中勝率策略
-# winrate：勝率優先（s_total × 0.10, s_wr_bonus × 0.8, gate 加 min_wr >= 0.65）
-#   啟動：GPU_MODE=winrate python gpu_cupy_evolve.py
-#   可調：MIN_WR=0.70 提高勝率門檻
-WR_MODE = os.environ.get("GPU_MODE", "normal").lower() == "winrate"
-MIN_WR_THRESHOLD = float(os.environ.get("MIN_WR", "0.65" if WR_MODE else "0.0"))
+# === 評分哲學（2026-04-18 重寫：勝率優先 + 報酬地板）===
+# 搜尋目標：勝率高且報酬不能太低（穩定複利）的策略
+#
+# 評分主軸：
+#   - s_wr × 1.5         勝率 65% = +22.5 分，75% = +37.5 分（主導排名）
+#   - s_return × 0.05    年化 400% 封頂 = +20 分（報酬不會反客為主）
+#   - s_wf × 15          走前校驗（防老化）
+#
+# 硬門檻（不能太低的底線）：
+#   - train_win_rate >= 0.60，test_win_rate >= 0.55
+#   - train_annual >= 60%，test_annual >= 30%
+#   - WF ratio >= 0.7、recent-60d avg >= 5%
+#
+# 結果：GPU 會找「勝率 65-80% + 年化 150-350%」類型策略，不會追 1700% 總報酬的 overfit
+MIN_WR_TRAIN = 0.60    # train 勝率硬門檻
+MIN_WR_TEST = 0.55     # test 容許 5% 寬容
+MIN_TRAIN_ANNUAL = 60  # train 年化 60%（報酬地板）
+MIN_TEST_ANNUAL = 30   # test 年化 30%（報酬地板）
 
 CN_NAMES = {}
 # 從完整名單載入（1958 檔台灣上市櫃股票）
@@ -98,8 +109,7 @@ def filter_top(data, n=50):
 
 # === GPU 批次交易模擬 ===
 # 用 CuPy RawKernel 寫 CUDA C 核心，每個 thread 跑一組參數
-# scoring 權重由 WR_MODE 控制，compile 時 inject（見檔尾 CUDA_KERNEL 實例化）
-_KERNEL_SRC = r'''
+CUDA_KERNEL = cp.RawKernel(r'''
 extern "C" __global__
 void backtest(
     const int n_stocks, const int n_days,
@@ -577,28 +587,36 @@ void backtest(
                         if (seg2_avg < seg0_avg * 0.6f) late_seg_ok = false;
                     }
                     if (active_segs >= 2 && seg_ok && late_seg_ok) {
-                        float s_consistency = min_seg_annual * 0.05f;
-                        if (s_consistency > 15) s_consistency = 15;
+                        float s_consistency = min_seg_annual * 0.03f;
+                        if (s_consistency > 10) s_consistency = 10;
 
-                        // s_total 用 min(train, test)：train 再高，被 test 拖的策略就拿不到好分
-                        // 這才是真正殺死 reward hacking — GPU 無法靠 train 爆炸賺分數
+                        // === 勝率優先 scoring（2026-04-18 重寫）===
+                        // 主軸：s_wr 權重 1.5 → 勝率 65%=+22.5, 70%=+30, 75%=+37.5, 80%=+45
+                        // 封頂：s_return 年化 400% 以上不加分（防報酬反客為主）
+                        float s_wr = (win_rate_tr - 50.0f) * 1.5f;
+                        if (s_wr < 0) s_wr = 0;
+                        if (s_wr > 60.0f) s_wr = 60.0f;  // 100% 勝率封頂 60 分
+
+                        // s_return 用 min(train, test)，封頂 400% 年化
                         float effective_annual = train_annual < test_annual ? train_annual : test_annual;
-                        float s_total = effective_annual * __TOTAL_WEIGHT__;
-                        float s_sharpe = sharpe_tr * 3.0f; if (s_sharpe > 12) s_sharpe = 12;
-                        float s_pl = pl_ratio * 0.8f; if (s_pl > 8) s_pl = 8;
-                        float s_streak = max_streak * 1.5f;
-                        float s_dd = fabsf(max_dd_tr) * 0.1f;
+                        float capped_annual = effective_annual > 400.0f ? 400.0f : effective_annual;
+                        float s_return = capped_annual * 0.05f;
+                        if (s_return < 0) s_return = 0;
+
+                        // 輔助評分（權重都降低，讓 s_wr 主導）
+                        float s_sharpe = sharpe_tr * 2.0f; if (s_sharpe > 10) s_sharpe = 10;
+                        float s_pl = pl_ratio * 0.5f; if (s_pl > 5) s_pl = 5;
+                        float s_streak = max_streak * 1.0f;
+                        float s_dd = fabsf(max_dd_tr) * 0.05f;
                         float s_hold_pen = 0;
                         if (avg_hold_tr < 8.0f) s_hold_pen = (8.0f - avg_hold_tr) * 2.0f;
-                        // WF 泛化加分：權重大幅上調，直接抵掉 s_total 的 reward hacking 誘惑
+
+                        // WF 泛化：保留防老化，權重 25 → 15
                         float wf_ratio = train_annual > 1.0f ? test_annual / train_annual : 1.0f;
                         if (wf_ratio > 1.2f) wf_ratio = 1.2f;
-                        float s_wf = wf_ratio * 25.0f;  // 10 → 25（WF 100% 拿 25 分、75% 拿 18.75 分，差距變明顯）
-                        // Win-rate bonus：WR_MODE 下高勝率加分（normal 模式 __WR_WEIGHT__ = 0）
-                        float s_wr_bonus = (win_rate_tr - 50.0f) * __WR_WEIGHT__;
-                        if (s_wr_bonus < 0) s_wr_bonus = 0;
+                        float s_wf = wf_ratio * 15.0f;
 
-                        score = s_total + s_sharpe + s_pl + s_consistency + s_wf + s_wr_bonus - s_streak - s_dd - s_hold_pen;
+                        score = s_wr + s_return + s_sharpe + s_pl + s_consistency + s_wf - s_streak - s_dd - s_hold_pen;
                     }
                 }
             }
@@ -612,14 +630,7 @@ void backtest(
     results[idx * 5 + 3] = total_ret;
     results[idx * 5 + 4] = n_trades > 0 ? win_count / n_trades * 100.0f : 0;
 }
-'''
-
-CUDA_KERNEL = cp.RawKernel(
-    _KERNEL_SRC
-        .replace("__TOTAL_WEIGHT__", "0.10f" if WR_MODE else "0.30f")
-        .replace("__WR_WEIGHT__", "0.80f" if WR_MODE else "0.0f"),
-    'backtest'
-)
+''', 'backtest')
 
 PARAMS_SPACE = {
     # ====== 評分制買入（權重 0-3 + 門檻）======
@@ -1210,13 +1221,11 @@ def cpu_replay(pre, p):
 
 def main():
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
-    if WR_MODE:
-        print(f"[GPU-CuPy] 🎯 WINRATE 模式啟動（GPU_MODE=winrate）")
-        print(f"           scoring: s_total×0.10, s_wr_bonus×0.80（勝率 70% = +16 分、80% = +24 分）")
-        print(f"           gate: train+test 勝率 >= {MIN_WR_THRESHOLD*100:.0f}%, test 容許 -5%")
-        print(f"           SEED: 從隨機起點（不用 189）")
-    else:
-        print(f"[GPU-CuPy] 📈 NORMAL 模式（報酬優先，預設）。要跑勝率優先：GPU_MODE=winrate python gpu_cupy_evolve.py")
+    print(f"[GPU-CuPy] 🎯 勝率優先 scoring")
+    print(f"           主軸: s_wr × 1.5（勝率 65%=+22.5, 75%=+37.5, 80%=+45）")
+    print(f"           報酬: s_return × 0.05（年化 400% 封頂 = +20，不會反客為主）")
+    print(f"           gate: train 勝率 ≥ {MIN_WR_TRAIN*100:.0f}%, test 勝率 ≥ {MIN_WR_TEST*100:.0f}%")
+    print(f"           報酬地板: train 年化 ≥ {MIN_TRAIN_ANNUAL}%, test 年化 ≥ {MIN_TEST_ANNUAL}%")
     raw = download_data()
     # 只過濾資料太短的，保留全部股票（動態 top100 mask 在 precompute 裡算）
     TARGET_DAYS = 900
@@ -1283,34 +1292,28 @@ def main():
     MOM_MAP = {3:0, 5:1, 10:2}
     N_PARAMS_FULL = N_PARAMS + 3  # 加 ma_fast_idx, ma_slow_idx, mom_idx
 
-    # 從 Gist 載入策略 → cpu_replay 建立真實基準
-    # WR_MODE 跳過（189 勝率 62% 會被 min_wr=0.65 拒絕，當 SEED 只會拖累勝率探索）
+    # Gist 載入舊策略當 reference（不給 999 分保護，讓高勝率策略自然取代）
+    # 189（勝率 62%）在新 scoring 下大約 50-60 分，GPU 搜到 70%+ 勝率策略會自動勝出
     gist_best_params = None
-    if WR_MODE:
-        print(f"[GPU] 🎯 WR 模式：跳過 189 SEED（低勝率起點不適合勝率探索），從隨機開始")
-    else:
-        try:
-            headers = {"Authorization": f"token {GH_TOKEN}"} if GH_TOKEN else {}
-            r = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers=headers, timeout=10)
-            gist_data = json.loads(list(r.json()["files"].values())[0]["content"])
-            if "params" in gist_data:
-                gist_best_params = gist_data["params"]
-                # 用 cpu_replay 在當前資料上跑一次，建立真實基準
-                import math as _math
-                _baseline_trades = cpu_replay(pre, gist_best_params)
-                _baseline_trades = [t for t in _baseline_trades if not _math.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
-                _baseline_total = sum(t.get("return",0) for t in _baseline_trades)
-                _baseline_n = len(_baseline_trades)
-                _baseline_avg = _baseline_total / _baseline_n if _baseline_n else 0
-                _baseline_wr = sum(1 for t in _baseline_trades if t.get("return",0)>0) / _baseline_n * 100 if _baseline_n else 0
-                print(f"[GPU] Gist 策略在當前資料上：{_baseline_n}筆 avg{_baseline_avg:.1f}% 總{_baseline_total:.0f}% 勝率{_baseline_wr:.0f}%")
-                # 🌱 SEED 模式：Gist 策略（已通過所有 WF / 防 overfit gate）當起點加速進化
-                # gates 不放寬，只是給 GPU 好起點。有新策略需通過所有 gate 才能推 Gist。
-                best_params = dict(gist_best_params)
-                hall_of_fame = [(999, dict(gist_best_params))]  # HOF[0] = Gist strategy
-                print(f"[GPU] 🌱 SEED 模式：Gist 策略當起點（HOF[0] = 現策略），GPU 從此處爬山 + 4 個隨機多樣化")
-        except Exception as _e:
-            print(f"[GPU] Gist 載入失敗：{_e}")
+    try:
+        headers = {"Authorization": f"token {GH_TOKEN}"} if GH_TOKEN else {}
+        r = requests.get(f"https://api.github.com/gists/{GIST_ID}", headers=headers, timeout=10)
+        gist_data = json.loads(list(r.json()["files"].values())[0]["content"])
+        if "params" in gist_data:
+            gist_best_params = gist_data["params"]
+            import math as _math
+            _baseline_trades = cpu_replay(pre, gist_best_params)
+            _baseline_trades = [t for t in _baseline_trades if not _math.isnan(t.get("return",0)) and t.get("reason") != "持有中"]
+            _baseline_total = sum(t.get("return",0) for t in _baseline_trades)
+            _baseline_n = len(_baseline_trades)
+            _baseline_avg = _baseline_total / _baseline_n if _baseline_n else 0
+            _baseline_wr = sum(1 for t in _baseline_trades if t.get("return",0)>0) / _baseline_n * 100 if _baseline_n else 0
+            print(f"[GPU] Gist 策略在當前資料上：{_baseline_n}筆 avg{_baseline_avg:.1f}% 總{_baseline_total:.0f}% 勝率{_baseline_wr:.0f}%")
+            best_params = dict(gist_best_params)
+            hall_of_fame = [(0, dict(gist_best_params))]  # 不保護，讓 GPU 搜到更高勝率自然取代
+            print(f"[GPU] 🌱 舊策略當 HOF reference（不保護，勝率優先 scoring 下更高勝率策略會自然取代）")
+    except Exception as _e:
+        print(f"[GPU] Gist 載入失敗：{_e}")
     # 掃描跳過（曾基於 v5，會污染起點）
 
     last_data_date = time.strftime("%Y-%m-%d")
@@ -1592,24 +1595,21 @@ def main():
             _ts_y = (pre["n_days"]-pre["train_end"])/250.0
             _tr_ann = _ctr_tot/_tr_y if _tr_y > 0.5 else _ctr_tot
             _ts_ann = _cts_tot/_ts_y if _ts_y > 0.3 else _cts_tot
-            if _tr_ann > 0 and _ts_ann < _tr_ann * 0.7: continue  # WF 0.5 → 0.7（擋 reward hacking）
-            # 近期 60 天崩盤檢查（抓 183 這種 2026 avg 3.9% 的）
+            if _tr_ann > 0 and _ts_ann < _tr_ann * 0.7: continue  # WF gate（擋 reward hacking）
+            # 報酬地板（train + test 年化不能太低）
+            if _tr_ann < MIN_TRAIN_ANNUAL: continue
+            if _ts_ann < MIN_TEST_ANNUAL: continue
+            # 勝率硬門檻（train + test 各自把關，避免單期 overfit）
+            _wr_train = sum(1 for t in _ctr if t.get("return",0) > 0) / len(_ctr) if _ctr else 0
+            _wr_test = sum(1 for t in _cts if t.get("return",0) > 0) / len(_cts) if _cts else 0
+            if _wr_train < MIN_WR_TRAIN: continue
+            if _wr_test < MIN_WR_TEST: continue
+            # 近期 60 天崩盤檢查（勝率策略每筆期望值低，放寬為 5%）
             _recent_cutoff = str(pre["dates"][pre["n_days"] - 60].date())
             _recent = [t for t in _cmp if t.get("buy_date","") >= _recent_cutoff]
             if len(_recent) >= 3:
                 _recent_avg = sum(t.get("return",0) for t in _recent) / len(_recent)
-                # WR_MODE 放寬報酬門檻：勝率優先策略每筆期望值低，10% 太嚴
-                _min_recent = 3 if WR_MODE else 10
-                if _recent_avg < _min_recent:
-                    continue
-            # WR_MODE 額外 gate：整體勝率必須 >= MIN_WR_THRESHOLD
-            if WR_MODE:
-                _wr_all = sum(1 for t in _cmp if t.get("return",0) > 0) / len(_cmp) if _cmp else 0
-                if _wr_all < MIN_WR_THRESHOLD:
-                    continue
-                # test 期勝率也要過關（避免 train 勝率高、test 崩盤）
-                _wr_test = sum(1 for t in _cts if t.get("return",0) > 0) / len(_cts) if _cts else 0
-                if _wr_test < MIN_WR_THRESHOLD - 0.05:  # test 容許 5% 寬容
+                if _recent_avg < 5:
                     continue
             # 過了所有 gate，接受
             best_score = _sc
@@ -1717,8 +1717,7 @@ def main():
                 total_r = sum(t["return"] for t in _completed_td)
                 avg_r = total_r / n_all if n_all else 0
                 wr_r = sum(1 for t in _completed_td if t["return"]>0) / n_all * 100 if n_all else 0
-                content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060_v3_consistency",
-                    "mode": "winrate" if WR_MODE else "normal",
+                content = json.dumps({"score":round(best_score,4),"source":"gpu_rtx3060_winrate_first",
                     "updated_at":time.strftime("%Y-%m-%dT%H:%M:%S"),
                     "params":best_params,"backtest":{
                         "avg_return":round(avg_r,2),"total_return":round(total_r,2),
@@ -1732,9 +1731,8 @@ def main():
                     f"  {y}: {d['n']}筆 avg{d['ret']/d['n']:.1f}% 總{d['ret']:.0f}% 勝率{d['win']/d['n']*100:.0f}%"
                     for y, d in sorted(yearly.items())
                 ])
-                _mode_tag = "🎯 勝率優先模式" if WR_MODE else "🎯 報酬優先模式"
                 telegram_push(
-                    f"{_mode_tag} GPU 找到新策略（待審核）\n"
+                    f"🎯 勝率優先 GPU 找到新策略（待審核）\n"
                     f"━━━━━━━━━━━━\n"
                     f"分數：{best_score:.2f}\n"
                     f"全期：{n_all}筆 avg{avg_r:.1f}% 總{total_r:.0f}% 勝率{wr_r:.0f}%\n"
