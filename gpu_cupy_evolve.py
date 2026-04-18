@@ -1267,7 +1267,7 @@ def main():
     BATCH = 200000  # 縮小避免 Python 參數生成卡住
     BLOCK = 256
     N_PARAMS = len(PARAM_ORDER)
-    best_score = -999999  # R1 結束後用 v5 kernel 分數覆蓋
+    best_score = 0  # 歸 0 起點：任何通過 gate 的勝率優先策略都會觸發突破推播
     best_params = None
     best_avg = 0; best_total = 0; best_wr = 0; best_nt = 0
     total_tested = 0; total_improved = 0; last_synced_improved = 0
@@ -1524,21 +1524,19 @@ def main():
         results = d_results.get()
         total_tested += BATCH
 
-        # SEED：R1 抓 Gist 策略（position 0）的 kernel 分數當 baseline
+        # R1 印出 189 在新 scoring 下的分數（僅供參考，不覆蓋 best_score）
+        # 歸 0 策略：best_score 保持 -999999 開始，任何通過 gate 的策略都會觸發突破 + 推播
+        # 這樣 William 可以看到 GPU 找到的第一個勝率優先策略，不用等它超過 189
         if rnd == 1 and gist_best_params:
             _seed_score = float(results[0, 0])
             _seed_nt = int(results[0, 1])
             _seed_total = float(results[0, 3])
+            _seed_wr = float(results[0, 4])
             if _seed_score > 0:
-                best_score = _seed_score
-                best_nt = _seed_nt
-                best_avg = float(results[0, 2])
-                best_total = _seed_total
-                best_wr = float(results[0, 4])
-                total_improved += 1
-                print(f"  [GPU] 🌱 SEED baseline：{_seed_score:.1f} | {_seed_nt}筆 | 總{_seed_total:.0f}%（新公式下 Gist 策略分數，要超過它才算進步）")
+                print(f"  [GPU] 📊 舊 189 策略新 scoring 下：{_seed_score:.1f} 分 | {_seed_nt}筆 | 勝率 {_seed_wr:.0f}% | 總{_seed_total:.0f}%")
+                print(f"  [GPU] 🎯 best_score 從 0 開始，任何通過 gate 的新策略都會觸發突破推播（不用贏過 189）")
             else:
-                print(f"  [GPU] ⚠️ SEED 策略新公式下分數無效（{_seed_score:.1f}，{_seed_nt}筆）— 可能門檻變嚴，GPU 從零找")
+                print(f"  [GPU] ⚠️ 舊 189 策略在新 gate 下無效（{_seed_score:.1f}，{_seed_nt}筆）— GPU 從零找")
 
         # 收集這批裡分數 > 0 的前 5 名加入名人堂（不用破紀錄也能入）
         top_indices = np.argsort(results[:, 0])[-5:][::-1]
