@@ -73,51 +73,87 @@ except:
     TW_TICKERS = ["2330.TW","2454.TW","2317.TW","2303.TW","2382.TW","3231.TW"]
 
 def append_new_days(cache_path):
-    """只 append 從 cache 最後一天到今天的新資料；舊資料一個 byte 都不動。
-    回傳 (data_dict, n_tickers_updated)。舊 cache 不存在會回 (None, 0)。
+    """批次 append cache 新天 — 舊資料 0 變動。用 yf.download batch 下載（100 檔/批），
+    比舊版逐個 yf.Ticker.history 快 5-10 倍。每批印進度讓你看到東西在動。
     """
     import pandas as pd, traceback
     if not os.path.exists(cache_path):
         return None, 0
     with open(cache_path, "rb") as f:
         cache = pickle.load(f)
-    today = pd.Timestamp.now().normalize()  # naive，避免跟舊 cache 比較時 tz 衝突
+    today = pd.Timestamp.now().normalize()
     updated = 0
     first_err_printed = False
+
+    # 按 last_date 分組（通常所有 ticker 同一天，只有 1 組）
+    groups = {}
     for ticker, df in cache.items():
         if df is None or len(df) == 0: continue
-        try:
-            # 讀最後一天，剝 tz 統一成 naive
-            last = df.index[-1]
-            if getattr(last, 'tz', None) is not None:
-                last = last.tz_localize(None)
-            last = pd.Timestamp(last).normalize()
-            if last >= today:
-                continue  # 已有今天，不動
-            start = (last + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-            end = (today + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
-            new = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
-            if new is None or len(new) == 0:
-                continue  # 假日/停牌/下市 — 跳過
-            # 統一 naive 再 concat（剝任一邊的 tz）
-            if new.index.tz is not None:
-                new.index = new.index.tz_localize(None)
-            if df.index.tz is not None:
-                df.index = df.index.tz_localize(None)
-            # 只保留舊 cache 既有欄位（避免 yfinance 新版多帶欄位破壞 schema）
-            common_cols = [c for c in df.columns if c in new.columns]
-            if not common_cols:
+        last = df.index[-1]
+        if getattr(last, 'tz', None) is not None:
+            last = last.tz_localize(None)
+        last_date = pd.Timestamp(last).normalize()
+        if last_date >= today: continue
+        groups.setdefault(last_date, []).append(ticker)
+
+    if not groups:
+        print("  所有 ticker 已到今天，無需 append")
+        return cache, 0
+
+    BATCH = 100
+    for last_date, tickers_to_update in groups.items():
+        start = (last_date + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        end = (today + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+        total = len(tickers_to_update)
+        print(f"  [{last_date.date()} → {today.date()}] {total} 檔需要補 {start}~{end}")
+
+        for bi in range(0, total, BATCH):
+            batch_tickers = tickers_to_update[bi:bi+BATCH]
+            try:
+                batch_df = yf.download(
+                    batch_tickers,
+                    start=start, end=end,
+                    group_by='ticker',
+                    progress=False, threads=True,
+                    auto_adjust=True,
+                )
+            except Exception as e:
+                if not first_err_printed:
+                    print(f"  [batch {bi}-{bi+len(batch_tickers)}] download 失敗: {e}")
+                    traceback.print_exc()
+                    first_err_printed = True
                 continue
-            new = new[common_cols]
-            cache[ticker] = pd.concat([df, new])
-            updated += 1
-        except Exception as e:
-            if not first_err_printed:
-                print(f"  [append_new_days] 第一個 ticker 失敗 ({ticker}): {type(e).__name__}: {e}")
-                traceback.print_exc()
-                first_err_printed = True
-            continue
-    # 原子寫回（temp → rename，避免中斷損壞）
+
+            for ticker in batch_tickers:
+                try:
+                    if len(batch_tickers) == 1:
+                        new = batch_df
+                    else:
+                        lv0 = batch_df.columns.get_level_values(0).unique()
+                        if ticker not in lv0: continue
+                        new = batch_df[ticker]
+                    new = new.dropna(how='all')
+                    if new is None or len(new) == 0: continue
+                    if new.index.tz is not None:
+                        new.index = new.index.tz_localize(None)
+                    df = cache[ticker]
+                    if df.index.tz is not None:
+                        df.index = df.index.tz_localize(None)
+                    common_cols = [c for c in df.columns if c in new.columns]
+                    if not common_cols: continue
+                    new = new[common_cols]
+                    cache[ticker] = pd.concat([df, new])
+                    updated += 1
+                except Exception as e:
+                    if not first_err_printed:
+                        print(f"  第一個 ticker 處理失敗 ({ticker}): {type(e).__name__}: {e}")
+                        traceback.print_exc()
+                        first_err_printed = True
+                    continue
+
+            done = min(bi + BATCH, total)
+            print(f"  進度 {done}/{total}  累計更新 {updated} 檔", flush=True)
+
     if updated > 0:
         tmp = cache_path + ".tmp"
         with open(tmp, "wb") as f:
