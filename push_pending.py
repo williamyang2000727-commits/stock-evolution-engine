@@ -62,8 +62,67 @@ req = urllib.request.Request(
     headers={"Authorization": f"token {GH_TOKEN}", "Content-Type": "application/json"}
 )
 r = urllib.request.urlopen(req, timeout=30)
-print(f"✅ 推送成功：{r.status}")
+print(f"✅ GPU Gist 推送成功：{r.status}")
 dst = PENDING + ".pushed"
 # Windows os.rename 不覆蓋既有檔案 → 用 os.replace（跨平台支援覆蓋）
 os.replace(PENDING, dst)
 print(f"pending_push.json → pending_push.json.pushed")
+
+# === 自動跑 backtest_to_web.py 補完整歷史 + 觸發 daily-scan workflow ===
+print()
+print("=" * 50)
+print("  🚀 自動執行 backtest_to_web.py 補完整歷史到今天")
+print("=" * 50)
+import subprocess
+_here = os.path.dirname(os.path.abspath(__file__))
+_bt_path = os.path.join(_here, "backtest_to_web.py")
+if not os.path.exists(_bt_path):
+    print(f"⚠️ 找不到 backtest_to_web.py，略過。請手動執行。")
+else:
+    try:
+        # 用 stdin 傳空字串給 input("Press Enter to exit...")，讓它不卡住
+        result = subprocess.run(
+            [sys.executable, _bt_path],
+            input="\n", text=True,
+            cwd=_here, timeout=600  # 10 分鐘
+        )
+        if result.returncode == 0:
+            print(f"\n✅ backtest_to_web.py 執行完成（Data Gist 已更新到今天）")
+        else:
+            print(f"\n⚠️ backtest_to_web.py 失敗 (returncode={result.returncode})，請手動跑一次")
+    except subprocess.TimeoutExpired:
+        print(f"\n⚠️ backtest_to_web.py 超時，請手動確認")
+    except Exception as e:
+        print(f"\n⚠️ backtest_to_web.py 執行出錯：{e}")
+
+# === 自動觸發 daily-scan workflow（讓 Web 立刻延續到今天）===
+print()
+print("=" * 50)
+print("  🔔 觸發 GitHub Actions daily-scan workflow")
+print("=" * 50)
+try:
+    result = subprocess.run(
+        ["gh", "workflow", "run", "daily-scan.yml",
+         "--repo", "williamyang2000727-commits/stock-web-app"],
+        capture_output=True, text=True, timeout=15
+    )
+    if result.returncode == 0:
+        print("✅ workflow 已觸發（5-10 分鐘內 Web 會延續到今天）")
+    else:
+        print(f"⚠️ workflow 觸發失敗：{result.stderr}")
+        print("   請手動執行：gh workflow run daily-scan.yml --repo williamyang2000727-commits/stock-web-app")
+except FileNotFoundError:
+    print("⚠️ 找不到 gh CLI，略過自動觸發")
+    print("   請手動到 https://github.com/williamyang2000727-commits/stock-web-app/actions 觸發")
+except Exception as e:
+    print(f"⚠️ 觸發出錯：{e}")
+
+print()
+print("=" * 50)
+print("  ✅ 一條龍完成！")
+print("=" * 50)
+print(f"  1. GPU Gist 策略 params 已更新")
+print(f"  2. Data Gist 回測結果已補到今天")
+print(f"  3. daily-scan workflow 已觸發")
+print(f"  4. 去 Web 按 🔄 確認 Tab 3 顯示新策略")
+print(f"  5. 記得 Mac 跑：bash ~/.stock-backup/switch_strategy.sh --backup <策略名>")
