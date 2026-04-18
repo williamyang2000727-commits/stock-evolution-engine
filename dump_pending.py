@@ -85,8 +85,22 @@ for t in completed_sorted[-5:]:
 
 # 持倉
 holding = [t for t in trades if t.get("reason") == "持有中"]
+print()
+print("=" * 95)
 if holding:
-    print()
-    print(f"  持倉中 {len(holding)} 檔：")
+    print(f"  持倉中 {len(holding)} 檔（若推上 Gist，Web Tab 3 會顯示這些為當前持倉）：")
     for t in holding:
-        print(f"    {t.get('buy_date')} {t.get('ticker'):10} {t.get('name',''):7} 買{t.get('buy_price')} 現{t.get('sell_price')} {t.get('return',0):>+6.1f}% ({t.get('days',0)}天)")
+        bp = t.get("buy_price", 0)
+        sp = t.get("sell_price", 0)  # 在持倉中記錄內，sell_price 是「當下市價」
+        ret = t.get("return", 0)
+        days = t.get("days", 0)
+        peak = t.get("peak_price", 0)
+        bd = t.get("buy_date", "")
+        ticker = t.get("ticker", "")
+        name = t.get("name", "")
+        print(f"    {bd} {ticker:10} {name:7} 買 {bp:>6.2f}  現 {sp:>6.2f}  peak {peak:>6.2f}  {ret:>+6.1f}%  持 {days} 天")
+else:
+    print("  ⚠️ 無持倉中記錄 — 新策略在資料最後一天（2026-04-17）沒有手上持有的股票")
+    print("  推上 Gist 後 Web Tab 3「換股狀態」會顯示「0 持倉」")
+    print("  daily_scan 每天會自行用新策略判斷是否有買入候選")
+print("=" * 95)
