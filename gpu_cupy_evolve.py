@@ -1099,9 +1099,9 @@ def precompute(data):
     market_bull = np.ones(ml, dtype=np.float32)
     print(f"  大盤過濾：無（v1 框架）| {ml}/{ml} 天全部允許")
 
-    # 反向 Walk-Forward：test 在最舊（2022 附近）、train 在最新（近期市場）
-    # 900 天 → 60 天 warmup（最前，指標暖身）| test 280 天（舊，2022 附近）| train 560 天（新）
-    # 理由：讓策略在近期資料訓練，然後用 2022 熊市驗證 — 真正測試「跨市場穩定性」
+    # 反向 Walk-Forward：test 在最舊、train 在最新（近期市場）
+    # 動態切點：warmup 60 天（最前，指標暖身）| test = 剩下的 1/3（舊，含 2020 covid + 2022 熊市）| train = 剩下的 2/3（新）
+    # 理由：讓策略在近期資料訓練，用舊期驗證 — 真正測試「跨市場穩定性」
     test_end = 60 + (ml - 60) // 3  # test 佔 1/3
     train_start = test_end           # train 從 test 結束後開始
     train_end = ml                   # train 延伸到資料最後
@@ -1348,10 +1348,10 @@ def main():
     print(f"  波段 s_avg × 2.0 (cap 30)  avg 15%=0 / 20%=+10 / 25%=+20 / 30%=+30 ← 新")
     print(f"  輔助 s_wf×15 / s_sharpe×2 / s_pl×0.5 / s_consistency×0.03 / penalties")
     print(f"")
-    print(f"  ═══ 反向 Walk-Forward 切點（900 天資料）═══")
-    print(f"  warmup  0-60    指標暖身（2022-07 ~ 2022-10）")
-    print(f"  test   60-340   280 天舊期（2022-10 ~ 2023-12，含 2022 熊市）")
-    print(f"  train 340-900   560 天新期（2023-12 ~ 2026-04，GPU 學這裡）")
+    print(f"  ═══ 反向 Walk-Forward 切點（動態依 cache 長度）═══")
+    print(f"  warmup  0-60     指標暖身")
+    print(f"  test    舊的 1/3  舊期（含 2020 covid/2022 熊市等）")
+    print(f"  train   新的 2/3  新期（近期市場，GPU 學這裡）")
     print(f"")
     print(f"  ═══ Kernel 硬門檻（不過→score 0）═══")
     print(f"  train 筆數 30-80 | avg ≥ 8% | wr ≥ 35% | avg_hold ≥ 5 天 | MaxDD ≥ -40% ← avg 從 5% 提高")
@@ -1376,10 +1376,19 @@ def main():
         shutil.move(_pending_path, _archive)
         print(f"[GPU-CuPy] 🗑️ 舊 pending_push.json 歸檔 → {os.path.basename(_archive)}（新 session 從空 pending 開始）")
     raw = download_data()
-    # 只過濾資料太短的，保留全部股票（動態 top100 mask 在 precompute 裡算）
-    TARGET_DAYS = 900
+    # 動態選擇天數：優先 1500（6 年含 2020 covid），但至少要 500 檔才用；否則 fallback 900
+    _lens = [len(v) for v in raw.values()]
+    _n_1500 = sum(1 for l in _lens if l >= 1500)
+    _n_1200 = sum(1 for l in _lens if l >= 1200)
+    _n_900 = sum(1 for l in _lens if l >= 900)
+    if _n_1500 >= 500:
+        TARGET_DAYS = 1500  # 6 年黃金區：含 2020 covid 暴跌 + 2020-2021 bull + 2022 熊 + 2023-2025 bull
+    elif _n_1200 >= 800:
+        TARGET_DAYS = 1200  # 4.8 年備案
+    else:
+        TARGET_DAYS = 900   # 原設定
     data = {k: v.tail(TARGET_DAYS) for k, v in raw.items() if len(v) >= TARGET_DAYS}
-    print(f"[過濾] {len(raw)} → {len(data)} 檔 (固定{TARGET_DAYS}天，v1 框架無均價過濾)")
+    print(f"[過濾] {len(raw)} → {len(data)} 檔（動態選 {TARGET_DAYS} 天 | 1500-qualified {_n_1500} / 1200-q {_n_1200} / 900-q {_n_900}）")
     if len(data) < 10: print("資料不足"); return
     pre = precompute(data)
     ns, nd = pre["n_stocks"], pre["n_days"]
