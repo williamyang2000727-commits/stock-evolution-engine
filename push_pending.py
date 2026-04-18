@@ -50,6 +50,32 @@ print()
 print("⚠️ 推 Gist 會直接影響 Web 和 daily_scan（實盤交易）")
 print("=" * 50)
 
+# === Cache 飄風險警告 ===
+_cache_path = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_data_cache.pkl")
+if os.path.exists(_cache_path):
+    import pickle
+    from datetime import datetime as _dt
+    try:
+        with open(_cache_path, "rb") as _f:
+            _cache = pickle.load(_f)
+        _last_days = [df.index[-1] for df in _cache.values() if df is not None and len(df) > 0]
+        _cache_last = max(_last_days) if _last_days else None
+        _pending_updated = d.get("updated_at", "")
+        print(f"  Cache 最後日期：{_cache_last.date() if _cache_last else '?'}")
+        print(f"  Pending 生成時間：{_pending_updated}")
+        if _cache_last and _pending_updated:
+            import re
+            _m = re.match(r'(\d{4}-\d{2}-\d{2})', _pending_updated)
+            if _m:
+                _pd_date = _dt.fromisoformat(_m.group(1))
+                _gap = (_dt.now() - _pd_date).days
+                if _gap >= 3:
+                    print(f"  ⚠️ pending 已 {_gap} 天沒跑，Step 2 重跑 cpu_replay 可能會飄（筆數 ± 幾筆）")
+                    print(f"     若希望數字精準跟 Telegram 一致 → 跑 pending_to_web.py 代替 Step 2")
+    except Exception as _e:
+        pass
+print("=" * 50)
+
 ans = input("確定推到 Gist？[y/N]: ").strip().lower()
 if ans != "y":
     print("取消")
