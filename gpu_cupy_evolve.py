@@ -1576,7 +1576,7 @@ def main():
 
         rnd += 1
         params_np = np.zeros((BATCH, N_PARAMS_FULL), dtype=np.float32)
-        mutate_rate = min(0.4, 0.08 + no_improve_rounds * 0.015)  # 初期 8% 只動 ~4 個參數（精緻微調 SEED）
+        mutate_rate = min(0.5, 0.08 + no_improve_rounds * 0.02)  # 初期 8% 精緻，累加到 50% 觸發多起點爬山
         # 多起點爬山：80% 爬山（從隨機起點）+ 20% 隨機，不配種（名人堂還在重建）
         if explore_bases is not None:
             n_random = BATCH // 5
