@@ -573,7 +573,7 @@ void backtest(
                 else run_dd_all = 0;
                 if (run_dd_all < max_dd_all) max_dd_all = run_dd_all;
             }
-            if (max_dd_all >= -40.0f) all_pass = true;
+            if (max_dd_all >= -50.0f) all_pass = true;  // 1500 天含 2020 covid + 2022 熊市，-50 合理
         }
     }
     // 近期 60 天崩盤檢查：抓「train 強、test 前段強、test 後段崩」型策略
@@ -615,8 +615,8 @@ void backtest(
         }
     }
 
-    // D（train）：train 筆數 30-80 + 全期必須先過
-    if (all_pass && n_train >= 30 && n_train <= 80) {
+    // D（train）：train 筆數 30-140（適配 900/1500 天不同 cache 長度）+ 全期必須先過
+    if (all_pass && n_train >= 30 && n_train <= 140) {
         float avg_ret_tr = total_train / n_train;
         float win_rate_tr = win_train / n_train * 100.0f;
         float avg_hold_tr = 0;
@@ -647,7 +647,7 @@ void backtest(
                 if (rets_train[i] < 0) run_dd += rets_train[i]; else run_dd = 0;
                 if (run_dd < max_dd_tr) max_dd_tr = run_dd;
             }
-            if (max_dd_tr >= -40.0f) {
+            if (max_dd_tr >= -50.0f) {  // 放寬到 -50 配合 1500 天
                 int max_streak = 0, streak = 0;
                 for (int i=0; i<n_train; i++) {
                     if (rets_train[i] <= 0) { streak++; if (streak > max_streak) max_streak = streak; }
@@ -1354,13 +1354,13 @@ def main():
     print(f"  train   新的 2/3  新期（近期市場，GPU 學這裡）")
     print(f"")
     print(f"  ═══ Kernel 硬門檻（不過→score 0）═══")
-    print(f"  train 筆數 30-80 | avg ≥ 8% | wr ≥ 35% | avg_hold ≥ 5 天 | MaxDD ≥ -40% ← avg 從 5% 提高")
+    print(f"  train 筆數 30-140 | avg ≥ 8% | wr ≥ 35% | avg_hold ≥ 5 天 | MaxDD ≥ -50% ← 適配 1500 天")
     print(f"  test 筆數 ≥ 5 | total_test > 0（test 不能爆）")
     print(f"  WF ratio: test_annual ≥ train_annual × 0.4（反向 WF 下 test=2022 熊市，0.55 太嚴連 88.60 都過不了）")
     print(f"  Seg 3 段都要正報酬 | seg[2] ≥ seg[0] × 0.6（防老化）")
     print(f"")
     print(f"  ═══ Python gate（top-20 cpu_replay 驗證）═══")
-    print(f"  全期 40-140 筆 | avg ≥ 10% | avg_hold ≥ 5 | MaxDD ≥ -40% ← avg 從 3% 提高擋短線")
+    print(f"  全期 40-140 筆 | avg ≥ 10% | avg_hold ≥ 5 | MaxDD ≥ -50% ← 適配 1500 天")
     print(f"  WF ratio ≥ 0.4 | test_total > 0")
     print(f"  報酬地板: train 年化 ≥ {MIN_TRAIN_ANNUAL}%（189 × 0.6）| test 年化 ≥ {MIN_TEST_ANNUAL}%（189 × 0.6）")
     print(f"  勝率地板: train ≥ {MIN_WR_TRAIN*100:.0f}% | test ≥ {MIN_WR_TEST*100:.0f}%")
@@ -1513,13 +1513,13 @@ def main():
             print(f"  WF ratio: {_wf:.2f} (kernel 需 ≥ 0.55)")
             print(f"  近60天: {len(_rec)} 筆 avg={_rec_avg:.1f}% (kernel 需 ≥ 5%)")
             print(f"  train 3段: n={[len(s) for s in _seg]} 總{_seg_totals} avg{[round(a,1) for a in _seg_avgs]}")
-            print(f"  kernel 門檻：n_train 30-80 | avg_tr ≥ 8 | wr_tr ≥ 35 | avg_hold ≥ 5 | MaxDD ≥ -40 | WF ≥ 0.4 | 3段都正 | seg[2] ≥ seg[0]×0.6")
+            print(f"  kernel 門檻：n_train 30-140 | avg_tr ≥ 8 | wr_tr ≥ 35 | avg_hold ≥ 5 | MaxDD ≥ -50 | WF ≥ 0.4 | 3段都正 | seg[2] ≥ seg[0]×0.6")
             _fail = []
             if _n_tr < 30: _fail.append(f"n_train {_n_tr} < 30")
-            if _n_tr > 80: _fail.append(f"n_train {_n_tr} > 80")
+            if _n_tr > 140: _fail.append(f"n_train {_n_tr} > 140")
             if _avg_tr < 8: _fail.append(f"avg_tr {_avg_tr:.1f}% < 8")
             if _ah_tr < 5: _fail.append(f"avg_hold {_ah_tr:.1f} < 5")
-            if _max_dd_tr < -40: _fail.append(f"MaxDD {_max_dd_tr:.0f}% < -40")
+            if _max_dd_tr < -50: _fail.append(f"MaxDD {_max_dd_tr:.0f}% < -50")
             if _wf < 0.4 and _tr_ann > 0: _fail.append(f"WF {_wf:.2f} < 0.4")
             if _rec_avg < 5 and len(_rec) >= 3: _fail.append(f"近60天 avg {_rec_avg:.1f}% < 5")
             for _i, _s in enumerate(_seg):
@@ -1816,7 +1816,7 @@ def main():
                 if _r < 0: _crun += _r
                 else: _crun = 0
                 if _crun < _cmdd: _cmdd = _crun
-            if _cmdd < -40: _gate_fail["dd"] += 1; continue
+            if _cmdd < -50: _gate_fail["dd"] += 1; continue
             # 反向 WF：test 在前（買入日 < train_start_date）、train 在後（買入日 >= train_start_date）
             _tsd = pre["dates"][pre["train_start"]]
             _ctr = [t for t in _cmp if t.get("buy_date","") >= str(_tsd.date())]  # train = 新
