@@ -128,7 +128,7 @@ void backtest(
     const float* up_days, const float* week52_pos, const float* vol_up_days, const float* mom_accel,
     const float* params, const int n_params_per_combo,
     float* results, const int n_combos,
-    const int train_end
+    const int train_start, const int train_end
 ) {
     int idx = blockDim.x * blockIdx.x + threadIdx.x;
     if (idx >= n_combos) return;
@@ -484,21 +484,22 @@ void backtest(
         }
     }
 
-    // 分 train / test（依買入日）
+    // 分 train / test（反向 WF：test 段在前=舊，train 段在後=新）
     int n_train = 0, n_test = 0;
     float rets_train[100], rets_test[100];
     int bdays_train[100], hd_train[100];
     float total_train = 0, total_test = 0;
     float win_train = 0;
     for (int i=0; i<n_trades; i++) {
-        if (trade_bdays[i] < train_end) {
+        int bd = trade_bdays[i];
+        if (bd >= train_start && bd < train_end) {
             rets_train[n_train] = rets[i];
-            bdays_train[n_train] = trade_bdays[i];
+            bdays_train[n_train] = bd;
             hd_train[n_train] = hold_days_arr[i];
             total_train += rets[i];
             if (rets[i] > 0) win_train += 1;
             n_train++;
-        } else {
+        } else if (bd >= 60 && bd < train_start) {
             rets_test[n_test] = rets[i];
             total_test += rets[i];
             n_test++;
@@ -544,8 +545,8 @@ void backtest(
                     else streak = 0;
                 }
 
-                float train_years = (float)(train_end - 60) / 250.0f;
-                float test_years = (float)(n_days - train_end) / 250.0f;
+                float train_years = (float)(train_end - train_start) / 250.0f;
+                float test_years = (float)(train_start - 60) / 250.0f;
                 float train_annual = train_years > 0.5f ? total_train / train_years : total_train;
                 float test_annual = test_years > 0.3f ? total_test / test_years : total_test;
 
@@ -557,11 +558,11 @@ void backtest(
 
                 if (wf_pass) {
                     // 3 段一致性（train 期內部）
-                    int seg_size = (train_end - 60) / 3;
+                    int seg_size = (train_end - train_start) / 3;
                     if (seg_size < 10) seg_size = 10;
                     float seg_ret[3] = {0,0,0}; int seg_n[3] = {0,0,0};
                     for (int i=0; i<n_train; i++) {
-                        int bd_rel = bdays_train[i] - 60;
+                        int bd_rel = bdays_train[i] - train_start;
                         if (bd_rel < 0) bd_rel = 0;
                         int seg = bd_rel / seg_size;
                         if (seg > 2) seg = 2;
@@ -983,12 +984,15 @@ def precompute(data):
     market_bull = np.ones(ml, dtype=np.float32)
     print(f"  大盤過濾：無（v1 框架）| {ml}/{ml} 天全部允許")
 
-    # Walk-Forward：day 60 之後（開始交易），前 2/3 為 train，後 1/3 為 test（盲測）
-    # 900 天 → 60 天 warmup，train 560 天（2.24年），test 280 天（1.12年）
-    train_end = 60 + (ml - 60) * 2 // 3
-    print(f"  Walk-Forward 切點：day {train_end} / {ml} | train={train_end-60}天, test={ml-train_end}天")
+    # 反向 Walk-Forward：test 在最舊（2022 附近）、train 在最新（近期市場）
+    # 900 天 → 60 天 warmup（最前，指標暖身）| test 280 天（舊，2022 附近）| train 560 天（新）
+    # 理由：讓策略在近期資料訓練，然後用 2022 熊市驗證 — 真正測試「跨市場穩定性」
+    test_end = 60 + (ml - 60) // 3  # test 佔 1/3
+    train_start = test_end           # train 從 test 結束後開始
+    train_end = ml                   # train 延伸到資料最後
+    print(f"  反向 WF：warmup 0-60 | test {60}-{train_start}（{train_start-60}天，舊）| train {train_start}-{train_end}（{train_end-train_start}天，新）")
 
-    return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,"train_end":train_end,
+    return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,"train_start":train_start,"train_end":train_end,
         "close":close,"rsi":rsi,"bb_pos":bb_pos,"vol_ratio":vol_ratio,
         "macd_line":ml_arr,"macd_hist":mh,"k_val":kv.astype(np.float32),
         "d_val":dv.astype(np.float32),"is_green":ig,"gap":gp.astype(np.float32),
@@ -1526,6 +1530,7 @@ def main():
             d_up_days, d_week52, d_vol_up_days, d_mom_accel,
             d_params, np.int32(N_PARAMS_FULL),
             d_results, np.int32(BATCH),
+            np.int32(pre["train_start"]),
             np.int32(pre["train_end"])
         ))
 
@@ -1592,15 +1597,16 @@ def main():
                 else: _crun = 0
                 if _crun < _cmdd: _cmdd = _crun
             if _cmdd < -40: continue
-            _ted = pre["dates"][pre["train_end"]]
-            _ctr = [t for t in _cmp if t.get("buy_date","") < str(_ted.date())]
-            _cts = [t for t in _cmp if t.get("buy_date","") >= str(_ted.date())]
+            # 反向 WF：test 在前（買入日 < train_start_date）、train 在後（買入日 >= train_start_date）
+            _tsd = pre["dates"][pre["train_start"]]
+            _ctr = [t for t in _cmp if t.get("buy_date","") >= str(_tsd.date())]  # train = 新
+            _cts = [t for t in _cmp if t.get("buy_date","") < str(_tsd.date())]   # test = 舊
             if len(_cts) < 5: continue
             _cts_tot = sum(t.get("return",0) for t in _cts)
             _ctr_tot = sum(t.get("return",0) for t in _ctr)
             if _cts_tot <= 0: continue
-            _tr_y = (pre["train_end"]-60)/250.0
-            _ts_y = (pre["n_days"]-pre["train_end"])/250.0
+            _tr_y = (pre["train_end"] - pre["train_start"]) / 250.0
+            _ts_y = (pre["train_start"] - 60) / 250.0
             _tr_ann = _ctr_tot/_tr_y if _tr_y > 0.5 else _ctr_tot
             _ts_ann = _cts_tot/_ts_y if _ts_y > 0.3 else _cts_tot
             if _tr_ann > 0 and _ts_ann < _tr_ann * 0.7: continue  # WF gate（擋 reward hacking）
@@ -1704,13 +1710,14 @@ def main():
             try:
                 trade_details = _candidate_trades
                 _completed_td = [t for t in trade_details if t.get("reason") != "持有中"]
-                _train_end_date = pre["dates"][pre["train_end"]]
-                _train_trades = [t for t in _completed_td if t.get("buy_date","") < str(_train_end_date.date())]
-                _test_trades = [t for t in _completed_td if t.get("buy_date","") >= str(_train_end_date.date())]
+                # 反向 WF：train 在後（新），test 在前（舊）
+                _train_start_date = pre["dates"][pre["train_start"]]
+                _train_trades = [t for t in _completed_td if t.get("buy_date","") >= str(_train_start_date.date())]
+                _test_trades = [t for t in _completed_td if t.get("buy_date","") < str(_train_start_date.date())]
                 _train_total = sum(t.get("return",0) for t in _train_trades)
                 _test_total = sum(t.get("return",0) for t in _test_trades)
-                _train_years = (pre["train_end"] - 60) / 250.0
-                _test_years = (pre["n_days"] - pre["train_end"]) / 250.0
+                _train_years = (pre["train_end"] - pre["train_start"]) / 250.0
+                _test_years = (pre["train_start"] - 60) / 250.0
                 _train_ann = _train_total / _train_years if _train_years > 0.5 else _train_total
                 _test_ann = _test_total / _test_years if _test_years > 0.3 else _test_total
                 _ratio = (_test_ann / _train_ann * 100) if _train_ann > 0 else 0

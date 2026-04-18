@@ -49,14 +49,16 @@ avg = total / n
 wins = sum(1 for t in completed if t["return"] > 0)
 wr = wins/n*100
 
-# WF 分析
-train_end_date = pre["dates"][pre["train_end"]]
-train_t = [t for t in completed if t["buy_date"] < str(train_end_date.date())]
-test_t = [t for t in completed if t["buy_date"] >= str(train_end_date.date())]
+# WF 分析（反向 WF：train 在新，test 在舊）
+train_start_date = pre["dates"][pre["train_start"]]
+train_t = [t for t in completed if t["buy_date"] >= str(train_start_date.date())]
+test_t = [t for t in completed if t["buy_date"] < str(train_start_date.date())]
 train_total = sum(t["return"] for t in train_t)
 test_total = sum(t["return"] for t in test_t)
-train_ann = train_total / ((pre["train_end"]-60)/250.0) if (pre["train_end"]-60) > 125 else train_total
-test_ann = test_total / ((pre["n_days"]-pre["train_end"])/250.0) if (pre["n_days"]-pre["train_end"]) > 75 else test_total
+_tr_days = pre["train_end"] - pre["train_start"]
+_ts_days = pre["train_start"] - 60
+train_ann = train_total / (_tr_days/250.0) if _tr_days > 125 else train_total
+test_ann = test_total / (_ts_days/250.0) if _ts_days > 75 else test_total
 wf_ratio = test_ann/train_ann*100 if train_ann > 0 else 0
 
 # MaxDD
