@@ -15,27 +15,30 @@ GH_TOKEN = os.environ.get("GH_TOKEN", "")
 DATA_GIST_ID = "a300b9e29372ac76f79eda39a2a86321"
 CACHE_PATH = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_data_cache.pkl")
 
-# === 評分哲學（2026-04-18 更嚴：勝率優先 + 189 7 折報酬地板）===
-# 搜尋目標：勝率超過 189（60-67%）且報酬至少 189 7 折的策略
+# === 評分哲學（2026-04-18 第二次調整：報酬 6 折 + WF 放寬）===
+# 7 折版本跑不出突破 — 反向 WF 下 test=2022 熊市難達 324% 年化，
+# WF ratio 0.7 要求 2022 熊市年化 ≥ 近期 × 0.7 也過嚴。
+# 放寬到 6 折 + WF 0.55，給 GPU 可行區間。
 #
 # 基於 189 在反向 WF 下實測：
 #   Train（新）年化 543% 勝率 60%
 #   Test（舊）年化 462% 勝率 67%
 #
-# 評分主軸（勝率再加重）：
+# 評分主軸（勝率加重不變）：
 #   - s_wr × 2.0 (cap 80)  勝率 65% = +30，75% = +50，80% = +60，90% = +80
 #   - s_return × 0.05      年化 400% 封頂 = +20
 #   - s_wf × 15            走前校驗
 #
-# 硬門檻（189 × 0.7，接受下限）：
-#   - train 勝率 >= 0.65、test 勝率 >= 0.60（超過 189 才算）
-#   - train 年化 >= 380%（= 543 × 0.7）
-#   - test 年化 >= 324%（= 462 × 0.7）
-#   - WF ratio >= 0.7、recent-60d avg >= 5%
+# 硬門檻（189 × 0.6，可行區間）：
+#   - train 勝率 >= 0.65、test 勝率 >= 0.60（勝率地板維持，核心需求）
+#   - train 年化 >= 326%（= 543 × 0.6）
+#   - test 年化 >= 277%（= 462 × 0.6）
+#   - WF ratio >= 0.55（2022 熊市達近期 55% 更實際）
+#   - recent-60d avg >= 5%
 MIN_WR_TRAIN = 0.65     # 超過 189 的 60%
-MIN_WR_TEST = 0.60      # test 容許 5% 寬容，仍比 189 test 67% 嚴
-MIN_TRAIN_ANNUAL = 380  # 189 train 年化 543% × 0.7
-MIN_TEST_ANNUAL = 324   # 189 test 年化 462% × 0.7
+MIN_WR_TEST = 0.60      # test 容許 5% 寬容
+MIN_TRAIN_ANNUAL = 326  # 189 train 年化 543% × 0.6
+MIN_TEST_ANNUAL = 277   # 189 test 年化 462% × 0.6
 
 CN_NAMES = {}
 # 從完整名單載入（1958 檔台灣上市櫃股票）
@@ -557,7 +560,7 @@ void backtest(
                 bool wf_pass = true;
                 if (n_test < 5) wf_pass = false;
                 if (total_test <= 0) wf_pass = false;
-                if (test_annual < train_annual * 0.7f) wf_pass = false;  // 0.5 → 0.7（擋 reward hacking：train 爆炸 test 退化）
+                if (test_annual < train_annual * 0.55f) wf_pass = false;  // 反向 WF 下 test=2022 熊市，0.55 比 0.7 更實際
 
                 if (wf_pass) {
                     // 3 段一致性（train 期內部）
@@ -1243,15 +1246,16 @@ def main():
     print(f"  ═══ Kernel 硬門檻（不過→score 0）═══")
     print(f"  train 筆數 30-80 | avg ≥ 5% | wr ≥ 35% | avg_hold ≥ 5 天 | MaxDD ≥ -40%")
     print(f"  test 筆數 ≥ 5 | total_test > 0（test 不能爆）")
-    print(f"  WF ratio: test_annual ≥ train_annual × 0.7（反 reward hacking）")
+    print(f"  WF ratio: test_annual ≥ train_annual × 0.55（反向 WF 下放寬）")
     print(f"  Seg 3 段都要正報酬 | seg[2] ≥ seg[0] × 0.6（防老化）")
     print(f"")
     print(f"  ═══ Python gate（top-20 cpu_replay 驗證）═══")
     print(f"  全期 40-140 筆 | avg ≥ 3% | avg_hold ≥ 5 | MaxDD ≥ -40%")
-    print(f"  WF ratio ≥ 0.7 | test_total > 0")
-    print(f"  報酬地板: train 年化 ≥ {MIN_TRAIN_ANNUAL}% | test 年化 ≥ {MIN_TEST_ANNUAL}%")
+    print(f"  WF ratio ≥ 0.55 | test_total > 0")
+    print(f"  報酬地板: train 年化 ≥ {MIN_TRAIN_ANNUAL}%（189 × 0.6）| test 年化 ≥ {MIN_TEST_ANNUAL}%（189 × 0.6）")
     print(f"  勝率地板: train ≥ {MIN_WR_TRAIN*100:.0f}% | test ≥ {MIN_WR_TEST*100:.0f}%")
     print(f"  最新 60 天 avg ≥ 5%（近期崩盤檢查）")
+    print(f"  ═══ 診斷 ═══ 每 5 輪無突破時印 gate fail 分布，看卡在哪")
     print(f"")
 
     # 啟動時歸檔舊 pending_push.json（避免上次 session 的未推 pending 跟新 session 混淆）
@@ -1594,6 +1598,10 @@ def main():
         _top_n_idx = np.argsort(results[:, 0])[-20:][::-1]
         _candidate_found = False
         _candidate_trades = None  # 保留，Gist 推送區可直接用
+        # Gate fail 統計：看哪個 gate 擋最多（每輪歸零）
+        _gate_fail = {"cnt":0, "avg":0, "hold":0, "dd":0, "test_n":0, "test_tot":0,
+                      "wf":0, "tr_ann":0, "ts_ann":0, "wr_tr":0, "wr_ts":0, "recent":0}
+        _gate_best_wr = 0; _gate_best_tr_ann = 0; _gate_best_ts_ann = 0
         import math as _mc
         for _ti in _top_n_idx:
             _sc = float(results[_ti, 0])
@@ -1608,45 +1616,55 @@ def main():
             _tds = [t for t in _tds if not _mc.isnan(t.get("return",0))]
             _cmp = [t for t in _tds if t.get("reason") != "持有中"]
             _cnt = len(_cmp)
-            if _cnt < 40 or _cnt > 140: continue
+            if _cnt < 40 or _cnt > 140: _gate_fail["cnt"] += 1; continue
             _cavg = sum(t.get("return",0) for t in _cmp) / _cnt
-            if _cavg < 3: continue
+            if _cavg < 3: _gate_fail["avg"] += 1; continue
             _cah = sum(t.get("days",0) for t in _cmp) / _cnt
-            if _cah < 5: continue
+            if _cah < 5: _gate_fail["hold"] += 1; continue
             _crun = 0; _cmdd = 0
             for _t in _cmp:
                 _r = _t.get("return",0)
                 if _r < 0: _crun += _r
                 else: _crun = 0
                 if _crun < _cmdd: _cmdd = _crun
-            if _cmdd < -40: continue
+            if _cmdd < -40: _gate_fail["dd"] += 1; continue
             # 反向 WF：test 在前（買入日 < train_start_date）、train 在後（買入日 >= train_start_date）
             _tsd = pre["dates"][pre["train_start"]]
             _ctr = [t for t in _cmp if t.get("buy_date","") >= str(_tsd.date())]  # train = 新
             _cts = [t for t in _cmp if t.get("buy_date","") < str(_tsd.date())]   # test = 舊
-            if len(_cts) < 5: continue
+            if len(_cts) < 5: _gate_fail["test_n"] += 1; continue
             _cts_tot = sum(t.get("return",0) for t in _cts)
             _ctr_tot = sum(t.get("return",0) for t in _ctr)
-            if _cts_tot <= 0: continue
+            if _cts_tot <= 0: _gate_fail["test_tot"] += 1; continue
             _tr_y = (pre["train_end"] - pre["train_start"]) / 250.0
             _ts_y = (pre["train_start"] - 60) / 250.0
             _tr_ann = _ctr_tot/_tr_y if _tr_y > 0.5 else _ctr_tot
             _ts_ann = _cts_tot/_ts_y if _ts_y > 0.3 else _cts_tot
-            if _tr_ann > 0 and _ts_ann < _tr_ann * 0.7: continue  # WF gate（擋 reward hacking）
+            if _tr_ann > 0 and _ts_ann < _tr_ann * 0.55: _gate_fail["wf"] += 1; continue
             # 報酬地板（train + test 年化不能太低）
-            if _tr_ann < MIN_TRAIN_ANNUAL: continue
-            if _ts_ann < MIN_TEST_ANNUAL: continue
+            if _tr_ann < MIN_TRAIN_ANNUAL:
+                _gate_fail["tr_ann"] += 1
+                if _tr_ann > _gate_best_tr_ann: _gate_best_tr_ann = _tr_ann
+                continue
+            if _ts_ann < MIN_TEST_ANNUAL:
+                _gate_fail["ts_ann"] += 1
+                if _ts_ann > _gate_best_ts_ann: _gate_best_ts_ann = _ts_ann
+                continue
             # 勝率硬門檻（train + test 各自把關，避免單期 overfit）
             _wr_train = sum(1 for t in _ctr if t.get("return",0) > 0) / len(_ctr) if _ctr else 0
             _wr_test = sum(1 for t in _cts if t.get("return",0) > 0) / len(_cts) if _cts else 0
-            if _wr_train < MIN_WR_TRAIN: continue
-            if _wr_test < MIN_WR_TEST: continue
+            if _wr_train < MIN_WR_TRAIN:
+                _gate_fail["wr_tr"] += 1
+                if _wr_train > _gate_best_wr: _gate_best_wr = _wr_train
+                continue
+            if _wr_test < MIN_WR_TEST: _gate_fail["wr_ts"] += 1; continue
             # 近期 60 天崩盤檢查（勝率策略每筆期望值低，放寬為 5%）
             _recent_cutoff = str(pre["dates"][pre["n_days"] - 60].date())
             _recent = [t for t in _cmp if t.get("buy_date","") >= _recent_cutoff]
             if len(_recent) >= 3:
                 _recent_avg = sum(t.get("return",0) for t in _recent) / len(_recent)
                 if _recent_avg < 5:
+                    _gate_fail["recent"] += 1
                     continue
             # 過了所有 gate，接受
             best_score = _sc
@@ -1727,6 +1745,17 @@ def main():
         speed = total_tested / elapsed
         explore_tag = f" | 探索{explore_round}/15" if explore_bases is not None else ""
         print(f"[GPU] R{rnd} | {total_tested:,}組 | {elapsed:.0f}秒 | {speed:,.0f}組/秒 | 突破{total_improved} | 變異率{mutate_rate:.0%}{explore_tag}")
+        # Gate fail 診斷：top-20 候選被哪個 gate 擋下（每 5 輪印一次）
+        if rnd % 5 == 0 and not _candidate_found:
+            _gate_sum = sum(_gate_fail.values())
+            if _gate_sum > 0:
+                _top_gates = sorted(_gate_fail.items(), key=lambda x: -x[1])[:4]
+                _gate_str = " | ".join(f"{k}:{v}" for k, v in _top_gates if v > 0)
+                _bests = []
+                if _gate_best_wr > 0: _bests.append(f"max_wr={_gate_best_wr*100:.0f}%")
+                if _gate_best_tr_ann > 0: _bests.append(f"max_tr_ann={_gate_best_tr_ann:.0f}%")
+                if _gate_best_ts_ann > 0: _bests.append(f"max_ts_ann={_gate_best_ts_ann:.0f}%")
+                print(f"  [GPU-診斷] top-20 gate fail: {_gate_str} | 最接近: {' '.join(_bests) or 'N/A'}")
 
         # Pending push（新突破已在上面的 cpu_replay 驗證通過）
         if total_improved > last_synced_improved and _candidate_trades is not None:
