@@ -72,8 +72,59 @@ try:
 except:
     TW_TICKERS = ["2330.TW","2454.TW","2317.TW","2303.TW","2382.TW","3231.TW"]
 
-def download_data(force=False):
-    if not force and os.path.exists(CACHE_PATH):
+def append_new_days(cache_path):
+    """只 append 從 cache 最後一天到今天的新資料；舊資料一個 byte 都不動。
+    回傳 (data_dict, n_tickers_updated)。舊 cache 不存在會回 (None, 0)。
+    """
+    import pandas as pd
+    if not os.path.exists(cache_path):
+        return None, 0
+    with open(cache_path, "rb") as f:
+        cache = pickle.load(f)
+    today = pd.Timestamp.now(tz="Asia/Taipei").normalize()
+    updated = 0
+    fail = 0
+    for ticker, df in cache.items():
+        if df is None or len(df) == 0: continue
+        try:
+            last = df.index[-1]
+            if last.tz is None:
+                # cache 舊資料可能無 tz，當台北時區處理
+                last = last.tz_localize("Asia/Taipei")
+            else:
+                last = last.tz_convert("Asia/Taipei")
+            if last.normalize() >= today:
+                continue  # 已有今天，不動
+            start = (last + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            end = (today + pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+            new = yf.Ticker(ticker).history(start=start, end=end, auto_adjust=True)
+            if new is None or len(new) == 0:
+                continue  # 停牌/假日/下市 — 跳過，舊 cache 不動
+            # 確保時區一致再 concat（避免 pd.concat 時 index 衝突）
+            if new.index.tz is None:
+                new.index = new.index.tz_localize("Asia/Taipei")
+            else:
+                new.index = new.index.tz_convert("Asia/Taipei")
+            if df.index.tz is None:
+                df.index = df.index.tz_localize("Asia/Taipei")
+            else:
+                df.index = df.index.tz_convert("Asia/Taipei")
+            cache[ticker] = pd.concat([df, new])
+            updated += 1
+        except Exception:
+            fail += 1
+            continue
+    # 原子寫回（temp → rename，避免中斷損壞）
+    if updated > 0:
+        tmp = cache_path + ".tmp"
+        with open(tmp, "wb") as f:
+            pickle.dump(cache, f)
+        os.replace(tmp, cache_path)
+    return cache, updated
+
+
+def download_data():
+    if os.path.exists(CACHE_PATH):
         age = (time.time() - os.path.getmtime(CACHE_PATH)) / 3600
         if age < 720:
             try:
@@ -1358,14 +1409,17 @@ def main():
     last_data_date = time.strftime("%Y-%m-%d")
 
     while True:
-        # 每天自動刷新資料（偵測到日期變了就重下載，不用重啟）
+        # 每天自動刷新資料 — 增量 append 新的一天，舊資料完全不動
         today_str = time.strftime("%Y-%m-%d")
         if today_str != last_data_date:
-            print(f"\n[GPU] 🔄 新的一天（{today_str}），強制重下載最新資料...")
+            print(f"\n[GPU] 🔄 新的一天（{today_str}），增量抓新資料（舊 cache 不動）...")
             try:
-                # force=True 跳過 720h TTL 檢查，真的重下載到今天
-                # （舊版用 os.utime(CACHE_PATH, None) 會把 mtime 設到 now → age=0 → 讀 cache 不下載，是 bug）
-                raw = download_data(force=True)
+                raw, _n_updated = append_new_days(CACHE_PATH)
+                if raw is None or _n_updated == 0:
+                    print(f"[GPU] 沒新資料可加（可能假日/無交易），沿用舊 cache")
+                    raw = download_data()
+                else:
+                    print(f"[GPU] {_n_updated} 檔 cache 已 append 新資料 — 舊部分 0 變動")
                 data = {k:v for k,v in raw.items() if len(v) >= 900}
                 print(f"[GPU] 刷新完成：{len(data)} 檔（>=900天，v1 框架）")
                 pre = precompute(data)
