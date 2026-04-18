@@ -24,9 +24,10 @@ CACHE_PATH = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_dat
 #   Train（新）年化 543% 勝率 60%
 #   Test（舊）年化 462% 勝率 67%
 #
-# 評分主軸（勝率加重不變）：
+# 評分主軸（勝率加重 + 波段獎勵）：
 #   - s_wr × 2.0 (cap 80)  勝率 65% = +30，75% = +50，80% = +60，90% = +80
 #   - s_return × 0.05      年化 400% 封頂 = +20
+#   - s_avg × 2.0 (cap 30) 單筆 avg 15%=0 / 20%=+10 / 25%=+20 / 30%=+30（獎勵吃波段）
 #   - s_wf × 15            走前校驗
 #
 # 硬門檻（189 × 0.6，可行區間）：
@@ -622,7 +623,7 @@ void backtest(
         for (int i=0; i<n_train; i++) avg_hold_tr += (float)hd_train[i];
         avg_hold_tr /= n_train;
 
-        if (avg_ret_tr >= 5 && win_rate_tr >= 35 && avg_hold_tr >= 5.0f) {
+        if (avg_ret_tr >= 10 && win_rate_tr >= 35 && avg_hold_tr >= 5.0f) {
             // Sharpe（train）
             float sum_sq = 0;
             for (int i=0; i<n_train; i++) { float d = rets_train[i] - avg_ret_tr; sum_sq += d*d; }
@@ -712,6 +713,12 @@ void backtest(
                         float s_return = capped_annual * 0.05f;
                         if (s_return < 0) s_return = 0;
 
+                        // 獎勵波段型高單筆報酬（avg 每多 1% = +2 分，cap 30）
+                        // 15%=0, 20%=+10, 25%=+20, 30%=+30 — 讓「勝率高+讓贏家跑」策略有機會贏
+                        float s_avg = (avg_ret_tr - 15.0f) * 2.0f;
+                        if (s_avg < 0) s_avg = 0;
+                        if (s_avg > 30.0f) s_avg = 30.0f;
+
                         // 輔助評分（權重都降低，讓 s_wr 主導）
                         float s_sharpe = sharpe_tr * 2.0f; if (s_sharpe > 10) s_sharpe = 10;
                         float s_pl = pl_ratio * 0.5f; if (s_pl > 5) s_pl = 5;
@@ -725,7 +732,7 @@ void backtest(
                         if (wf_ratio > 1.2f) wf_ratio = 1.2f;
                         float s_wf = wf_ratio * 15.0f;
 
-                        score = s_wr + s_return + s_sharpe + s_pl + s_consistency + s_wf - s_streak - s_dd - s_hold_pen;
+                        score = s_wr + s_return + s_avg + s_sharpe + s_pl + s_consistency + s_wf - s_streak - s_dd - s_hold_pen;
                     }
                 }
             }
@@ -1333,11 +1340,12 @@ def cpu_replay(pre, p):
 
 def main():
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
-    print(f"[GPU-CuPy] 🎯 勝率優先 + 反向 Walk-Forward")
+    print(f"[GPU-CuPy] 🎯 勝率優先 + 波段獎勵 + 反向 Walk-Forward（融合 189+88.60 優點）")
     print(f"")
-    print(f"  ═══ Scoring（勝率再加重）═══")
+    print(f"  ═══ Scoring（勝率主軸 + 波段副軸）═══")
     print(f"  主軸 s_wr × 2.0 (cap 80)  勝率 65%=+30 / 75%=+50 / 80%=+60 / 90%=+80")
     print(f"  報酬 s_return × 0.05 (cap 20)  年化 400% 封頂（不會反客為主）")
+    print(f"  波段 s_avg × 2.0 (cap 30)  avg 15%=0 / 20%=+10 / 25%=+20 / 30%=+30 ← 新")
     print(f"  輔助 s_wf×15 / s_sharpe×2 / s_pl×0.5 / s_consistency×0.03 / penalties")
     print(f"")
     print(f"  ═══ 反向 Walk-Forward 切點（900 天資料）═══")
@@ -1346,13 +1354,13 @@ def main():
     print(f"  train 340-900   560 天新期（2023-12 ~ 2026-04，GPU 學這裡）")
     print(f"")
     print(f"  ═══ Kernel 硬門檻（不過→score 0）═══")
-    print(f"  train 筆數 30-80 | avg ≥ 5% | wr ≥ 35% | avg_hold ≥ 5 天 | MaxDD ≥ -40%")
+    print(f"  train 筆數 30-80 | avg ≥ 10% | wr ≥ 35% | avg_hold ≥ 5 天 | MaxDD ≥ -40% ← avg 從 5% 提高")
     print(f"  test 筆數 ≥ 5 | total_test > 0（test 不能爆）")
     print(f"  WF ratio: test_annual ≥ train_annual × 0.55（反向 WF 下放寬）")
     print(f"  Seg 3 段都要正報酬 | seg[2] ≥ seg[0] × 0.6（防老化）")
     print(f"")
     print(f"  ═══ Python gate（top-20 cpu_replay 驗證）═══")
-    print(f"  全期 40-140 筆 | avg ≥ 3% | avg_hold ≥ 5 | MaxDD ≥ -40%")
+    print(f"  全期 40-140 筆 | avg ≥ 10% | avg_hold ≥ 5 | MaxDD ≥ -40% ← avg 從 3% 提高擋短線")
     print(f"  WF ratio ≥ 0.55 | test_total > 0")
     print(f"  報酬地板: train 年化 ≥ {MIN_TRAIN_ANNUAL}%（189 × 0.6）| test 年化 ≥ {MIN_TEST_ANNUAL}%（189 × 0.6）")
     print(f"  勝率地板: train ≥ {MIN_WR_TRAIN*100:.0f}% | test ≥ {MIN_WR_TEST*100:.0f}%")
@@ -1722,7 +1730,7 @@ def main():
             _cnt = len(_cmp)
             if _cnt < 40 or _cnt > 140: _gate_fail["cnt"] += 1; continue
             _cavg = sum(t.get("return",0) for t in _cmp) / _cnt
-            if _cavg < 3: _gate_fail["avg"] += 1; continue
+            if _cavg < 10: _gate_fail["avg"] += 1; continue
             _cah = sum(t.get("days",0) for t in _cmp) / _cnt
             if _cah < 5: _gate_fail["hold"] += 1; continue
             _crun = 0; _cmdd = 0
