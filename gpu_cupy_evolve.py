@@ -623,7 +623,7 @@ void backtest(
         for (int i=0; i<n_train; i++) avg_hold_tr += (float)hd_train[i];
         avg_hold_tr /= n_train;
 
-        if (avg_ret_tr >= 10 && win_rate_tr >= 35 && avg_hold_tr >= 5.0f) {
+        if (avg_ret_tr >= 8 && win_rate_tr >= 35 && avg_hold_tr >= 5.0f) {
             // Sharpe（train）
             float sum_sq = 0;
             for (int i=0; i<n_train; i++) { float d = rets_train[i] - avg_ret_tr; sum_sq += d*d; }
@@ -1354,7 +1354,7 @@ def main():
     print(f"  train 340-900   560 天新期（2023-12 ~ 2026-04，GPU 學這裡）")
     print(f"")
     print(f"  ═══ Kernel 硬門檻（不過→score 0）═══")
-    print(f"  train 筆數 30-80 | avg ≥ 10% | wr ≥ 35% | avg_hold ≥ 5 天 | MaxDD ≥ -40% ← avg 從 5% 提高")
+    print(f"  train 筆數 30-80 | avg ≥ 8% | wr ≥ 35% | avg_hold ≥ 5 天 | MaxDD ≥ -40% ← avg 從 5% 提高")
     print(f"  test 筆數 ≥ 5 | total_test > 0（test 不能爆）")
     print(f"  WF ratio: test_annual ≥ train_annual × 0.55（反向 WF 下放寬）")
     print(f"  Seg 3 段都要正報酬 | seg[2] ≥ seg[0] × 0.6（防老化）")
@@ -1690,7 +1690,10 @@ def main():
                 total_improved += 1
                 print(f"  [GPU] 🌱 SEED baseline：{_seed_score:.1f} | {_seed_nt}筆 | 總{_seed_total:.0f}%（新公式下 Gist 策略分數，要超過它才算進步）")
             else:
-                print(f"  [GPU] ⚠️ SEED 策略新公式下分數無效（{_seed_score:.1f}，{_seed_nt}筆）— 可能門檻變嚴，GPU 從零找")
+                # SEED 過不了 kernel gate → 設 70 地板避免 GPU 推低分策略刷爆 Telegram
+                best_score = 70.0
+                print(f"  [GPU] ⚠️ SEED 策略新公式下分數無效（{_seed_score:.1f}，{_seed_nt}筆）— kernel gate 擋掉")
+                print(f"  [GPU] 🛡️ 設 best_score=70 當地板（避免推低分策略），新突破要 >70 才通知")
 
         # 收集這批裡分數 > 0 的前 5 名加入名人堂（不用破紀錄也能入）
         top_indices = np.argsort(results[:, 0])[-5:][::-1]
