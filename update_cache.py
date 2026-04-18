@@ -54,15 +54,24 @@ print()
 print("=== 更新後 ===")
 dump_summary("最後一天分布", cache)
 
-# 驗證舊資料未變
+# 驗證舊資料未變（兩邊都剝 tz 再比對，避免 tz-aware vs naive 衝突）
 print()
 print("=== 舊資料未變驗證（樣本）===")
 for t in sample_tickers:
-    old_df = sample_before[t]
-    new_df = cache[t]
-    # 舊 DataFrame 的每一天應該都還在
-    old_last = old_df.index[-1]
-    new_has_old = new_df.loc[:old_last]
-    match = len(old_df) == len(new_has_old) and (old_df["Close"].values == new_has_old["Close"].values).all()
+    old_df = sample_before[t].copy()
+    new_df = cache[t].copy()
+    # 統一 naive
+    if old_df.index.tz is not None:
+        old_df.index = old_df.index.tz_localize(None)
+    if new_df.index.tz is not None:
+        new_df.index = new_df.index.tz_localize(None)
+    # 取新 cache 裡對應舊長度的前 N 列（舊資料應該原封不動在最前面）
+    new_head = new_df.iloc[:len(old_df)]
+    # 比對 Close 值（最敏感指標）
+    match = (
+        len(old_df) == len(new_head)
+        and (old_df.index.values == new_head.index.values).all()
+        and (old_df["Close"].values == new_head["Close"].values).all()
+    )
     added = len(new_df) - len(old_df)
     print(f"  {t}: 舊 {len(old_df)} 天 {'✅ 完全一致' if match else '❌ 被動到了!'}, 新增 {added} 天")
