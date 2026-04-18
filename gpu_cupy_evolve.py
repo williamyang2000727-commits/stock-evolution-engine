@@ -72,8 +72,8 @@ try:
 except:
     TW_TICKERS = ["2330.TW","2454.TW","2317.TW","2303.TW","2382.TW","3231.TW"]
 
-def download_data():
-    if os.path.exists(CACHE_PATH):
+def download_data(force=False):
+    if not force and os.path.exists(CACHE_PATH):
         age = (time.time() - os.path.getmtime(CACHE_PATH)) / 3600
         if age < 720:
             try:
@@ -1361,12 +1361,11 @@ def main():
         # 每天自動刷新資料（偵測到日期變了就重下載，不用重啟）
         today_str = time.strftime("%Y-%m-%d")
         if today_str != last_data_date:
-            print(f"\n[GPU] 🔄 新的一天（{today_str}），自動刷新資料...")
+            print(f"\n[GPU] 🔄 新的一天（{today_str}），強制重下載最新資料...")
             try:
-                # 不刪快取！用時間戳更新讓 yfinance 增量更新
-                if os.path.exists(CACHE_PATH):
-                    os.utime(CACHE_PATH, None)
-                raw = download_data()
+                # force=True 跳過 720h TTL 檢查，真的重下載到今天
+                # （舊版用 os.utime(CACHE_PATH, None) 會把 mtime 設到 now → age=0 → 讀 cache 不下載，是 bug）
+                raw = download_data(force=True)
                 data = {k:v for k,v in raw.items() if len(v) >= 900}
                 print(f"[GPU] 刷新完成：{len(data)} 檔（>=900天，v1 框架）")
                 pre = precompute(data)
