@@ -63,5 +63,7 @@ req = urllib.request.Request(
 )
 r = urllib.request.urlopen(req, timeout=30)
 print(f"✅ 推送成功：{r.status}")
-os.rename(PENDING, PENDING + ".pushed")
+dst = PENDING + ".pushed"
+# Windows os.rename 不覆蓋既有檔案 → 用 os.replace（跨平台支援覆蓋）
+os.replace(PENDING, dst)
 print(f"pending_push.json → pending_push.json.pushed")
