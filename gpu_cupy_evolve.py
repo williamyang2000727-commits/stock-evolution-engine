@@ -808,14 +808,14 @@ PARAMS_SPACE = {
     # ====== 評分制買入（權重 0-3 + 門檻）======
     "w_rsi": [0,1,2,3], "rsi_th": [60,63,65,68,70,72,75,80],
     "w_bb": [0,1,2,3], "bb_th": [0.7,0.75,0.8,0.85,0.9,0.95,1.0],
-    "w_vol": [0,1,2,3], "vol_th": [2.0,2.5,3.0,3.5,4.0,5.0,6.0],
+    "w_vol": [0], "vol_th": [3.0],  # LOCKED: top100 already ensures high vol, GPU never picks >0
     "w_ma": [0,1,2,3],
     "w_macd": [0,1,2,3], "macd_mode": [0,1,2],
     "w_kd": [0,1,2,3], "kd_th": [60,65,70,75,80,85], "kd_cross": [0,1],
     "w_wr": [0,1,2,3], "wr_th": [-25,-30,-35,-40,-50],
     "w_mom": [0,1,2,3], "mom_th": [5,8,10,12,15,20,25],  # 擴大：更嚴動量要求（過濾弱訊號）
     "w_near_high": [0,1,2], "near_high_pct": [3,5,10],
-    "w_squeeze": [0,1,2,3], "w_new_high": [0,1,2,3],
+    "w_squeeze": [0], "w_new_high": [0,1,2,3],  # LOCKED: squeeze never picked by 189/88.60/89.90
     "w_adx": [0,1,2,3], "adx_th": [25,30,35,40],
     "consecutive_green": [0,1,2,3], "gap_up": [0,1],
     "above_ma60": [0,1], "vol_gt_yesterday": [0,1],
@@ -846,7 +846,7 @@ PARAMS_SPACE = {
     # ====== 動量反轉出場 ======
     "use_mom_exit": [0,1], "mom_exit_th": [0,1,2,3,5],
     # ====== 類股資金流向 ======
-    "w_sector_flow": [0,1,2,3], "sector_flow_topn": [1,2,3,5,8],
+    "w_sector_flow": [0], "sector_flow_topn": [3],  # LOCKED: never picked, only in cpu_replay not kernel
     # ====== 新指標（連續上漲/52週位置/連續量增/動量加速）======
     "w_up_days": [0,1,2,3], "up_days_min": [2,3,4,5,7,10],  # 擴大：連漲更多天才算強訊號
     "w_week52": [0,1,2,3], "week52_min": [0.6,0.7,0.8,0.9],
@@ -855,7 +855,7 @@ PARAMS_SPACE = {
     # 🔒 max_3d_change 跟新 universe 重複 → 禁用（只保留 0）
     "max_3d_change": [0],
     # 🎯 top1_margin 保留但精簡範圍（跟 universe 正交，實驗性保留）
-    "top1_margin": [0, 3, 5],
+    "top1_margin": [0],  # LOCKED: GPU always picks 0
     # ⚡ 快速認賠（跟 universe 正交，買錯後的控損機制，保留）
     "early_exit_days": [0, 3, 5, 7],
     "early_exit_th": [-5, -8, -10, -12],
@@ -863,7 +863,7 @@ PARAMS_SPACE = {
     "signal_persist_days": [0],
     # 🆕 賣股後強制空倉 N 天（解耦「賣」和「買」，避免時機綁架）
     # 0=不等（現況）；2/3/5/7=賣完後空 N 天才買，讓訊號自由生成而非被迫進場
-    "buy_delay_days": [0, 2, 3, 5, 7],
+    "buy_delay_days": [0],  # LOCKED: William rejected (misses good stocks)
     # ====== MFI / CMF / ATR contraction ======
     "w_mfi": [0,1,2,3], "mfi_th": [60,65,70,75,80],
     "w_cmf": [0,1,2,3], "cmf_th": [0.05, 0.10, 0.15, 0.20],
@@ -1711,7 +1711,7 @@ def main():
     d_ma60 = cp.asarray(pre["ma60"])
 
     print("[GPU] 開始進化！每批 500,000 組")
-    BATCH = 200000  # 縮小避免 Python 參數生成卡住
+    BATCH = 300000  # RTX 3060 12GB 夠用，加大 batch 攤平 kernel launch overhead
     BLOCK = 256
     N_PARAMS = len(PARAM_ORDER)
     best_score = -999999  # R1 結束後用 SEED kernel 分數覆蓋
