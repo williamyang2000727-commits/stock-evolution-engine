@@ -298,10 +298,12 @@ void backtest(
     // 快速認賠：買後 N 天內虧 threshold% 立刻砍
     int early_exit_days = (int)p[70];
     float early_exit_th = p[71];
+    // 訊號持續性：過去 N 天也必須是 top100 強勢股（對抗單日運氣）
+    int signal_persist_days = (int)p[72];
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[72];
-    int ma_slow_idx = (int)p[73];
-    int mom_idx = (int)p[74];
+    int ma_fast_idx = (int)p[73];
+    int ma_slow_idx = (int)p[74];
+    int mom_idx = (int)p[75];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -563,6 +565,21 @@ void backtest(
                         float chg = (close[d] / p3 - 1.0f) * 100.0f;
                         if (fabsf(chg) > max_3d_change) continue;  // 暴漲或暴跌，跳過
                     }
+                }
+
+                // 訊號持續性檢查（核心：對抗「單日運氣綁架」）
+                // 要求過去 N 天這支股票也都在 top100 強勢股名單內
+                // 0 = 關閉；2/3/5 = 過去 N 天持續強勢才買
+                if (signal_persist_days > 0) {
+                    bool persist_ok = true;
+                    for (int k=1; k<=signal_persist_days; k++) {
+                        if (day-k < 0) { persist_ok = false; break; }
+                        if (top100_mask[si * n_days + day-k] < 0.5f) {
+                            persist_ok = false;
+                            break;
+                        }
+                    }
+                    if (!persist_ok) continue;  // 不是連續強勢，跳過（不要被單日爆發騙）
                 }
 
                 if (sc >= buy_threshold) {
@@ -869,6 +886,10 @@ PARAMS_SPACE = {
     # ⚡ 快速認賠：買後 N 天內若虧 threshold% 立刻砍（減少錯買損失幅度）
     "early_exit_days": [0, 3, 5, 7],
     "early_exit_th": [-5, -8, -10, -12],
+    # 🔥 訊號持續性：過去 N 天也必須是 top100 強勢股（對抗「單日運氣綁架」）
+    # 0=關（只看當天，現況）
+    # 2/3/5=啟用（要求連續強勢，過濾一日爆發）
+    "signal_persist_days": [0, 2, 3, 5],
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10,15],  # 擴大：強換股門檻，買到爛股可被強股換掉
     # ====== 多持倉 ======
@@ -908,6 +929,7 @@ PARAM_ORDER = [
     "top1_margin",    # 🎯 第 1 名 vs 第 2 名分數差必須 ≥ X（0=關，2/3/5/7=啟用，過濾「矮中選長」）
     "early_exit_days", # ⚡ 買後 N 天內快速認賠視窗（0=關，3/5/7=啟用）
     "early_exit_th",   # ⚡ 買後快速認賠閾值（-5/-8/-10/-12，搭 early_exit_days 使用）
+    "signal_persist_days",  # 🔥 核心：買入要求過去 N 天都是 top100（0=關，2/3/5=啟用，對抗「單日運氣」）
 ]
 
 MA_FAST_OPTS = [3,5,10]
@@ -1328,6 +1350,7 @@ def cpu_replay(pre, p):
             held_set=set(hh for hh in hold_si if hh>=0)
             _max_3d = float(p.get("max_3d_change", 0))
             _top1_margin = float(p.get("top1_margin", 0))
+            _spd = int(p.get("signal_persist_days", 0))
             for si in range(ns):
                 if top100_mask is not None and top100_mask[si,day]<0.5: continue
                 if si in held_set: continue
@@ -1337,6 +1360,13 @@ def cpu_replay(pre, p):
                     if _p3 > 0:
                         _chg = (float(close[si, day]) / _p3 - 1.0) * 100.0
                         if abs(_chg) > _max_3d: continue
+                # 🔥 訊號持續性：過去 N 天都必須是 top100
+                if _spd > 0 and top100_mask is not None:
+                    _persist_ok = True
+                    for _k in range(1, _spd+1):
+                        if day-_k < 0: _persist_ok = False; break
+                        if top100_mask[si, day-_k] < 0.5: _persist_ok = False; break
+                    if not _persist_ok: continue
                 sc=_score_stock(si,day)
                 vr=float(vol_ratio[si,day]) if vol_ratio is not None else 0
                 if sc>=p.get("buy_threshold",5):
