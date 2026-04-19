@@ -300,10 +300,12 @@ void backtest(
     float early_exit_th = p[71];
     // 訊號持續性：過去 N 天也必須是 top100 強勢股（對抗單日運氣）
     int signal_persist_days = (int)p[72];
+    // 賣股後空倉冷卻期（解耦賣跟買）
+    int buy_delay_days = (int)p[73];
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[73];
-    int ma_slow_idx = (int)p[74];
-    int mom_idx = (int)p[75];
+    int ma_fast_idx = (int)p[74];
+    int ma_slow_idx = (int)p[75];
+    int mom_idx = (int)p[76];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -314,6 +316,7 @@ void backtest(
     float hold_bp[3]; hold_bp[0]=0; hold_bp[1]=0; hold_bp[2]=0;
     float hold_pk[3]; hold_pk[0]=0; hold_pk[1]=0; hold_pk[2]=0;
     int hold_bd[3]; hold_bd[0]=0; hold_bd[1]=0; hold_bd[2]=0;
+    int last_sell_day[3] = {-99999, -99999, -99999};  // 每個 slot 上次賣出日（-99999 = 從未賣，初次可買）
     int n_holding = 0, n_trades = 0;
     float total_ret = 0, win_count = 0, wasted_count = 0;
     float rets[200];
@@ -378,6 +381,7 @@ void backtest(
                 if (actual_ret < 10) wasted_count += 1;
                 n_trades++;
                 hold_si[h] = -1;
+                last_sell_day[h] = day + 1;  // 記錄賣出日（for buy_delay cooldown）
                 n_holding--;
             }
         }
@@ -598,6 +602,8 @@ void backtest(
             }
             if (buy_ok) for (int h = 0; h < max_pos; h++) {
                 if (hold_si[h] < 0) {
+                    // buy_delay_days 冷卻期檢查：這個 slot 賣出後是否已等夠天數
+                    if (buy_delay_days > 0 && (day - last_sell_day[h]) < buy_delay_days) continue;
                     hold_si[h] = best_si;
                     hold_bp[h] = close[best_si * n_days + day + 1];  // 買入 D+1 收盤
                     hold_pk[h] = hold_bp[h];
@@ -888,6 +894,9 @@ PARAMS_SPACE = {
     "early_exit_th": [-5, -8, -10, -12],
     # 🔥 signal_persist_days 完全跟 universe 重複 → 禁用（只保留 0）
     "signal_persist_days": [0],
+    # 🆕 賣股後強制空倉 N 天（解耦「賣」和「買」，避免時機綁架）
+    # 0=不等（現況）；2/3/5/7=賣完後空 N 天才買，讓訊號自由生成而非被迫進場
+    "buy_delay_days": [0, 2, 3, 5, 7],
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10,15],  # 擴大：強換股門檻，買到爛股可被強股換掉
     # ====== 多持倉 ======
@@ -928,6 +937,7 @@ PARAM_ORDER = [
     "early_exit_days", # ⚡ 買後 N 天內快速認賠視窗（0=關，3/5/7=啟用）
     "early_exit_th",   # ⚡ 買後快速認賠閾值（-5/-8/-10/-12，搭 early_exit_days 使用）
     "signal_persist_days",  # 🔥 核心：買入要求過去 N 天都是 top100（0=關，2/3/5=啟用，對抗「單日運氣」）
+    "buy_delay_days",  # 🆕 賣股後強制空倉 N 天，解耦賣跟買（0=關，2/3/5/7=啟用）
 ]
 
 MA_FAST_OPTS = [3,5,10]
@@ -1306,6 +1316,8 @@ def cpu_replay(pre, p):
     if max_pos<1: max_pos=1
     if max_pos>3: max_pos=3
     hold_si=[-1]*3; hold_bp=[0]*3; hold_pk=[0]*3; hold_bd=[0]*3; n_holding=0; trades=[]
+    last_sell_day=[-99999]*3  # buy_delay 冷卻用
+    _buy_delay_days = int(p.get("buy_delay_days", 0))
     for day in range(60, nd-1):
         # Phase 1: 賣出（D+1 開盤價）
         for h in range(max_pos):
@@ -1358,6 +1370,7 @@ def cpu_replay(pre, p):
                     "buy_price":round(hold_bp[h],2),"sell_price":round(sell_price,2),
                     "return":round(actual_ret,2),"days":actual_days,"reason":REASON_NAMES[min(reason,len(REASON_NAMES)-1)]})
                 hold_si[h]=-1; n_holding-=1
+                last_sell_day[h] = day + 1  # 記錄賣出日 for buy_delay cooldown
         # Phase 1.5: 換股 — 持倉滿且有更強候選，賣弱換強
         um=int(p.get("upgrade_margin",0))
         if um>0 and n_holding>=max_pos and day+1<nd:
@@ -1508,6 +1521,8 @@ def cpu_replay(pre, p):
             if best_si>=0:
                 for h in range(max_pos):
                     if hold_si[h]<0:
+                        # buy_delay cooldown check
+                        if _buy_delay_days > 0 and (day - last_sell_day[h]) < _buy_delay_days: continue
                         hold_si[h]=best_si; hold_bp[h]=float(close[best_si,day+1])
                         hold_pk[h]=hold_bp[h]; hold_bd[h]=day+1; n_holding+=1; break
         # Phase 3 已移除（第三檔回測表現不佳）
