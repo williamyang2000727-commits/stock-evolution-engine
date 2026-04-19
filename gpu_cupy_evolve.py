@@ -316,7 +316,6 @@ void backtest(
     float hold_bp[3]; hold_bp[0]=0; hold_bp[1]=0; hold_bp[2]=0;
     float hold_pk[3]; hold_pk[0]=0; hold_pk[1]=0; hold_pk[2]=0;
     int hold_bd[3]; hold_bd[0]=0; hold_bd[1]=0; hold_bd[2]=0;
-    int last_sell_day[3] = {-99999, -99999, -99999};  // 每個 slot 上次賣出日（-99999 = 從未賣，初次可買）
     int n_holding = 0, n_trades = 0;
     float total_ret = 0, win_count = 0, wasted_count = 0;
     float rets[200];
@@ -338,9 +337,7 @@ void backtest(
             float effective_stop = stop_loss;
             if (use_breakeven == 1 && (hold_pk[h] / hold_bp[h] - 1.0f) * 100.0f >= breakeven_trigger)
                 effective_stop = 0;
-            // 快速認賠：買後 N 天內若虧 threshold% 立刻砍（錯股虧損控制在小範圍）
-            if (early_exit_days > 0 && dh <= early_exit_days && ret <= early_exit_th) sell = true;
-            if (!sell && ret <= effective_stop) sell = true;
+            if (ret <= effective_stop) sell = true;
             if (!sell && use_tp == 1 && ret >= take_profit) sell = true;
             if (!sell && trailing_stop > 0 && hold_pk[h] > hold_bp[h]) {
                 if ((cur / hold_pk[h] - 1.0f) * 100.0f <= -trailing_stop) sell = true;
@@ -381,7 +378,6 @@ void backtest(
                 if (actual_ret < 10) wasted_count += 1;
                 n_trades++;
                 hold_si[h] = -1;
-                last_sell_day[h] = day + 1;  // 記錄賣出日（for buy_delay cooldown）
                 n_holding--;
             }
         }
@@ -495,11 +491,9 @@ void backtest(
         }
 
         // === Phase 2: 有空位就買一檔 ===
-        // 大盤過濾：若 market_bull[day] = 0（大盤弱），當日不進場
-        if (n_holding < max_pos && day + 1 < n_days && market_bull[day] > 0.5f) {
+        if (n_holding < max_pos && day + 1 < n_days) {
             int best_si = -1;
             float best_buy_score = 0; float best_buy_vol = 0;
-            float second_best_score = 0;  // 追蹤第 2 名分數
             for (int si = 0; si < n_stocks; si++) {
                 // 只從當天成交量前 100 名買（跟實戰一致）
                 if (top100_mask[si * n_days + day] < 0.5f) continue;
@@ -557,24 +551,12 @@ void backtest(
 
                 // max_3d_change / signal_persist 已禁用（PARAMS_SPACE=[0]），移除 check 加速
 
-                if (sc >= buy_threshold) {
-                    if (sc > best_buy_score || (sc == best_buy_score && vol_ratio[d] > best_buy_vol)) {
-                        second_best_score = best_buy_score;  // 原第 1 降為第 2
-                        best_si = si; best_buy_score = sc; best_buy_vol = vol_ratio[d];
-                    } else if (sc > second_best_score) {
-                        second_best_score = sc;
-                    }
+                if (sc >= buy_threshold && (sc > best_buy_score || (sc == best_buy_score && vol_ratio[d] > best_buy_vol))) {
+                    best_si = si; best_buy_score = sc; best_buy_vol = vol_ratio[d];
                 }
             }
-            // 相對訊號強度檢查：第 1 名 vs 第 2 名分數差必須 >= top1_margin（若 top1_margin > 0）
-            bool buy_ok = (best_si >= 0);
-            if (buy_ok && top1_margin > 0 && best_buy_score - second_best_score < top1_margin) {
-                buy_ok = false;  // 訊號不明確（矮中選長），跳過
-            }
-            if (buy_ok) for (int h = 0; h < max_pos; h++) {
+            if (best_si >= 0) for (int h = 0; h < max_pos; h++) {
                 if (hold_si[h] < 0) {
-                    // buy_delay_days 冷卻期檢查：這個 slot 賣出後是否已等夠天數
-                    if (buy_delay_days > 0 && (day - last_sell_day[h]) < buy_delay_days) continue;
                     hold_si[h] = best_si;
                     hold_bp[h] = close[best_si * n_days + day + 1];  // 買入 D+1 收盤
                     hold_pk[h] = hold_bp[h];
