@@ -2048,14 +2048,16 @@ def main():
             try:
                 trade_details = _candidate_trades
                 _completed_td = [t for t in trade_details if t.get("reason") != "持有中"]
-                # 反向 WF：train 在後（新），test 在前（舊）
-                _train_start_date = pre["dates"][pre["train_start"]]
-                _train_trades = [t for t in _completed_td if t.get("buy_date","") >= str(_train_start_date.date())]
-                _test_trades = [t for t in _completed_td if t.get("buy_date","") < str(_train_start_date.date())]
+                # train = buy_date 在 [train_start, train_end] 區間；test = 其他（支援正向/反向 WF）
+                _tr_start_str2 = str(pre["dates"][pre["train_start"]].date())
+                _tr_end_str2 = str(pre["dates"][pre["train_end"]-1].date()) if pre["train_end"] < pre["n_days"] else str(pre["dates"][-1].date())
+                _train_trades = [t for t in _completed_td if _tr_start_str2 <= t.get("buy_date","") <= _tr_end_str2]
+                _test_trades = [t for t in _completed_td if t.get("buy_date","") < _tr_start_str2 or t.get("buy_date","") > _tr_end_str2]
                 _train_total = sum(t.get("return",0) for t in _train_trades)
                 _test_total = sum(t.get("return",0) for t in _test_trades)
                 _train_years = (pre["train_end"] - pre["train_start"]) / 250.0
-                _test_years = (pre["train_start"] - 60) / 250.0
+                _test_days = (pre["n_days"] - 60) - (pre["train_end"] - pre["train_start"])
+                _test_years = _test_days / 250.0
                 _train_ann = _train_total / _train_years if _train_years > 0.5 else _train_total
                 _test_ann = _test_total / _test_years if _test_years > 0.3 else _test_total
                 _ratio = (_test_ann / _train_ann * 100) if _train_ann > 0 else 0
