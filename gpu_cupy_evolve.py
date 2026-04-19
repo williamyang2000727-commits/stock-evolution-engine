@@ -502,7 +502,8 @@ void backtest(
         }
 
         // === Phase 2: 有空位就買一檔 ===
-        if (n_holding < max_pos && day + 1 < n_days) {
+        // 大盤過濾：若 market_bull[day] = 0（大盤弱），當日不進場
+        if (n_holding < max_pos && day + 1 < n_days && market_bull[day] > 0.5f) {
             int best_si = -1;
             float best_buy_score = 0; float best_buy_vol = 0;
             float second_best_score = 0;  // 追蹤第 2 名分數
@@ -1252,9 +1253,33 @@ def precompute(data):
     mom_accel = np.zeros((n, ml), dtype=np.float32)
     mom_accel[:, 5:] = mom_d[5][:, 5:] - mom_d[5][:, :-5]
 
-    # 無大盤過濾（v1 框架：commit 672bdd8 移除，全部天數允許買入）
-    market_bull = np.ones(ml, dtype=np.float32)
-    print(f"  大盤過濾：無（v1 框架）| {ml}/{ml} 天全部允許")
+    # 大盤狀態（用所有股票 close 平均當大盤 proxy）+ market_regime_filter 模式切換
+    market_close = close.mean(axis=0)  # shape (ml,)
+    market_ma20 = np.zeros(ml, dtype=np.float32)
+    market_ma60 = np.zeros(ml, dtype=np.float32)
+    for i in range(ml):
+        if i >= 20: market_ma20[i] = market_close[max(0,i-19):i+1].mean()
+        if i >= 60: market_ma60[i] = market_close[max(0,i-59):i+1].mean()
+
+    _market_filter = os.environ.get("GPU_MARKET_FILTER", "0")
+    if _market_filter == "1":
+        # 大盤 close > MA60（大盤強勢日）
+        market_bull = (market_close > market_ma60).astype(np.float32)
+        market_bull[:60] = 1.0  # warmup 期允許
+        print(f"  大盤過濾：mode 1（close > MA60）| {int(market_bull.sum())}/{ml} 天允許買入")
+    elif _market_filter == "2":
+        # MA20 > MA60（大盤多頭趨勢）
+        market_bull = (market_ma20 > market_ma60).astype(np.float32)
+        market_bull[:60] = 1.0
+        print(f"  大盤過濾：mode 2（MA20 > MA60）| {int(market_bull.sum())}/{ml} 天允許買入")
+    elif _market_filter == "3":
+        # 兩條件同時：close > MA60 且 MA20 > MA60
+        market_bull = ((market_close > market_ma60) & (market_ma20 > market_ma60)).astype(np.float32)
+        market_bull[:60] = 1.0
+        print(f"  大盤過濾：mode 3（close > MA60 AND MA20 > MA60）| {int(market_bull.sum())}/{ml} 天允許買入")
+    else:
+        market_bull = np.ones(ml, dtype=np.float32)
+        print(f"  大盤過濾：無（v1 框架）| {ml}/{ml} 天全部允許")
 
     # Walk-Forward 模式切換（環境變數 GPU_WF_MODE）
     # - "reverse"（預設）：train 新（2023-26）/ test 舊（2020-22 含 covid）— 當前市場學 + 極端驗證
@@ -1457,7 +1482,8 @@ def cpu_replay(pre, p):
                         "return":round(actual_ret,2),"days":actual_days,"reason":"換股"})
                     hold_si[weakest_h]=-1; n_holding-=1
         # Phase 2: 買入一檔
-        if n_holding<max_pos and day+1<nd:
+        # 大盤過濾：market_bull[day] = 0 時不進場
+        if n_holding<max_pos and day+1<nd and (market_bull is None or market_bull[day] > 0.5):
             best_si=-1; best_sc=0; best_vol=0
             w_rsi=int(p.get("w_rsi",0)); w_bb=int(p.get("w_bb",0)); w_vol=int(p.get("w_vol",0))
             w_ma=int(p.get("w_ma",0)); w_macd=int(p.get("w_macd",0)); w_kd=int(p.get("w_kd",0))
