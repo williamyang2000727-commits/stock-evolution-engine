@@ -1109,6 +1109,44 @@ def precompute(data):
     ranks = np.argsort(np.argsort(-volume, axis=0), axis=0)  # 每天的排名（0=最大）
     top100_mask = (ranks < 100).astype(np.float32)
 
+    # === Universe 嚴格度控制（env var GPU_UNIVERSE）===
+    # 解決 William 關切的「單日爆量假突破污染池」問題：
+    # 預設 top100 = 每天成交量前 100（含短期爆量股）
+    # top50_p3 = 過去 3 天都在前 50（真正持續強勢，過濾一日爆發）
+    # top30_p5 = 過去 5 天都在前 30（極嚴，只從當前市場熱點選）
+    _universe = os.environ.get("GPU_UNIVERSE", "top100").lower()
+    if _universe in ("top50_p3", "top50p3", "top50-p3"):
+        strict = (ranks < 50).astype(np.float32)
+        persist = strict.copy()
+        for _k in range(1, 4):
+            shifted = np.zeros_like(strict)
+            shifted[:, _k:] = strict[:, :-_k]
+            persist *= shifted
+        top100_mask = persist
+        print(f"  🎯 Universe: top50 連續 3 天（嚴格版，過濾單日爆量）")
+    elif _universe in ("top30_p5", "top30p5", "top30-p5"):
+        strict = (ranks < 30).astype(np.float32)
+        persist = strict.copy()
+        for _k in range(1, 6):
+            shifted = np.zeros_like(strict)
+            shifted[:, _k:] = strict[:, :-_k]
+            persist *= shifted
+        top100_mask = persist
+        print(f"  🎯 Universe: top30 連續 5 天（極嚴版，只選當前熱點）")
+    elif _universe in ("top50_p5", "top50p5"):
+        strict = (ranks < 50).astype(np.float32)
+        persist = strict.copy()
+        for _k in range(1, 6):
+            shifted = np.zeros_like(strict)
+            shifted[:, _k:] = strict[:, :-_k]
+            persist *= shifted
+        top100_mask = persist
+        print(f"  🎯 Universe: top50 連續 5 天（平衡版）")
+    else:
+        print(f"  Universe: top100（預設，當天成交量前 100）")
+    _universe_sum = int(top100_mask.sum(axis=0).mean())
+    print(f"    平均每天 universe 大小：{_universe_sum} 檔")
+
     # 類股相對強度（Sector Relative Strength）
     # 舊版（成交金額 ratio）的 3 大問題：
     #   1. 大盤漲跌日全部類股都爆量 → 排名洗牌無意義
