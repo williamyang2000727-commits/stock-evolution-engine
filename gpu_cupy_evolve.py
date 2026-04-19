@@ -291,7 +291,7 @@ void backtest(
     int w_week52_k = (int)p[62]; float week52_min_k = p[63];
     int w_vol_up_days_k = (int)p[64]; float vol_up_days_min_k = p[65];
     int w_mom_accel_k = (int)p[66]; float mom_accel_min_k = p[67];
-    // 🔒 價格穩定性（過去 3 天 |close 變化| 上限，0=關）
+    // 價格穩定性（過去 3 天 |close 變化| 上限，0=關）
     float max_3d_change = p[68];
     // MA/MOM 選擇
     int ma_fast_idx = (int)p[69];
@@ -384,7 +384,7 @@ void backtest(
                     if (hold_si[h] == si) { already = true; break; }
                 }
                 if (already) continue;
-                // 🔒 換股也要檢查 3 天價格穩定（避免換到剛暴漲/暴跌的股）
+                // 換股也要檢查 3 天價格穩定（避免換到剛暴漲/暴跌的股）
                 if (max_3d_change > 0 && day >= 3) {
                     float p3 = close[si * n_days + day - 3];
                     if (p3 > 0) {
@@ -547,7 +547,7 @@ void backtest(
                 if (above_ma60 == 1 && close[d] >= ma60[d]) sc += 1.0f;
                 if (vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] > vol_prev[d]) sc += 1.0f;
 
-                // 🔒 過去 3 天價格穩定性檢查（防追高/防接假突破）
+                // 過去 3 天價格穩定性檢查（防追高/防接假突破）
                 // max_3d_change_pct = 0 關閉；> 0 時要求 |3d close change| <= 該 %
                 if (max_3d_change > 0 && day >= 3) {
                     float p3 = close[si * n_days + day - 3];
