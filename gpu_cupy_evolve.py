@@ -1567,6 +1567,19 @@ def cpu_replay(pre, p):
     return sorted(trades, key=lambda x: x["buy_date"])
 
 def main():
+    # === 動態調整 PARAMS_SPACE（env var 控制，對抗 89.90 的「早保本」弱點）===
+    if os.environ.get("GPU_NO_BREAKEVEN") == "1":
+        PARAMS_SPACE["use_breakeven"] = [0]  # 強制禁用保本機制
+        print("  [Mode] 🚫 保本機制禁用（強迫探索純 trailing + stop_loss 策略）")
+    _be_min = int(os.environ.get("GPU_BREAKEVEN_MIN", "0"))
+    if _be_min > 10:
+        PARAMS_SPACE["breakeven_trigger"] = [v for v in PARAMS_SPACE["breakeven_trigger"] if v >= _be_min]
+        print(f"  [Mode] ⚠️  breakeven_trigger ≥ {_be_min}（禁 trigger=10，讓波段跑）")
+    if os.environ.get("GPU_HIGH_PROFIT") == "1":
+        PARAMS_SPACE["take_profit"] = [80, 100, 150]  # 強制高停利
+        PARAMS_SPACE["trailing_stop"] = [15, 20, 25]  # 強制寬 trailing
+        print(f"  [Mode] 🎯 強迫吃大波段（停利 80+, trailing 15+）")
+
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     print(f"[GPU-CuPy] 🎯 勝率優先 + 波段獎勵 + 反向 Walk-Forward（融合 189+88.60 優點）")
     print(f"")
