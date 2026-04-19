@@ -397,14 +397,7 @@ void backtest(
                     if (hold_si[h] == si) { already = true; break; }
                 }
                 if (already) continue;
-                // 換股也要檢查 3 天價格穩定（避免換到剛暴漲/暴跌的股）
-                if (max_3d_change > 0 && day >= 3) {
-                    float p3 = close[si * n_days + day - 3];
-                    if (p3 > 0) {
-                        float chg = (close[si * n_days + day] / p3 - 1.0f) * 100.0f;
-                        if (fabsf(chg) > max_3d_change) continue;
-                    }
-                }
+                // max_3d_change 已禁用，移除 check
                 int d = si * n_days + day;
                 float sc = 0.0f;
                 if (w_rsi > 0 && rsi[d] >= rsi_th) sc += w_rsi;
@@ -562,30 +555,7 @@ void backtest(
                 if (above_ma60 == 1 && close[d] >= ma60[d]) sc += 1.0f;
                 if (vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] > vol_prev[d]) sc += 1.0f;
 
-                // 過去 3 天價格穩定性檢查（防追高/防接假突破）
-                // max_3d_change_pct = 0 關閉；> 0 時要求 |3d close change| <= 該 %
-                if (max_3d_change > 0 && day >= 3) {
-                    float p3 = close[si * n_days + day - 3];
-                    if (p3 > 0) {
-                        float chg = (close[d] / p3 - 1.0f) * 100.0f;
-                        if (fabsf(chg) > max_3d_change) continue;  // 暴漲或暴跌，跳過
-                    }
-                }
-
-                // 訊號持續性檢查（核心：對抗「單日運氣綁架」）
-                // 要求過去 N 天這支股票也都在 top100 強勢股名單內
-                // 0 = 關閉；2/3/5 = 過去 N 天持續強勢才買
-                if (signal_persist_days > 0) {
-                    bool persist_ok = true;
-                    for (int k=1; k<=signal_persist_days; k++) {
-                        if (day-k < 0) { persist_ok = false; break; }
-                        if (top100_mask[si * n_days + day-k] < 0.5f) {
-                            persist_ok = false;
-                            break;
-                        }
-                    }
-                    if (!persist_ok) continue;  // 不是連續強勢，跳過（不要被單日爆發騙）
-                }
+                // max_3d_change / signal_persist 已禁用（PARAMS_SPACE=[0]），移除 check 加速
 
                 if (sc >= buy_threshold) {
                     if (sc > best_buy_score || (sc == best_buy_score && vol_ratio[d] > best_buy_vol)) {
