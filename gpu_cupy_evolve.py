@@ -2034,10 +2034,13 @@ def main():
                 total_improved += 1
                 print(f"  [GPU] 🌱 SEED baseline：{_seed_score:.1f} | {_seed_nt}筆 | 總{_seed_total:.0f}%（新公式下 Gist 策略分數，要超過它才算進步）")
             else:
-                # SEED 過不了 kernel gate → 設 60 地板（1500 天下更多 robust 策略空間）
-                best_score = 60.0
-                print(f"  [GPU] ⚠️ SEED 策略新公式下分數無效（{_seed_score:.1f}，{_seed_nt}筆）— kernel gate 擋掉")
-                print(f"  [GPU] 🛡️ 設 best_score=60 當地板（1500 天下勝率 60% + avg 15% 剛好過），新突破要 >60 才通知")
+                # SEED 無效可能原因：
+                # (1) 真的過不了（strict mode 下 89.90 被 remap 到不合格位置）
+                # (2) Kernel vs cpu_replay 邏輯分歧（Python 全過但 kernel 不認，memory 記錄過）
+                # 地板設 85 當「近 89.90 水準」baseline，避免 GPU 推一堆 60-80 分的爛策略
+                best_score = 85.0
+                print(f"  [GPU] ⚠️ SEED kernel 分數無效（{_seed_score:.1f}，{_seed_nt}筆）— 可能 kernel/cpu_replay 分歧")
+                print(f"  [GPU] 🛡️ 設 best_score=85 當地板（接近 89.90 水準），新突破要 >85 才通知")
 
         # 收集這批裡分數 > 0 的前 5 名加入名人堂（不用破紀錄也能入）
         top_indices = np.argsort(results[:, 0])[-5:][::-1]
