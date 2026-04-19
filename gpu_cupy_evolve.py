@@ -791,7 +791,7 @@ PARAMS_SPACE = {
     "w_adx": [0,1,2,3], "adx_th": [25,30,35,40],
     "consecutive_green": [0,1,2,3], "gap_up": [0,1],
     "above_ma60": [0,1], "vol_gt_yesterday": [0,1],
-    "buy_threshold": [6,8,10,12,14,16],
+    "buy_threshold": [6,8,10,12,14,16,18,20,22],  # 擴大：高門檻 = 超嚴選（減少運氣依賴）
     # ====== 賣出（全自由探索，靠 120 筆上限 + 品質門檻 + 同資料比較防刷分）======
     "stop_loss": [-5,-7,-10,-12,-15,-20],  # 移除 -3（實盤滑價吃不住，GPU 鑽 Sharpe 公式漏洞）
     "use_take_profit": [0,1], "take_profit": [20,30,40,50,60,80,100,150],
@@ -825,7 +825,7 @@ PARAMS_SPACE = {
     "w_vol_up_days": [0,1,2], "vol_up_days_min": [2,3,4],
     "w_mom_accel": [0,1,2], "mom_accel_min": [0,2,5,8],
     # ====== 換股（賣弱換強）======
-    "upgrade_margin": [0,3,5,7,10],
+    "upgrade_margin": [0,3,5,7,10,15],  # 擴大：強換股門檻，買到爛股可被強股換掉
     # ====== 多持倉 ======
     "max_positions": [2],  # 鎖定 2 檔（v1 框架，memory 寫過 3 檔資金效率差不可破）
 }
