@@ -593,7 +593,7 @@ void backtest(
         }
     }
 
-    // 分 train / test（反向 WF：test 段在前=舊，train 段在後=新）
+    // 分 train / test（train 區間外 + 過 warmup 就是 test，支援正向/反向 WF）
     int n_train = 0, n_test = 0;
     float rets_train[200], rets_test[200];
     int bdays_train[200], hd_train[200];
@@ -601,6 +601,7 @@ void backtest(
     float win_train = 0;
     for (int i=0; i<n_trades; i++) {
         int bd = trade_bdays[i];
+        if (bd < 60) continue;  // warmup 期不算
         if (bd >= train_start && bd < train_end) {
             rets_train[n_train] = rets[i];
             bdays_train[n_train] = bd;
@@ -608,7 +609,7 @@ void backtest(
             total_train += rets[i];
             if (rets[i] > 0) win_train += 1;
             n_train++;
-        } else if (bd >= 60 && bd < train_start) {
+        } else {
             rets_test[n_test] = rets[i];
             total_test += rets[i];
             n_test++;
@@ -1126,13 +1127,23 @@ def precompute(data):
     market_bull = np.ones(ml, dtype=np.float32)
     print(f"  大盤過濾：無（v1 框架）| {ml}/{ml} 天全部允許")
 
-    # 反向 Walk-Forward：test 在最舊、train 在最新（近期市場）
-    # 動態切點：warmup 60 天（最前，指標暖身）| test = 剩下的 1/3（舊，含 2020 covid + 2022 熊市）| train = 剩下的 2/3（新）
-    # 理由：讓策略在近期資料訓練，用舊期驗證 — 真正測試「跨市場穩定性」
-    test_end = 60 + (ml - 60) // 3  # test 佔 1/3
-    train_start = test_end           # train 從 test 結束後開始
-    train_end = ml                   # train 延伸到資料最後
-    print(f"  反向 WF：warmup 0-60 | test {60}-{train_start}（{train_start-60}天，舊）| train {train_start}-{train_end}（{train_end-train_start}天，新）")
+    # Walk-Forward 模式切換（環境變數 GPU_WF_MODE）
+    # - "reverse"（預設）：train 新（2023-26）/ test 舊（2020-22 含 covid）— 當前市場學 + 極端驗證
+    # - "forward"：train 舊（2020-22 含熊市）/ test 新（2023-26 bull）— 真正 forward test
+    _wf_mode = os.environ.get("GPU_WF_MODE", "reverse").lower()
+    if _wf_mode == "forward":
+        # 正向 WF：train 在前（舊），test 在後（新）
+        train_start = 60                       # train 從 warmup 後開始
+        train_end = 60 + (ml - 60) * 2 // 3    # train 佔 2/3
+        _wf_label = "正向 WF"
+        print(f"  正向 WF：warmup 0-60 | train {train_start}-{train_end}（{train_end-train_start}天，舊 含 covid/熊市）| test {train_end}-{ml}（{ml-train_end}天，新 bull）")
+    else:
+        # 反向 WF（預設）：test 在前（舊），train 在後（新）
+        test_end = 60 + (ml - 60) // 3
+        train_start = test_end
+        train_end = ml
+        _wf_label = "反向 WF"
+        print(f"  反向 WF：warmup 0-60 | test {60}-{train_start}（{train_start-60}天，舊）| train {train_start}-{train_end}（{train_end-train_start}天，新）")
 
     return {"tickers":tickers,"dates":dates,"n_stocks":n,"n_days":ml,"train_start":train_start,"train_end":train_end,
         "close":close,"rsi":rsi,"bb_pos":bb_pos,"vol_ratio":vol_ratio,
@@ -1377,10 +1388,17 @@ def main():
     print(f"  風調 s_calmar × 1.5 (cap 10)  Calmar 3=+1.5 / 5=+4.5 / 8=+9 ← 新")
     print(f"  輔助 s_wf×15 / s_sharpe×2 / s_pl×0.5 / s_consistency×0.03 / penalties")
     print(f"")
-    print(f"  ═══ 反向 Walk-Forward 切點（動態依 cache 長度）═══")
-    print(f"  warmup  0-60     指標暖身")
-    print(f"  test    舊的 1/3  舊期（含 2020 covid/2022 熊市等）")
-    print(f"  train   新的 2/3  新期（近期市場，GPU 學這裡）")
+    _wf_mode_show = os.environ.get("GPU_WF_MODE", "reverse").lower()
+    if _wf_mode_show == "forward":
+        print(f"  ═══ 正向 Walk-Forward 切點（動態依 cache 長度）═══")
+        print(f"  warmup  0-60     指標暖身")
+        print(f"  train   舊的 2/3  舊期（GPU 學這裡，含 covid/熊市等極端）")
+        print(f"  test    新的 1/3  新期（近期市場，當驗證盲測）")
+    else:
+        print(f"  ═══ 反向 Walk-Forward 切點（動態依 cache 長度）═══")
+        print(f"  warmup  0-60     指標暖身")
+        print(f"  test    舊的 1/3  舊期（含 2020 covid/2022 熊市等）")
+        print(f"  train   新的 2/3  新期（近期市場，GPU 學這裡）")
     print(f"")
     print(f"  ═══ Kernel 硬門檻（不過→score 0）═══")
     print(f"  train 筆數 30-140 | avg ≥ 8% | wr ≥ 35% | avg_hold ≥ 5 天 | MaxDD ≥ -50% ← 適配 1500 天")
@@ -1501,12 +1519,13 @@ def main():
             print(f"[GPU] Gist 策略在當前資料上：{_baseline_n}筆 avg{_baseline_avg:.1f}% 總{_baseline_total:.0f}% 勝率{_baseline_wr:.0f}%")
 
             # === SEED 診斷：逐一檢查 kernel gate，找出卡在哪 ===
-            _ts_date = pre["dates"][pre["train_start"]]
-            _ts_str = str(_ts_date.date())
             _tr_end_day = pre["train_end"]
             _tr_start_day = pre["train_start"]
-            _tr_tr = [t for t in _baseline_trades if t.get("buy_date","") >= _ts_str]
-            _te_tr = [t for t in _baseline_trades if t.get("buy_date","") < _ts_str]
+            _tr_start_str = str(pre["dates"][_tr_start_day].date())
+            _tr_end_str = str(pre["dates"][_tr_end_day-1].date()) if _tr_end_day < pre["n_days"] else str(pre["dates"][-1].date())
+            # train = buy_date 在 train 區間，test = 其他（支援正向/反向 WF）
+            _tr_tr = [t for t in _baseline_trades if _tr_start_str <= t.get("buy_date","") <= _tr_end_str]
+            _te_tr = [t for t in _baseline_trades if t.get("buy_date","") < _tr_start_str or t.get("buy_date","") > _tr_end_str]
             _n_tr, _n_te = len(_tr_tr), len(_te_tr)
             _tot_tr = sum(t.get("return",0) for t in _tr_tr)
             _tot_te = sum(t.get("return",0) for t in _te_tr)
@@ -1514,7 +1533,9 @@ def main():
             _wr_tr = sum(1 for t in _tr_tr if t.get("return",0)>0)/_n_tr*100 if _n_tr else 0
             _ah_tr = sum(t.get("days",0) for t in _tr_tr)/_n_tr if _n_tr else 0
             _tr_y = (_tr_end_day - _tr_start_day) / 250.0
-            _te_y = (_tr_start_day - 60) / 250.0
+            # test 天數 = 全部 - train - warmup（支援正向/反向）
+            _te_days = (pre["n_days"] - 60) - (_tr_end_day - _tr_start_day)
+            _te_y = _te_days / 250.0
             _tr_ann = _tot_tr/_tr_y if _tr_y > 0.5 else _tot_tr
             _te_ann = _tot_te/_te_y if _te_y > 0.3 else _tot_te
             _wf = _te_ann/_tr_ann if _tr_ann > 0 else 0
@@ -1888,16 +1909,19 @@ def main():
                 else: _crun = 0
                 if _crun < _cmdd: _cmdd = _crun
             if _cmdd < -50: _gate_fail["dd"] += 1; continue
-            # 反向 WF：test 在前（買入日 < train_start_date）、train 在後（買入日 >= train_start_date）
-            _tsd = pre["dates"][pre["train_start"]]
-            _ctr = [t for t in _cmp if t.get("buy_date","") >= str(_tsd.date())]  # train = 新
-            _cts = [t for t in _cmp if t.get("buy_date","") < str(_tsd.date())]   # test = 舊
+            # train = buy_date 在 [train_start, train_end) 區間，test = 其他（支援正向/反向 WF）
+            _tr_start_date = str(pre["dates"][pre["train_start"]].date())
+            _tr_end_date = str(pre["dates"][pre["train_end"]-1].date()) if pre["train_end"] < pre["n_days"] else str(pre["dates"][-1].date())
+            _ctr = [t for t in _cmp if _tr_start_date <= t.get("buy_date","") <= _tr_end_date]  # train
+            _cts = [t for t in _cmp if t.get("buy_date","") < _tr_start_date or t.get("buy_date","") > _tr_end_date]  # test
             if len(_cts) < 5: _gate_fail["test_n"] += 1; continue
             _cts_tot = sum(t.get("return",0) for t in _cts)
             _ctr_tot = sum(t.get("return",0) for t in _ctr)
             if _cts_tot <= 0: _gate_fail["test_tot"] += 1; continue
             _tr_y = (pre["train_end"] - pre["train_start"]) / 250.0
-            _ts_y = (pre["train_start"] - 60) / 250.0
+            # test 年數 = 全部 - train - warmup
+            _ts_days = (pre["n_days"] - 60) - (pre["train_end"] - pre["train_start"])
+            _ts_y = _ts_days / 250.0
             _tr_ann = _ctr_tot/_tr_y if _tr_y > 0.5 else _ctr_tot
             _ts_ann = _cts_tot/_ts_y if _ts_y > 0.3 else _cts_tot
             if _tr_ann > 0 and _ts_ann < _tr_ann * 0.4: _gate_fail["wf"] += 1; continue
