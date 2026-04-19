@@ -293,10 +293,15 @@ void backtest(
     int w_mom_accel_k = (int)p[66]; float mom_accel_min_k = p[67];
     // 價格穩定性（過去 3 天 |close 變化| 上限，0=關）
     float max_3d_change = p[68];
+    // 第 1 名 vs 第 2 名分數差門檻（過濾訊號不明確日）
+    float top1_margin = p[69];
+    // 快速認賠：買後 N 天內虧 threshold% 立刻砍
+    int early_exit_days = (int)p[70];
+    float early_exit_th = p[71];
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[69];
-    int ma_slow_idx = (int)p[70];
-    int mom_idx = (int)p[71];
+    int ma_fast_idx = (int)p[72];
+    int ma_slow_idx = (int)p[73];
+    int mom_idx = (int)p[74];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -328,7 +333,9 @@ void backtest(
             float effective_stop = stop_loss;
             if (use_breakeven == 1 && (hold_pk[h] / hold_bp[h] - 1.0f) * 100.0f >= breakeven_trigger)
                 effective_stop = 0;
-            if (ret <= effective_stop) sell = true;
+            // 快速認賠：買後 N 天內若虧 threshold% 立刻砍（錯股虧損控制在小範圍）
+            if (early_exit_days > 0 && dh <= early_exit_days && ret <= early_exit_th) sell = true;
+            if (!sell && ret <= effective_stop) sell = true;
             if (!sell && use_tp == 1 && ret >= take_profit) sell = true;
             if (!sell && trailing_stop > 0 && hold_pk[h] > hold_bp[h]) {
                 if ((cur / hold_pk[h] - 1.0f) * 100.0f <= -trailing_stop) sell = true;
@@ -492,6 +499,7 @@ void backtest(
         if (n_holding < max_pos && day + 1 < n_days) {
             int best_si = -1;
             float best_buy_score = 0; float best_buy_vol = 0;
+            float second_best_score = 0;  // 追蹤第 2 名分數
             for (int si = 0; si < n_stocks; si++) {
                 // 只從當天成交量前 100 名買（跟實戰一致）
                 if (top100_mask[si * n_days + day] < 0.5f) continue;
@@ -557,11 +565,21 @@ void backtest(
                     }
                 }
 
-                if (sc >= buy_threshold && (sc > best_buy_score || (sc == best_buy_score && vol_ratio[d] > best_buy_vol))) {
-                    best_si = si; best_buy_score = sc; best_buy_vol = vol_ratio[d];
+                if (sc >= buy_threshold) {
+                    if (sc > best_buy_score || (sc == best_buy_score && vol_ratio[d] > best_buy_vol)) {
+                        second_best_score = best_buy_score;  // 原第 1 降為第 2
+                        best_si = si; best_buy_score = sc; best_buy_vol = vol_ratio[d];
+                    } else if (sc > second_best_score) {
+                        second_best_score = sc;
+                    }
                 }
             }
-            if (best_si >= 0) for (int h = 0; h < max_pos; h++) {
+            // 相對訊號強度檢查：第 1 名 vs 第 2 名分數差必須 ≥ top1_margin（若 top1_margin > 0）
+            bool buy_ok = (best_si >= 0);
+            if (buy_ok && top1_margin > 0 && best_buy_score - second_best_score < top1_margin) {
+                buy_ok = false;  // 訊號不明確（矮中選長），跳過
+            }
+            if (buy_ok) for (int h = 0; h < max_pos; h++) {
                 if (hold_si[h] < 0) {
                     hold_si[h] = best_si;
                     hold_bp[h] = close[best_si * n_days + day + 1];  // 買入 D+1 收盤
@@ -846,6 +864,11 @@ PARAMS_SPACE = {
     "w_mom_accel": [0,1,2], "mom_accel_min": [0,2,5,8],
     # 🔒 過去 3 天價格穩定性（0=關閉；5/7/10/15 = 最大 3 天變化 % 上限，過大跳過=防暴漲暴跌）
     "max_3d_change": [0, 5, 7, 10, 15],
+    # 🎯 第 1 名 vs 第 2 名分數差必須 ≥ X 才買（過濾訊號不明確的日子）
+    "top1_margin": [0, 2, 3, 5, 7],
+    # ⚡ 快速認賠：買後 N 天內若虧 threshold% 立刻砍（減少錯買損失幅度）
+    "early_exit_days": [0, 3, 5, 7],
+    "early_exit_th": [-5, -8, -10, -12],
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10,15],  # 擴大：強換股門檻，買到爛股可被強股換掉
     # ====== 多持倉 ======
@@ -882,6 +905,9 @@ PARAM_ORDER = [
     "w_vol_up_days","vol_up_days_min",
     "w_mom_accel","mom_accel_min",
     "max_3d_change",  # 🔒 過去 3 天 |close 變化| ≤ X%（0=關，5/7/10/15=啟用）
+    "top1_margin",    # 🎯 第 1 名 vs 第 2 名分數差必須 ≥ X（0=關，2/3/5/7=啟用，過濾「矮中選長」）
+    "early_exit_days", # ⚡ 買後 N 天內快速認賠視窗（0=關，3/5/7=啟用）
+    "early_exit_th",   # ⚡ 買後快速認賠閾值（-5/-8/-10/-12，搭 early_exit_days 使用）
 ]
 
 MA_FAST_OPTS = [3,5,10]
@@ -1222,7 +1248,12 @@ def cpu_replay(pre, p):
             eff_stop=p["stop_loss"]
             _is_breakeven = p.get("use_breakeven",0) and (hold_pk[h]/hold_bp[h]-1)*100>=p.get("breakeven_trigger",20)
             if _is_breakeven: eff_stop=0
-            if ret<=eff_stop: sell=True; reason=14 if _is_breakeven else 2  # 14=保本, 2=停損
+            # 快速認賠：買後 N 天內若虧 threshold% 立刻砍
+            _ee_days = int(p.get("early_exit_days", 0))
+            _ee_th = float(p.get("early_exit_th", -5))
+            if _ee_days > 0 and dh <= _ee_days and ret <= _ee_th:
+                sell=True; reason=2  # 標為停損
+            if not sell and ret<=eff_stop: sell=True; reason=14 if _is_breakeven else 2  # 14=保本, 2=停損
             if not sell and p.get("use_take_profit",1) and ret>=p["take_profit"]: sell=True; reason=1
             if not sell and p.get("trailing_stop",0)>0 and hold_pk[h]>hold_bp[h]:
                 if (cur/hold_pk[h]-1)*100<=-p["trailing_stop"]: sell=True; reason=4
@@ -1291,10 +1322,12 @@ def cpu_replay(pre, p):
                 if int(p.get("w_vol_up_days",0))>0 and vol_up_days_arr is not None and vol_up_days_arr[si,d]>=p.get("vol_up_days_min",3): sc+=int(p["w_vol_up_days"])
                 if int(p.get("w_mom_accel",0))>0 and mom_accel_arr is not None and mom_accel_arr[si,d]>=p.get("mom_accel_min",2): sc+=int(p["w_mom_accel"])
                 return sc
-            # 找候選最高分
+            # 找候選最高分（追蹤 top-1 + top-2）
             cand_si=-1; cand_sc=0; cand_vol=0
+            _second_sc = 0
             held_set=set(hh for hh in hold_si if hh>=0)
             _max_3d = float(p.get("max_3d_change", 0))
+            _top1_margin = float(p.get("top1_margin", 0))
             for si in range(ns):
                 if top100_mask is not None and top100_mask[si,day]<0.5: continue
                 if si in held_set: continue
@@ -1306,7 +1339,15 @@ def cpu_replay(pre, p):
                         if abs(_chg) > _max_3d: continue
                 sc=_score_stock(si,day)
                 vr=float(vol_ratio[si,day]) if vol_ratio is not None else 0
-                if sc>=p.get("buy_threshold",5) and (sc>cand_sc or (sc==cand_sc and vr>cand_vol)): cand_si=si; cand_sc=sc; cand_vol=vr
+                if sc>=p.get("buy_threshold",5):
+                    if sc>cand_sc or (sc==cand_sc and vr>cand_vol):
+                        _second_sc = cand_sc
+                        cand_si=si; cand_sc=sc; cand_vol=vr
+                    elif sc > _second_sc:
+                        _second_sc = sc
+            # 相對訊號強度檢查：第 1 名 vs 第 2 名分數差
+            if cand_si >= 0 and _top1_margin > 0 and (cand_sc - _second_sc) < _top1_margin:
+                cand_si = -1  # 訊號不明確，取消買入
             if cand_si>=0:
                 weakest_h=-1; weakest_sc=9999
                 for h in range(max_pos):
