@@ -1113,35 +1113,45 @@ def precompute(data):
     # top50_p3 = 過去 3 天都在前 50（真正持續強勢，過濾一日爆發）
     # top30_p5 = 過去 5 天都在前 30（極嚴，只從當前市場熱點選）
     _universe = os.environ.get("GPU_UNIVERSE", "top100").lower()
-    if _universe in ("top50_p3", "top50p3", "top50-p3"):
-        strict = (ranks < 50).astype(np.float32)
+
+    def _build_persist_mask(rank_th, persist_days):
+        """過去 persist_days 天都要在 rank_th 名內（含當天）"""
+        strict = (ranks < rank_th).astype(np.float32)
         persist = strict.copy()
-        for _k in range(1, 4):
+        for _k in range(1, persist_days + 1):
             shifted = np.zeros_like(strict)
             shifted[:, _k:] = strict[:, :-_k]
             persist *= shifted
-        top100_mask = persist
-        print(f"  🎯 Universe: top50 連續 3 天（嚴格版，過濾單日爆量）")
-    elif _universe in ("top30_p5", "top30p5", "top30-p5"):
-        strict = (ranks < 30).astype(np.float32)
-        persist = strict.copy()
-        for _k in range(1, 6):
+        return persist
+
+    def _build_partial_persist_mask(rank_th, window, min_days_in):
+        """過去 window 天內，至少 min_days_in 天在 rank_th 名內（較寬鬆）"""
+        strict = (ranks < rank_th).astype(np.float32)
+        count = strict.copy()
+        for _k in range(1, window + 1):
             shifted = np.zeros_like(strict)
             shifted[:, _k:] = strict[:, :-_k]
-            persist *= shifted
-        top100_mask = persist
-        print(f"  🎯 Universe: top30 連續 5 天（極嚴版，只選當前熱點）")
-    elif _universe in ("top50_p5", "top50p5"):
-        strict = (ranks < 50).astype(np.float32)
-        persist = strict.copy()
-        for _k in range(1, 6):
-            shifted = np.zeros_like(strict)
-            shifted[:, _k:] = strict[:, :-_k]
-            persist *= shifted
-        top100_mask = persist
-        print(f"  🎯 Universe: top50 連續 5 天（平衡版）")
+            count = count + shifted
+        return (count >= min_days_in).astype(np.float32)
+
+    if _universe in ("top100_p3", "top100p3"):
+        top100_mask = _build_persist_mask(100, 3)
+        print(f"  🎯 Universe: top100 連續 3 天（寬鬆版）")
+    elif _universe in ("top100_p2", "top100p2"):
+        top100_mask = _build_persist_mask(100, 2)
+        print(f"  🎯 Universe: top100 連續 2 天（最寬鬆強勢過濾）")
+    elif _universe in ("top80_p3", "top80p3"):
+        top100_mask = _build_persist_mask(80, 3)
+        print(f"  🎯 Universe: top80 連續 3 天（中等嚴格）")
+    elif _universe in ("top50_p3", "top50p3"):
+        top100_mask = _build_persist_mask(50, 3)
+        print(f"  🎯 Universe: top50 連續 3 天（嚴格版）")
+    elif _universe in ("top100_partial", "top100p"):
+        # 過去 5 天內至少 3 天在 top 100（最接近實戰「持續強勢但有波動」）
+        top100_mask = _build_partial_persist_mask(100, 5, 3)
+        print(f"  🎯 Universe: top100 過去 5 天內 ≥ 3 天入選（彈性強勢）")
     else:
-        print(f"  Universe: top100（預設，當天成交量前 100）")
+        print(f"  Universe: top100（預設，當天前 100）")
     _universe_sum = int(top100_mask.sum(axis=0).mean())
     print(f"    平均每天 universe 大小：{_universe_sum} 檔")
 
