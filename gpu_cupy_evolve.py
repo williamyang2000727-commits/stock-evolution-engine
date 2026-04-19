@@ -1926,21 +1926,8 @@ def main():
                 if _recent_avg < 5:
                     _gate_fail["recent"] += 1
                     continue
-            # 🆕 近 2 年 avg ≥ 12% 門檻（擋退化策略，放寬讓更多策略有機會）
-            _recent_2y_idx = max(pre["n_days"] - 500, pre["train_start"])
-            _recent_2y_cutoff = str(pre["dates"][_recent_2y_idx].date())
-            _recent_2y = [t for t in _cmp if t.get("buy_date","") >= _recent_2y_cutoff]
-            if len(_recent_2y) >= 5:
-                _recent_2y_avg = sum(t.get("return",0) for t in _recent_2y) / len(_recent_2y)
-                if _recent_2y_avg < 12:
-                    _gate_fail["recent_2y"] = _gate_fail.get("recent_2y", 0) + 1
-                    continue
-            # 🆕 Calmar 比 ≥ 1.5（放寬，讓更多策略進 scoring 階段）
-            _abs_dd = abs(_cmdd) if _cmdd < 0 else 1.0
-            _train_calmar = _tr_ann / _abs_dd if _abs_dd > 1 else 0
-            if _train_calmar < 1.5:
-                _gate_fail["calmar"] = _gate_fail.get("calmar", 0) + 1
-                continue
+            # 🔓 Calmar / 近 2 年 avg gate 移除（放在 kernel scoring 當加分項）
+            # 這兩個 gate 太嚴擋掉真正有潛力的策略，改用 scoring 獎勵代替硬擋
             # 過了所有 gate，接受
             best_score = _sc
             best_nt = int(results[_ti, 1])
