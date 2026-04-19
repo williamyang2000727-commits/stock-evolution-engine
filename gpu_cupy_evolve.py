@@ -291,10 +291,12 @@ void backtest(
     int w_week52_k = (int)p[62]; float week52_min_k = p[63];
     int w_vol_up_days_k = (int)p[64]; float vol_up_days_min_k = p[65];
     int w_mom_accel_k = (int)p[66]; float mom_accel_min_k = p[67];
+    // 🔒 價格穩定性（過去 3 天 |close 變化| 上限，0=關）
+    float max_3d_change = p[68];
     // MA/MOM 選擇
-    int ma_fast_idx = (int)p[68];
-    int ma_slow_idx = (int)p[69];
-    int mom_idx = (int)p[70];
+    int ma_fast_idx = (int)p[69];
+    int ma_slow_idx = (int)p[70];
+    int mom_idx = (int)p[71];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -382,6 +384,14 @@ void backtest(
                     if (hold_si[h] == si) { already = true; break; }
                 }
                 if (already) continue;
+                // 🔒 換股也要檢查 3 天價格穩定（避免換到剛暴漲/暴跌的股）
+                if (max_3d_change > 0 && day >= 3) {
+                    float p3 = close[si * n_days + day - 3];
+                    if (p3 > 0) {
+                        float chg = (close[si * n_days + day] / p3 - 1.0f) * 100.0f;
+                        if (fabsf(chg) > max_3d_change) continue;
+                    }
+                }
                 int d = si * n_days + day;
                 float sc = 0.0f;
                 if (w_rsi > 0 && rsi[d] >= rsi_th) sc += w_rsi;
@@ -536,6 +546,16 @@ void backtest(
                 if (use_gap == 1 && gap[d] >= 1.0f) sc += 1.0f;
                 if (above_ma60 == 1 && close[d] >= ma60[d]) sc += 1.0f;
                 if (vol_gt_yesterday == 1 && day >= 1 && vol_ratio[d] > vol_prev[d]) sc += 1.0f;
+
+                // 🔒 過去 3 天價格穩定性檢查（防追高/防接假突破）
+                // max_3d_change_pct = 0 關閉；> 0 時要求 |3d close change| <= 該 %
+                if (max_3d_change > 0 && day >= 3) {
+                    float p3 = close[si * n_days + day - 3];
+                    if (p3 > 0) {
+                        float chg = (close[d] / p3 - 1.0f) * 100.0f;
+                        if (fabsf(chg) > max_3d_change) continue;  // 暴漲或暴跌，跳過
+                    }
+                }
 
                 if (sc >= buy_threshold && (sc > best_buy_score || (sc == best_buy_score && vol_ratio[d] > best_buy_vol))) {
                     best_si = si; best_buy_score = sc; best_buy_vol = vol_ratio[d];
@@ -785,7 +805,7 @@ PARAMS_SPACE = {
     "w_macd": [0,1,2,3], "macd_mode": [0,1,2],
     "w_kd": [0,1,2,3], "kd_th": [60,65,70,75,80,85], "kd_cross": [0,1],
     "w_wr": [0,1,2,3], "wr_th": [-25,-30,-35,-40,-50],
-    "w_mom": [0,1,2,3], "mom_th": [5,8,10,12,15],
+    "w_mom": [0,1,2,3], "mom_th": [5,8,10,12,15,20,25],  # 擴大：更嚴動量要求（過濾弱訊號）
     "w_near_high": [0,1,2], "near_high_pct": [3,5,10],
     "w_squeeze": [0,1,2,3], "w_new_high": [0,1,2,3],
     "w_adx": [0,1,2,3], "adx_th": [25,30,35,40],
@@ -820,10 +840,12 @@ PARAMS_SPACE = {
     # ====== 類股資金流向 ======
     "w_sector_flow": [0,1,2,3], "sector_flow_topn": [1,2,3,5,8],
     # ====== 新指標（連續上漲/52週位置/連續量增/動量加速）======
-    "w_up_days": [0,1,2,3], "up_days_min": [2,3,4,5],
+    "w_up_days": [0,1,2,3], "up_days_min": [2,3,4,5,7,10],  # 擴大：連漲更多天才算強訊號
     "w_week52": [0,1,2,3], "week52_min": [0.6,0.7,0.8,0.9],
-    "w_vol_up_days": [0,1,2], "vol_up_days_min": [2,3,4],
+    "w_vol_up_days": [0,1,2], "vol_up_days_min": [2,3,4,5,7],  # 擴大：連量增更多天
     "w_mom_accel": [0,1,2], "mom_accel_min": [0,2,5,8],
+    # 🔒 過去 3 天價格穩定性（0=關閉；5/7/10/15 = 最大 3 天變化 % 上限，過大跳過=防暴漲暴跌）
+    "max_3d_change": [0, 5, 7, 10, 15],
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10,15],  # 擴大：強換股門檻，買到爛股可被強股換掉
     # ====== 多持倉 ======
@@ -859,6 +881,7 @@ PARAM_ORDER = [
     "w_week52","week52_min",
     "w_vol_up_days","vol_up_days_min",
     "w_mom_accel","mom_accel_min",
+    "max_3d_change",  # 🔒 過去 3 天 |close 變化| ≤ X%（0=關，5/7/10/15=啟用）
 ]
 
 MA_FAST_OPTS = [3,5,10]
@@ -1271,9 +1294,16 @@ def cpu_replay(pre, p):
             # 找候選最高分
             cand_si=-1; cand_sc=0; cand_vol=0
             held_set=set(hh for hh in hold_si if hh>=0)
+            _max_3d = float(p.get("max_3d_change", 0))
             for si in range(ns):
                 if top100_mask is not None and top100_mask[si,day]<0.5: continue
                 if si in held_set: continue
+                # 🔒 過去 3 天價格穩定性檢查
+                if _max_3d > 0 and day >= 3:
+                    _p3 = float(close[si, day-3])
+                    if _p3 > 0:
+                        _chg = (float(close[si, day]) / _p3 - 1.0) * 100.0
+                        if abs(_chg) > _max_3d: continue
                 sc=_score_stock(si,day)
                 vr=float(vol_ratio[si,day]) if vol_ratio is not None else 0
                 if sc>=p.get("buy_threshold",5) and (sc>cand_sc or (sc==cand_sc and vr>cand_vol)): cand_si=si; cand_sc=sc; cand_vol=vr
