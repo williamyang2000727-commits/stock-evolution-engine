@@ -36,8 +36,8 @@ CACHE_PATH = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_dat
 #   - test 年化 >= 277%（= 462 × 0.6）
 #   - WF ratio >= 0.55（2022 熊市達近期 55% 更實際）
 #   - recent-60d avg >= 5%
-MIN_WR_TRAIN = 0.70     # WINRATE-MAX 模式提高到 70%（原 65%）
-MIN_WR_TEST = 0.65      # WINRATE-MAX 模式提高到 65%（原 60%）
+MIN_WR_TRAIN = 0.65     # BALANCED 模式：勝率+波段雙重視（65% 夠穩）
+MIN_WR_TEST = 0.60      # test 容許 5% 寬容（熊市難高勝率）
 MIN_TRAIN_ANNUAL = 326  # 189 train 年化 543% × 0.6
 MIN_TEST_ANNUAL = 277   # 189 test 年化 462% × 0.6
 
@@ -729,12 +729,13 @@ void backtest(
                         float s_consistency = min_seg_annual * 0.03f;
                         if (s_consistency > 10) s_consistency = 10;
 
-                        // === WINRATE-MAX scoring（2026-04-19 改，追求極高勝率）===
-                        // s_wr: 2.0→2.5 cap 100 (勝率 70%=50 / 80%=75 / 90%=100)
-                        // s_avg: 2.0→0.5 cap 5（大幅降權，避免 GPU 被波段誘惑）
-                        float s_wr = (win_rate_tr - 50.0f) * 2.5f;
+                        // === BALANCED scoring（2026-04-20 改，勝率+波段雙重視）===
+                        // s_wr: 2.0 cap 80 (勝率 65%=30 / 70%=40 / 75%=50 / 80%=60)
+                        // s_avg: 1.5 cap 30 (avg 15%=0 / 20%=7.5 / 25%=15 / 30%=22.5 / 35%=30)
+                        // 兩者權重接近 = GPU 必須同時追求高勝率 AND 高 avg
+                        float s_wr = (win_rate_tr - 50.0f) * 2.0f;
                         if (s_wr < 0) s_wr = 0;
-                        if (s_wr > 100.0f) s_wr = 100.0f;  // 90% 勝率封頂 100 分
+                        if (s_wr > 80.0f) s_wr = 80.0f;
 
                         // s_return 用 min(train, test)，封頂 400% 年化
                         float effective_annual = train_annual < test_annual ? train_annual : test_annual;
@@ -742,10 +743,10 @@ void backtest(
                         float s_return = capped_annual * 0.05f;
                         if (s_return < 0) s_return = 0;
 
-                        // s_avg 大幅降權（只留象徵性 cap 5，勝率主導）
-                        float s_avg = (avg_ret_tr - 15.0f) * 0.5f;
+                        // s_avg 大幅提權（獎勵吃波段，avg 20%+ 顯著加分）
+                        float s_avg = (avg_ret_tr - 15.0f) * 1.5f;
                         if (s_avg < 0) s_avg = 0;
-                        if (s_avg > 5.0f) s_avg = 5.0f;
+                        if (s_avg > 30.0f) s_avg = 30.0f;
 
                         // 近 2 年勝率獎勵（最後 500 天，當前市場強勢鼓勵）
                         // 60%=0, 65%=+3, 70%=+6, 75%=+9, 80%=+12, 90%=+15
