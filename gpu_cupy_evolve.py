@@ -1112,6 +1112,8 @@ def precompute(data):
     # 預設 top100 = 每天成交量前 100（含短期爆量股）
     # top50_p3 = 過去 3 天都在前 50（真正持續強勢，過濾一日爆發）
     # top30_p5 = 過去 5 天都在前 30（極嚴，只從當前市場熱點選）
+    # 注意：persist universe 實驗顯示反效果（過濾掉中小型爆量 = 移除波段機會）
+    # 預設 top100（跟 89.90 訓練時一致）。env var 模式只保留為實驗用途。
     _universe = os.environ.get("GPU_UNIVERSE", "top100").lower()
 
     def _build_persist_mask(rank_th, persist_days):
