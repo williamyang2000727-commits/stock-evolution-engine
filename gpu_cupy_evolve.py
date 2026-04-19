@@ -1909,26 +1909,27 @@ def main():
 
         rnd += 1
         params_np = np.zeros((BATCH, N_PARAMS_FULL), dtype=np.float32)
-        mutate_rate = min(0.5, 0.08 + no_improve_rounds * 0.02)  # 初期 8% 精緻，累加到 50% 觸發多起點爬山
-        # 多起點爬山：80% 爬山（從隨機起點）+ 20% 隨機，不配種（名人堂還在重建）
+        # 新邏輯：89.90 已是 local optimum，需要更激進的探索才能跳出
+        # 初始 25% 變異（不是 8%），更快跳出舊解的鄰域
+        mutate_rate = min(0.6, 0.25 + no_improve_rounds * 0.03)
+        # 比例分配：大量隨機探索 + 適度爬山 + ��種
         if explore_bases is not None:
-            n_random = BATCH // 5
-            n_climb = BATCH - n_random
+            n_random = BATCH // 3       # 33% 純隨機
+            n_climb = BATCH - n_random  # 67% 爬山（從多起點）
             n_breed = 0
         elif len(hall_of_fame) < 3:
-            # 早期：25% 隨機 + 75% 爬山（HOF 不夠就集中微調 SEED，配種無效）
-            n_random = BATCH // 4
-            n_climb = BATCH - n_random
+            n_random = BATCH // 3       # 33% 隨機（找新方向）
+            n_climb = BATCH - n_random  # 67% 爬山
             n_breed = 0
-        elif no_improve_rounds < 5:
-            # 正常：15% 隨機 / 45% 爬山 / 40% 配種
-            n_random = int(BATCH * 0.15)
-            n_climb = int(BATCH * 0.45)
+        elif no_improve_rounds < 3:
+            # 剛突破：25% 隨機 / 35% 爬山 / 40% 配種
+            n_random = int(BATCH * 0.25)
+            n_climb = int(BATCH * 0.35)
             n_breed = BATCH - n_random - n_climb
         else:
-            # 停滯：30% 隨機 / 30% 爬山 / 40% 配種（加強探索）
-            n_random = int(BATCH * 0.30)
-            n_climb = int(BATCH * 0.30)
+            # 停滯：40% 隨機 / 20% 爬山 / 40% 配種（激進探索，不要卡在 89.90 附近）
+            n_random = int(BATCH * 0.40)
+            n_climb = int(BATCH * 0.20)
             n_breed = BATCH - n_random - n_climb
         third = n_random  # 相容舊變數名
 
@@ -1961,10 +1962,15 @@ def main():
                 params_np[:, i] = np.random.choice(opts, BATCH).astype(np.float32)
 
         # === 爬山微調（向量化）===
+        # 不要只從 best_params 爬！從 HOF 隨機挑基底，增加基因多樣性
         if explore_bases is not None:
             base = explore_bases[explore_round % len(explore_bases)]
+        elif hall_of_fame and len(hall_of_fame) >= 2:
+            # 每輪隨機選 HOF 中的一個當爬山基底（不永遠從 best 出發）
+            _hof_idx = rnd % len(hall_of_fame)
+            base = hall_of_fame[_hof_idx][1]
         else:
-            base = best_params  # NO-OVERFIT：不 fallback v5
+            base = best_params
         if base:
             for i, key in enumerate(PARAM_ORDER):
                 opts = np.array(PARAMS_SPACE[key], dtype=np.float32)
