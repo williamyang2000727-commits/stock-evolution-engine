@@ -715,12 +715,13 @@ void backtest(
                         float s_consistency = min_seg_annual * 0.03f;
                         if (s_consistency > 10) s_consistency = 10;
 
-                        // === 勝率優先 scoring（2026-04-18 更嚴）===
-                        // 主軸：s_wr 權重 2.0 → 勝率 65%=+30, 70%=+40, 75%=+50, 80%=+60, 90%=+80
-                        // 封頂：s_return 年化 400% 以上不加分（防報酬反客為主）
-                        float s_wr = (win_rate_tr - 50.0f) * 2.0f;
+                        // === SWING scoring（2026-04-19 改，偏波段，降 s_wr 升 s_avg）===
+                        // 主軸改為「波段 + 勝率雙主軸」
+                        // s_wr: 2.0→1.5 (勝率 65%=22.5 / 75%=37.5 / 80%=45 / 90%=60)
+                        // s_avg: 2.0→3.0 (avg 20%=15 / 25%=30 / 30%=45 / 35%=60)
+                        float s_wr = (win_rate_tr - 50.0f) * 1.5f;
                         if (s_wr < 0) s_wr = 0;
-                        if (s_wr > 80.0f) s_wr = 80.0f;  // 90% 勝率封頂 80 分
+                        if (s_wr > 60.0f) s_wr = 60.0f;  // 90% 勝率封頂 60 分（原 80）
 
                         // s_return 用 min(train, test)，封頂 400% 年化
                         float effective_annual = train_annual < test_annual ? train_annual : test_annual;
@@ -728,11 +729,11 @@ void backtest(
                         float s_return = capped_annual * 0.05f;
                         if (s_return < 0) s_return = 0;
 
-                        // 獎勵波段型高單筆報酬（avg 每多 1% = +2 分，cap 30）
-                        // 15%=0, 20%=+10, 25%=+20, 30%=+30 — 讓「勝率高+讓贏家跑」策略有機會贏
-                        float s_avg = (avg_ret_tr - 15.0f) * 2.0f;
+                        // 獎勵波段型高單筆報酬（cap 60，升 30）
+                        // 15%=0, 20%=+15, 25%=+30, 30%=+45, 35%=+60
+                        float s_avg = (avg_ret_tr - 15.0f) * 3.0f;
                         if (s_avg < 0) s_avg = 0;
-                        if (s_avg > 30.0f) s_avg = 30.0f;
+                        if (s_avg > 60.0f) s_avg = 60.0f;
 
                         // 近 2 年勝率獎勵（最後 500 天，當前市場強勢鼓勵）
                         // 60%=0, 65%=+3, 70%=+6, 75%=+9, 80%=+12, 90%=+15
@@ -1531,6 +1532,7 @@ def main():
         PARAMS_SPACE["take_profit"] = [80, 100, 150]  # 強制高停利
         PARAMS_SPACE["trailing_stop"] = [15, 20, 25]  # 強制寬 trailing
         print(f"  [Mode] 🎯 強迫吃大波段（停利 80+, trailing 15+）")
+
     if os.environ.get("GPU_STRICT_SIGNAL") == "1":
         # 強迫「只買持續強勢股」— 用現有指標提高嚴格度
         PARAMS_SPACE["week52_min"] = [0.8, 0.9]          # 52 週位置必須頂部
@@ -1548,9 +1550,9 @@ def main():
     print(f"[GPU-CuPy] 🎯 勝率優先 + 波段獎勵 + 反向 Walk-Forward（融合 189+88.60 優點）")
     print(f"")
     print(f"  ═══ Scoring（勝率主軸 + 波段副軸）═══")
-    print(f"  主軸 s_wr × 2.0 (cap 80)  勝率 65%=+30 / 75%=+50 / 80%=+60 / 90%=+80")
-    print(f"  報酬 s_return × 0.05 (cap 20)  年化 400% 封頂（不會反客為主）")
-    print(f"  波段 s_avg × 2.0 (cap 30)  avg 15%=0 / 20%=+10 / 25%=+20 / 30%=+30")
+    print(f"  主軸 s_wr × 1.5 (cap 60)  勝率 65%=+22 / 75%=+37 / 80%=+45 / 90%=+60 [SWING 降權]")
+    print(f"  報酬 s_return × 0.05 (cap 20)  年化 400% 封頂")
+    print(f"  波段 s_avg × 3.0 (cap 60)  avg 20%=+15 / 25%=+30 / 30%=+45 / 35%=+60 [SWING 升權]")
     print(f"  近期 s_recent × 0.5 (cap 15)  近 2 年勝率 65%=+3 / 70%=+6 / 75%=+9 / 80%=+12 ← 新")
     print(f"  風調 s_calmar × 1.5 (cap 10)  Calmar 3=+1.5 / 5=+4.5 / 8=+9 ← 新")
     print(f"  輔助 s_wf×15 / s_sharpe×2 / s_pl×0.5 / s_consistency×0.03 / penalties")
@@ -2020,9 +2022,9 @@ def main():
                 # (1) 真的過不了（strict mode 下 89.90 被 remap 到不合格位置）
                 # (2) Kernel vs cpu_replay 邏輯分歧（Python 全過但 kernel 不認，memory 記錄過）
                 # 地板設 85 當「近 89.90 水準」baseline，避免 GPU 推一堆 60-80 分的爛策略
-                best_score = 85.0
-                print(f"  [GPU] ⚠️ SEED kernel 分數無效（{_seed_score:.1f}，{_seed_nt}筆）— 可能 kernel/cpu_replay 分歧")
-                print(f"  [GPU] 🛡️ 設 best_score=85 當地板（接近 89.90 水準），新突破要 >85 才通知")
+                best_score = 70.0
+                print(f"  [GPU] ⚠️ SEED kernel 分數無效（{_seed_score:.1f}，{_seed_nt}筆）— SWING 下 89.90 預估 ~80-85")
+                print(f"  [GPU] 🛡️ 設 best_score=70 當 SWING 地板（89.90 swing 約 82-85，>70 才通知）")
 
         # 收集這批裡分數 > 0 的前 5 名加入名人堂（不用破紀錄也能入）
         top_indices = np.argsort(results[:, 0])[-5:][::-1]
