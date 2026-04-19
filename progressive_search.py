@@ -25,7 +25,7 @@ mock_cp = types.ModuleType('cupy')
 mock_cp.RawKernel = lambda *a, **k: None
 sys.modules['cupy'] = mock_cp
 
-from gpu_cupy_evolve import PARAMS_SPACE, precompute, cpu_replay, download_data
+from gpu_cupy_evolve import PARAMS_SPACE, precompute, cpu_replay, download_data, telegram_push
 
 # Top 參數池（前 8 個影響最大，可加更多但時間爆炸）
 ALL_TOP_PARAMS = [
@@ -175,6 +175,7 @@ def search_dim(params, pre, base_score, dim, top_params):
                 elapsed = (time.time() - t0) / 60
                 vstr = ", ".join(f"{combo[i]}={values[i]}" for i in range(dim))
                 print(f"  ⭐ [{tested:,}/{total_tests:,}] {vstr}  → score {base_score:.2f} → {sc:.2f}  ({elapsed:.1f}分)")
+                prev_score = base_score
                 # 立即 apply + 存檔
                 for i, p in enumerate(combo):
                     params[p] = values[i]
@@ -184,6 +185,20 @@ def search_dim(params, pre, base_score, dim, top_params):
                 _current_best["info"] = info
                 save_pending()
                 found_improvement = (combo, values, sc, info)
+                # Telegram 推播
+                try:
+                    telegram_push(
+                        f"🔬 漸進搜尋 {dim}D 找到改進\n"
+                        f"━━━━━━\n"
+                        f"分數：{prev_score:.2f} → {sc:.2f}\n"
+                        f"改動：{vstr}\n"
+                        f"全期：{info.get('n')}筆 avg{info.get('avg')}% 勝率{info.get('wr')}%\n"
+                        f"WF：train 年化{info.get('tr_ann')}% vs test {info.get('te_ann')}%\n"
+                        f"Calmar：{info.get('calmar')}\n"
+                        f"💾 pending_push_progressive.json 已更新"
+                    )
+                except Exception:
+                    pass  # 推播失敗不影響搜尋
                 # 繼續搜尋（base_score 已更新，可能找更好的）
             elif tested % 500 == 0:
                 elapsed = (time.time() - t0) / 60
