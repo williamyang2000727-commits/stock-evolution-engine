@@ -879,17 +879,15 @@ PARAMS_SPACE = {
     "w_week52": [0,1,2,3], "week52_min": [0.6,0.7,0.8,0.9],
     "w_vol_up_days": [0,1,2], "vol_up_days_min": [2,3,4,5,7],  # 擴大：連量增更多天
     "w_mom_accel": [0,1,2], "mom_accel_min": [0,2,5,8],
-    # 🔒 過去 3 天價格穩定性（0=關閉；5/7/10/15 = 最大 3 天變化 % 上限，過大跳過=防暴漲暴跌）
-    "max_3d_change": [0, 5, 7, 10, 15],
-    # 🎯 第 1 名 vs 第 2 名分數差必須 ≥ X 才買（過濾訊號不明確的日子）
-    "top1_margin": [0, 2, 3, 5, 7],
-    # ⚡ 快速認賠：買後 N 天內若虧 threshold% 立刻砍（減少錯買損失幅度）
+    # 🔒 max_3d_change 跟新 universe 重複 → 禁用（只保留 0）
+    "max_3d_change": [0],
+    # 🎯 top1_margin 保留但精簡範圍（跟 universe 正交，實驗性保留）
+    "top1_margin": [0, 3, 5],
+    # ⚡ 快速認賠（跟 universe 正交，買錯後的控損機制，保留）
     "early_exit_days": [0, 3, 5, 7],
     "early_exit_th": [-5, -8, -10, -12],
-    # 🔥 訊號持續性：過去 N 天也必須是 top100 強勢股（對抗「單日運氣綁架」）
-    # 0=關（只看當天，現況）
-    # 2/3/5=啟用（要求連續強勢，過濾一日爆發）
-    "signal_persist_days": [0, 2, 3, 5],
+    # 🔥 signal_persist_days 完全跟 universe 重複 → 禁用（只保留 0）
+    "signal_persist_days": [0],
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10,15],  # 擴大：強換股門檻，買到爛股可被強股換掉
     # ====== 多持倉 ======
