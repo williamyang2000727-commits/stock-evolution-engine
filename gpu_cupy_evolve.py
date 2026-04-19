@@ -36,8 +36,8 @@ CACHE_PATH = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_dat
 #   - test 年化 >= 277%（= 462 × 0.6）
 #   - WF ratio >= 0.55（2022 熊市達近期 55% 更實際）
 #   - recent-60d avg >= 5%
-MIN_WR_TRAIN = 0.65     # 超過 189 的 60%
-MIN_WR_TEST = 0.60      # test 容許 5% 寬容
+MIN_WR_TRAIN = 0.70     # WINRATE-MAX 模式提高到 70%（原 65%）
+MIN_WR_TEST = 0.65      # WINRATE-MAX 模式提高到 65%（原 60%）
 MIN_TRAIN_ANNUAL = 326  # 189 train 年化 543% × 0.6
 MIN_TEST_ANNUAL = 277   # 189 test 年化 462% × 0.6
 
@@ -715,13 +715,12 @@ void backtest(
                         float s_consistency = min_seg_annual * 0.03f;
                         if (s_consistency > 10) s_consistency = 10;
 
-                        // === SWING scoring（2026-04-19 改，偏波段，降 s_wr 升 s_avg）===
-                        // 主軸改為「波段 + 勝率雙主軸」
-                        // s_wr: 2.0→1.5 (勝率 65%=22.5 / 75%=37.5 / 80%=45 / 90%=60)
-                        // s_avg: 2.0→3.0 (avg 20%=15 / 25%=30 / 30%=45 / 35%=60)
-                        float s_wr = (win_rate_tr - 50.0f) * 1.5f;
+                        // === WINRATE-MAX scoring（2026-04-19 改，追求極高勝率）===
+                        // s_wr: 2.0→2.5 cap 100 (勝率 70%=50 / 80%=75 / 90%=100)
+                        // s_avg: 2.0→0.5 cap 5（大幅降權，避免 GPU 被波段誘惑）
+                        float s_wr = (win_rate_tr - 50.0f) * 2.5f;
                         if (s_wr < 0) s_wr = 0;
-                        if (s_wr > 60.0f) s_wr = 60.0f;  // 90% 勝率封頂 60 分（原 80）
+                        if (s_wr > 100.0f) s_wr = 100.0f;  // 90% 勝率封頂 100 分
 
                         // s_return 用 min(train, test)，封頂 400% 年化
                         float effective_annual = train_annual < test_annual ? train_annual : test_annual;
@@ -729,11 +728,10 @@ void backtest(
                         float s_return = capped_annual * 0.05f;
                         if (s_return < 0) s_return = 0;
 
-                        // 獎勵波段型高單筆報酬（cap 60，升 30）
-                        // 15%=0, 20%=+15, 25%=+30, 30%=+45, 35%=+60
-                        float s_avg = (avg_ret_tr - 15.0f) * 3.0f;
+                        // s_avg 大幅降權（只留象徵性 cap 5，勝率主導）
+                        float s_avg = (avg_ret_tr - 15.0f) * 0.5f;
                         if (s_avg < 0) s_avg = 0;
-                        if (s_avg > 60.0f) s_avg = 60.0f;
+                        if (s_avg > 5.0f) s_avg = 5.0f;
 
                         // 近 2 年勝率獎勵（最後 500 天，當前市場強勢鼓勵）
                         // 60%=0, 65%=+3, 70%=+6, 75%=+9, 80%=+12, 90%=+15
@@ -1550,9 +1548,9 @@ def main():
     print(f"[GPU-CuPy] 🎯 勝率優先 + 波段獎勵 + 反向 Walk-Forward（融合 189+88.60 優點）")
     print(f"")
     print(f"  ═══ Scoring（勝率主軸 + 波段副軸）═══")
-    print(f"  主軸 s_wr × 1.5 (cap 60)  勝率 65%=+22 / 75%=+37 / 80%=+45 / 90%=+60 [SWING 降權]")
+    print(f"  主軸 s_wr × 2.5 (cap 100)  勝率 70%=+50 / 75%=+62 / 80%=+75 / 90%=+100 [WINRATE-MAX]")
     print(f"  報酬 s_return × 0.05 (cap 20)  年化 400% 封頂")
-    print(f"  波段 s_avg × 3.0 (cap 60)  avg 20%=+15 / 25%=+30 / 30%=+45 / 35%=+60 [SWING 升權]")
+    print(f"  波段 s_avg × 0.5 (cap 5)  大幅降權（勝率主導，放棄波段追求）")
     print(f"  近期 s_recent × 0.5 (cap 15)  近 2 年勝率 65%=+3 / 70%=+6 / 75%=+9 / 80%=+12 ← 新")
     print(f"  風調 s_calmar × 1.5 (cap 10)  Calmar 3=+1.5 / 5=+4.5 / 8=+9 ← 新")
     print(f"  輔助 s_wf×15 / s_sharpe×2 / s_pl×0.5 / s_consistency×0.03 / penalties")
@@ -2022,9 +2020,9 @@ def main():
                 # (1) 真的過不了（strict mode 下 89.90 被 remap 到不合格位置）
                 # (2) Kernel vs cpu_replay 邏輯分歧（Python 全過但 kernel 不認，memory 記錄過）
                 # 地板設 85 當「近 89.90 水準」baseline，避免 GPU 推一堆 60-80 分的爛策略
-                best_score = 70.0
-                print(f"  [GPU] ⚠️ SEED kernel 分數無效（{_seed_score:.1f}，{_seed_nt}筆）— SWING 下 89.90 預估 ~80-85")
-                print(f"  [GPU] 🛡️ 設 best_score=70 當 SWING 地板（89.90 swing 約 82-85，>70 才通知）")
+                best_score = 85.0
+                print(f"  [GPU] ⚠️ SEED kernel 分數無效（{_seed_score:.1f}，{_seed_nt}筆）— WINRATE-MAX 下 89.90 預估 ~90-95")
+                print(f"  [GPU] 🛡️ 設 best_score=85 當 WINRATE 地板（>85 才通知新突破）")
 
         # 收集這批裡分數 > 0 的前 5 名加入名人堂（不用破紀錄也能入）
         top_indices = np.argsort(results[:, 0])[-5:][::-1]
