@@ -1561,8 +1561,8 @@ def main():
             _seg_avgs = [sum(s)/len(s) if s else 0 for s in _seg]
 
             print(f"[診斷] SEED 在反向 WF 下的分解（看卡哪個 gate）：")
-            print(f"  train (新 {_ts_str} ~): n={_n_tr} avg={_avg_tr:.1f}% wr={_wr_tr:.0f}% avg_hold={_ah_tr:.1f}天 MaxDD={_max_dd_tr:.0f}% 總{_tot_tr:.0f}% 年化{_tr_ann:.0f}%")
-            print(f"  test  (舊 < {_ts_str}): n={_n_te} 總{_tot_te:.0f}% 年化{_te_ann:.0f}%")
+            print(f"  train ({_tr_start_str} ~ {_tr_end_str}): n={_n_tr} avg={_avg_tr:.1f}% wr={_wr_tr:.0f}% avg_hold={_ah_tr:.1f}天 MaxDD={_max_dd_tr:.0f}% 總{_tot_tr:.0f}% 年化{_tr_ann:.0f}%")
+            print(f"  test  (train 區間外): n={_n_te} 總{_tot_te:.0f}% 年化{_te_ann:.0f}%")
             print(f"  WF ratio: {_wf:.2f} (kernel 需 ≥ 0.55)")
             print(f"  近60天: {len(_rec)} 筆 avg={_rec_avg:.1f}% (kernel 需 ≥ 5%)")
             print(f"  train 3段: n={[len(s) for s in _seg]} 總{_seg_totals} avg{[round(a,1) for a in _seg_avgs]}")
