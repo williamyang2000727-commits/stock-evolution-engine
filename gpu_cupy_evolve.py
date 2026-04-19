@@ -574,7 +574,7 @@ void backtest(
                     }
                 }
             }
-            // 相對訊號強度檢查：第 1 名 vs 第 2 名分數差必須 ≥ top1_margin（若 top1_margin > 0）
+            // 相對訊號強度檢查：第 1 名 vs 第 2 名分數差必須 >= top1_margin（若 top1_margin > 0）
             bool buy_ok = (best_si >= 0);
             if (buy_ok && top1_margin > 0 && best_buy_score - second_best_score < top1_margin) {
                 buy_ok = false;  // 訊號不明確（矮中選長），跳過
