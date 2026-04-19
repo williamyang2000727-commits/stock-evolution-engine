@@ -1579,6 +1579,18 @@ def main():
         PARAMS_SPACE["take_profit"] = [80, 100, 150]  # 強制高停利
         PARAMS_SPACE["trailing_stop"] = [15, 20, 25]  # 強制寬 trailing
         print(f"  [Mode] 🎯 強迫吃大波段（停利 80+, trailing 15+）")
+    if os.environ.get("GPU_STRICT_SIGNAL") == "1":
+        # 強迫「只買持續強勢股」— 用現有指標提高嚴格度
+        PARAMS_SPACE["week52_min"] = [0.8, 0.9]          # 52 週位置必須頂部
+        PARAMS_SPACE["up_days_min"] = [7, 10]             # 至少連漲 7 天
+        PARAMS_SPACE["mom_th"] = [15, 20, 25]             # 動量 ≥ 15%
+        PARAMS_SPACE["w_week52"] = [2, 3]                  # 強迫啟用 52 週指標
+        PARAMS_SPACE["w_up_days"] = [2, 3]                 # 強迫啟用連漲指標
+        PARAMS_SPACE["w_mom"] = [2, 3]                     # 強迫啟用動量指標
+        PARAMS_SPACE["adx_th"] = [35, 40]                  # ADX 趨勢必強
+        PARAMS_SPACE["w_adx"] = [2, 3]                     # 強迫啟用 ADX
+        print(f"  [Mode] 🔥 嚴格訊號模式：52週頂 + 連漲 7+ + 動量 15+ + ADX 35+")
+        print(f"         = 強迫買「過去持續強勢的股」，當日爆發不夠格")
 
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     print(f"[GPU-CuPy] 🎯 勝率優先 + 波段獎勵 + 反向 Walk-Forward（融合 189+88.60 優點）")
