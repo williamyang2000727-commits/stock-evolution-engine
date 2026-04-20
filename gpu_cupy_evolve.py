@@ -801,7 +801,7 @@ PARAMS_SPACE = {
     "w_adx": [0,1,2,3], "adx_th": [25,30,35,40],
     "consecutive_green": [0,1,2,3], "gap_up": [0,1],
     "above_ma60": [0,1], "vol_gt_yesterday": [0,1],
-    "buy_threshold": [6,8,10,12,14,16,18,20,22],  # 擴大：高門檻 = 超嚴選（減少運氣依賴）
+    "buy_threshold": [1,2,4,6,8,10,12,14,16,18,20,22],  # 加 1/2/4：確保資金不閒置（150 檔幾乎每天有 ≥1 分的）
     # ====== 賣出（全自由探索，靠 120 筆上限 + 品質門檻 + 同資料比較防刷分）======
     "stop_loss": [-5,-7,-10,-12,-15,-20],  # 移除 -3（實盤滑價吃不住，GPU 鑽 Sharpe 公式漏洞）
     "use_take_profit": [0,1], "take_profit": [20,30,40,50,60,80,100,150],
@@ -1114,6 +1114,14 @@ def precompute(data):
         mcap_ranks = np.argsort(np.argsort(-avg_turnover, axis=0), axis=0)
         top100_mask = (mcap_ranks < 100).astype(np.float32)
         print(f"  Universe: mcap100（市值前 100，每天動態排名）")
+    elif _universe in ("mcap150",):
+        turnover = volume * close
+        avg_turnover = np.zeros_like(close)
+        for i in range(20, ml):
+            avg_turnover[:, i] = turnover[:, i-19:i+1].mean(axis=1)
+        mcap_ranks = np.argsort(np.argsort(-avg_turnover, axis=0), axis=0)
+        top100_mask = (mcap_ranks < 150).astype(np.float32)
+        print(f"  Universe: mcap150（市值前 150，每天動態排名）")
     elif _universe in ("top100_p3", "top100p3"):
         top100_mask = _build_persist_mask(100, 3)
         print(f"  🎯 Universe: top100 連續 3 天（寬鬆版）")
