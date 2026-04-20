@@ -600,7 +600,7 @@ void backtest(
 
     // 先檢查全期實盤安全（實盤會遇到的回撤/筆數/持有/報酬）— 不過就拒絕，不進訓練評分
     bool all_pass = false;
-    if (n_trades >= 40 && n_trades <= 200) {  // 1500 天下筆數可能 140-180
+    if (n_trades >= 30 && n_trades <= 200) {  // 1 檔~67 筆 / 2 檔~134 筆，30 是安全下限
         float avg_ret_all = total_ret / n_trades;
         float avg_hold_all = 0;
         for (int i=0; i<n_trades; i++) avg_hold_all += (float)hold_days_arr[i];
@@ -656,7 +656,7 @@ void backtest(
     }
 
     // D（train）：train 筆數 30-140（適配 900/1500 天不同 cache 長度）+ 全期必須先過
-    if (all_pass && n_train >= 30 && n_train <= 140) {
+    if (all_pass && n_train >= 20 && n_train <= 140) {  // 1 檔 train~35-50 筆，20 是安全下限
         float avg_ret_tr = total_train / n_train;
         float win_rate_tr = win_train / n_train * 100.0f;
         float avg_hold_tr = 0;
@@ -696,8 +696,10 @@ void backtest(
 
                 float train_years = (float)(train_end - train_start) / 250.0f;
                 float test_years = (float)(train_start - 60) / 250.0f;
-                float train_annual = train_years > 0.5f ? total_train / train_years : total_train;
-                float test_annual = test_years > 0.3f ? total_test / test_years : total_test;
+                // Position-adjusted: 1 檔 x1.0, 2 檔 x0.5（公平比較不同持倉數）
+                float pos_adj = 1.0f / (float)max_pos;
+                float train_annual = train_years > 0.5f ? (total_train * pos_adj) / train_years : total_train * pos_adj;
+                float test_annual = test_years > 0.3f ? (total_test * pos_adj) / test_years : total_test * pos_adj;
 
                 // Walk-Forward 盲測門檻：test 必須有效正報酬、不退化超過 50%
                 bool wf_pass = true;
