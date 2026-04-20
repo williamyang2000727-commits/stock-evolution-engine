@@ -838,7 +838,7 @@ PARAMS_SPACE = {
     "early_exit_days": [0, 3, 5, 7],
     "early_exit_th": [-5, -8, -10, -12],
     # 🔥 signal_persist_days 完全跟 universe 重複 → 禁用（只保留 0）
-    "signal_persist_days": [0,1],  # 0=直接買, 1=要連兩天 #1 才買（過濾假突破提升勝率）
+    "signal_persist_days": [0],  # 確認機制反而錯過回落買點，禁用
     # 🆕 賣股後強制空倉 N 天（解耦「賣」和「買」，避免時機綁架）
     # 0=不等（現況）；2/3/5/7=賣完後空 N 天才買，讓訊號自由生成而非被迫進場
     "buy_delay_days": [0],  # LOCKED: William rejected (misses good stocks)
