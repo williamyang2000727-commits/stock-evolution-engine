@@ -292,7 +292,7 @@ void backtest(
     int w_vol_up_days_k = (int)p[64]; float vol_up_days_min_k = p[65];
     int w_mom_accel_k = (int)p[66]; float mom_accel_min_k = p[67];
     // 價格穩定性（過去 3 天 |close 變化| 上限，0=關）
-    float max_3d_change = p[68];
+    int protect_days = (int)p[68];  // 前 N 天不觸發 trailing/breakeven（讓倉位發展）
     // 第 1 名 vs 第 2 名分數差門檻（過濾訊號不明確日）
     float top1_margin = p[69];
     // 快速認賠：買後 N 天內虧 threshold% 立刻砍
@@ -339,11 +339,13 @@ void backtest(
             bool sell = false;
 
             float effective_stop = stop_loss;
-            if (use_breakeven == 1 && (hold_pk[h] / hold_bp[h] - 1.0f) * 100.0f >= breakeven_trigger)
+            // protect_days: 前 N 天 breakeven 不生效（讓倉位有時間發展）
+            if (use_breakeven == 1 && dh >= protect_days && (hold_pk[h] / hold_bp[h] - 1.0f) * 100.0f >= breakeven_trigger)
                 effective_stop = 0;
             if (ret <= effective_stop) sell = true;
             if (!sell && use_tp == 1 && ret >= take_profit) sell = true;
-            if (!sell && trailing_stop > 0 && hold_pk[h] > hold_bp[h]) {
+            // protect_days: 前 N 天 trailing 不生效
+            if (!sell && trailing_stop > 0 && dh >= protect_days && hold_pk[h] > hold_bp[h]) {
                 if ((cur / hold_pk[h] - 1.0f) * 100.0f <= -trailing_stop) sell = true;
             }
             if (!sell && use_rsi_sell == 1 && rsi[si * n_days + day] >= rsi_sell_th) sell = true;
@@ -831,7 +833,7 @@ PARAMS_SPACE = {
     "w_vol_up_days": [0,1,2], "vol_up_days_min": [2,3,4,5,7],  # 擴大：連量增更多天
     "w_mom_accel": [0,1,2], "mom_accel_min": [0,2,5,8],
     # 🔒 max_3d_change 跟新 universe 重複 → 禁用（只保留 0）
-    "max_3d_change": [0],
+    "max_3d_change": [0, 3, 5, 7, 10],  # 實際用途=protect_days：前 N 天不觸發 trailing/breakeven
     # 🎯 top1_margin 保留但精簡範圍（跟 universe 正交，實驗性保留）
     "top1_margin": [0],  # LOCKED: GPU always picks 0
     # ⚡ 快速認賠（跟 universe 正交，買錯後的控損機制，保留）
@@ -1336,7 +1338,8 @@ def cpu_replay(pre, p):
             if cur>hold_pk[h]: hold_pk[h]=cur
             sell=False; reason=0
             eff_stop=p["stop_loss"]
-            _is_breakeven = p.get("use_breakeven",0) and (hold_pk[h]/hold_bp[h]-1)*100>=p.get("breakeven_trigger",20)
+            _protect = int(p.get("max_3d_change", 0))  # repurposed as protect_days
+            _is_breakeven = p.get("use_breakeven",0) and dh >= _protect and (hold_pk[h]/hold_bp[h]-1)*100>=p.get("breakeven_trigger",20)
             if _is_breakeven: eff_stop=0
             # 快速認賠：買後 N 天內若虧 threshold% 立刻砍
             _ee_days = int(p.get("early_exit_days", 0))
@@ -1345,7 +1348,7 @@ def cpu_replay(pre, p):
                 sell=True; reason=2  # 標為停損
             if not sell and ret<=eff_stop: sell=True; reason=14 if _is_breakeven else 2  # 14=保本, 2=停損
             if not sell and p.get("use_take_profit",1) and ret>=p["take_profit"]: sell=True; reason=1
-            if not sell and p.get("trailing_stop",0)>0 and hold_pk[h]>hold_bp[h]:
+            if not sell and p.get("trailing_stop",0)>0 and dh >= _protect and hold_pk[h]>hold_bp[h]:
                 if (cur/hold_pk[h]-1)*100<=-p["trailing_stop"]: sell=True; reason=4
             if not sell and p.get("use_rsi_sell",0) and rsi[si,day]>=p.get("rsi_sell",90): sell=True; reason=3
             if not sell and p.get("use_macd_sell",0) and day>=1:
