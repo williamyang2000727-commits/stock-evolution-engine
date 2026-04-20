@@ -1098,22 +1098,22 @@ def precompute(data):
         return (count >= min_days_in).astype(np.float32)
 
     if _universe in ("mcap70",):
-        # 市值前 70：用 avg(volume × close) 當 market cap proxy，靜態池
-        turnover = (volume * close).mean(axis=1)  # shape (n,)
-        top_indices = np.argsort(-turnover)[:70]
-        top100_mask = np.zeros((n, ml), dtype=np.float32)
-        for si in top_indices:
-            top100_mask[si, :] = 1.0
-        _top_names = [tickers[i] for i in top_indices[:10]]
-        print(f"  Universe: mcap70（市值前 70，靜態池）")
-        print(f"    Top 10: {', '.join(_top_names)}")
+        # 市值前 70（動態）：每天用 20 日平均成交金額排名，前 70 名
+        turnover = volume * close
+        avg_turnover = np.zeros_like(close)
+        for i in range(20, ml):
+            avg_turnover[:, i] = turnover[:, i-19:i+1].mean(axis=1)
+        mcap_ranks = np.argsort(np.argsort(-avg_turnover, axis=0), axis=0)
+        top100_mask = (mcap_ranks < 70).astype(np.float32)
+        print(f"  Universe: mcap70（市值前 70，每天動態排名）")
     elif _universe in ("mcap100",):
-        turnover = (volume * close).mean(axis=1)
-        top_indices = np.argsort(-turnover)[:100]
-        top100_mask = np.zeros((n, ml), dtype=np.float32)
-        for si in top_indices:
-            top100_mask[si, :] = 1.0
-        print(f"  Universe: mcap100（市值前 100，靜態池）")
+        turnover = volume * close
+        avg_turnover = np.zeros_like(close)
+        for i in range(20, ml):
+            avg_turnover[:, i] = turnover[:, i-19:i+1].mean(axis=1)
+        mcap_ranks = np.argsort(np.argsort(-avg_turnover, axis=0), axis=0)
+        top100_mask = (mcap_ranks < 100).astype(np.float32)
+        print(f"  Universe: mcap100（市值前 100，每天動態排名）")
     elif _universe in ("top100_p3", "top100p3"):
         top100_mask = _build_persist_mask(100, 3)
         print(f"  🎯 Universe: top100 連續 3 天（寬鬆版）")
@@ -2080,8 +2080,8 @@ def main():
             _seed_nt = int(results[0, 1])
             _seed_total = float(results[0, 3])
             if _seed_score > 0:
-                # 用 SEED 分數的 80% 當 baseline — 新框架（hold 45/60）需要從較低起點爬
-                best_score = _seed_score * 0.8
+                # 新 universe 時 SEED 分數可能很低，用 50% 當起跑線不擋路
+                best_score = _seed_score * 0.5
                 best_nt = _seed_nt
                 best_avg = float(results[0, 2])
                 best_total = _seed_total
