@@ -26,8 +26,18 @@ claimed = pending.get("backtest", {})
 print(f"Pending 宣稱：score={pending.get('score')}, {claimed.get('total_trades')}筆 總{claimed.get('total_return')}% 勝率{claimed.get('win_rate')}%")
 
 data = download_data()
-TARGET_DAYS = 900
+# 動態 TARGET_DAYS 跟 gpu_cupy_evolve.py 一致
+_lens = [len(v) for v in data.values()]
+_n_1500 = sum(1 for l in _lens if l >= 1500)
+_n_1200 = sum(1 for l in _lens if l >= 1200)
+if _n_1500 >= 500:
+    TARGET_DAYS = 1500
+elif _n_1200 >= 800:
+    TARGET_DAYS = 1200
+else:
+    TARGET_DAYS = 900
 data = {k: v.tail(TARGET_DAYS) for k, v in data.items() if len(v) >= TARGET_DAYS}
+print(f"TARGET_DAYS: {TARGET_DAYS}（1500-q {_n_1500}）")
 pre = precompute(data)
 print(f"資料：{pre['n_stocks']} 檔 × {pre['n_days']} 天")
 print(f"期間：{pre['dates'][0].date()} ~ {pre['dates'][-1].date()}")
