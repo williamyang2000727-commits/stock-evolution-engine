@@ -36,10 +36,10 @@ CACHE_PATH = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_dat
 #   - test 年化 >= 277%（= 462 × 0.6）
 #   - WF ratio >= 0.55（2022 熊市達近期 55% 更實際）
 #   - recent-60d avg >= 5%
-MIN_WR_TRAIN = 0.63     # 放寬：讓高 avg 策略也能過（63% 仍穩定）
-MIN_WR_TEST = 0.55      # 2022 熊市 55% 已經很好了（89.90 在 1500 天 test 是 63%）
-MIN_TRAIN_ANNUAL = 250  # 放寬：允許更多策略進入（scoring 會自動偏好高年化的）
-MIN_TEST_ANNUAL = 180   # 大幅放寬：2022 熊市能年化 180% 就值得看
+MIN_WR_TRAIN = 0.55     # 大幅放寬（mcap 大型股波動小，WR 不像小型股那麼高）
+MIN_WR_TEST = 0.45      # 熊市大型股 45% 已可接受
+MIN_TRAIN_ANNUAL = 80   # 大型股年化 80% 就很強了（不是小型股的 300%+）
+MIN_TEST_ANNUAL = 40    # 熊市不虧就好
 
 CN_NAMES = {}
 # 從完整名單載入（1958 檔台灣上市櫃股票）
@@ -600,7 +600,7 @@ void backtest(
 
     // 先檢查全期實盤安全（實盤會遇到的回撤/筆數/持有/報酬）— 不過就拒絕，不進訓練評分
     bool all_pass = false;
-    if (n_trades >= 30 && n_trades <= 200) {  // 1 檔~67 筆 / 2 檔~134 筆，30 是安全下限
+    if (n_trades >= 15 && n_trades <= 200) {  // mcap70+1pos 可能只有 30-40 筆，15 保底
         float avg_ret_all = total_ret / n_trades;
         float avg_hold_all = 0;
         for (int i=0; i<n_trades; i++) avg_hold_all += (float)hold_days_arr[i];
@@ -656,14 +656,14 @@ void backtest(
     }
 
     // D（train）：train 筆數 30-140（適配 900/1500 天不同 cache 長度）+ 全期必須先過
-    if (all_pass && n_train >= 20 && n_train <= 140) {  // 1 檔 train~35-50 筆，20 是安全下限
+    if (all_pass && n_train >= 10 && n_train <= 140) {  // mcap70+1pos train 可能 15-25 筆
         float avg_ret_tr = total_train / n_train;
         float win_rate_tr = win_train / n_train * 100.0f;
         float avg_hold_tr = 0;
         for (int i=0; i<n_train; i++) avg_hold_tr += (float)hd_train[i];
         avg_hold_tr /= n_train;
 
-        if (avg_ret_tr >= 8 && win_rate_tr >= 35 && avg_hold_tr >= 5.0f) {
+        if (avg_ret_tr >= 3 && win_rate_tr >= 35 && avg_hold_tr >= 5.0f) {  // avg 8→3 for mcap large-cap
             // Sharpe（train）
             float sum_sq = 0;
             for (int i=0; i<n_train; i++) { float d = rets_train[i] - avg_ret_tr; sum_sq += d*d; }
@@ -2137,9 +2137,9 @@ def main():
             _tds = [t for t in _tds if not _mc.isnan(t.get("return",0))]
             _cmp = [t for t in _tds if t.get("reason") != "持有中"]
             _cnt = len(_cmp)
-            if _cnt < 40 or _cnt > 200: _gate_fail["cnt"] += 1; continue
+            if _cnt < 15 or _cnt > 200: _gate_fail["cnt"] += 1; continue  # mcap70 筆數少
             _cavg = sum(t.get("return",0) for t in _cmp) / _cnt
-            if _cavg < 8: _gate_fail["avg"] += 1; continue  # 放寬 10→8：高勝率策略 avg 可能較低但總報酬不差
+            if _cavg < 3: _gate_fail["avg"] += 1; continue  # mcap 大型股 avg 天生低
             _cah = sum(t.get("days",0) for t in _cmp) / _cnt
             if _cah < 5: _gate_fail["hold"] += 1; continue
             _crun = 0; _cmdd = 0
