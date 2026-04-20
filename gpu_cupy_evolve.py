@@ -36,10 +36,10 @@ CACHE_PATH = os.path.join(os.path.expanduser("~"), "stock-evolution", "stock_dat
 #   - test 年化 >= 277%（= 462 × 0.6）
 #   - WF ratio >= 0.55（2022 熊市達近期 55% 更實際）
 #   - recent-60d avg >= 5%
-MIN_WR_TRAIN = 0.65     # BALANCED 模式：勝率+波段雙重視（65% 夠穩）
-MIN_WR_TEST = 0.60      # test 容許 5% 寬容（熊市難高勝率）
-MIN_TRAIN_ANNUAL = 326  # 189 train 年化 543% × 0.6
-MIN_TEST_ANNUAL = 277   # 189 test 年化 462% × 0.6
+MIN_WR_TRAIN = 0.63     # 放寬：讓高 avg 策略也能過（63% 仍穩定）
+MIN_WR_TEST = 0.55      # 2022 熊市 55% 已經很好了（89.90 在 1500 天 test 是 63%）
+MIN_TRAIN_ANNUAL = 250  # 放寬：允許更多策略進入（scoring 會自動偏好高年化的）
+MIN_TEST_ANNUAL = 180   # 大幅放寬：2022 熊市能年化 180% 就值得看
 
 CN_NAMES = {}
 # 從完整名單載入（1958 檔台灣上市櫃股票）
@@ -2088,13 +2088,15 @@ def main():
             _seed_nt = int(results[0, 1])
             _seed_total = float(results[0, 3])
             if _seed_score > 0:
-                best_score = _seed_score
+                # 用 SEED 分數的 90% 當 baseline（不是 100%），讓「接近但不同方向」的策略也能被記錄
+                # 這樣 HOF 會有多樣性，配種才有效。106 分 × 0.9 = 95.4 → 95+ 就算突破
+                best_score = _seed_score * 0.9
                 best_nt = _seed_nt
                 best_avg = float(results[0, 2])
                 best_total = _seed_total
                 best_wr = float(results[0, 4])
                 total_improved += 1
-                print(f"  [GPU] 🌱 SEED baseline：{_seed_score:.1f} | {_seed_nt}筆 | 總{_seed_total:.0f}%（新公式下 Gist 策略分數，要超過它才算進步）")
+                print(f"  [GPU] 🌱 SEED 分數：{_seed_score:.1f} | baseline 設為 {best_score:.1f}（90%，讓不同方向的策略也能入 HOF）")
             else:
                 # SEED 無效可能原因：
                 # (1) 真的過不了（strict mode 下 89.90 被 remap 到不合格位置）
@@ -2149,7 +2151,7 @@ def main():
             _cnt = len(_cmp)
             if _cnt < 40 or _cnt > 200: _gate_fail["cnt"] += 1; continue
             _cavg = sum(t.get("return",0) for t in _cmp) / _cnt
-            if _cavg < 10: _gate_fail["avg"] += 1; continue
+            if _cavg < 8: _gate_fail["avg"] += 1; continue  # 放寬 10→8：高勝率策略 avg 可能較低但總報酬不差
             _cah = sum(t.get("days",0) for t in _cmp) / _cnt
             if _cah < 5: _gate_fail["hold"] += 1; continue
             _crun = 0; _cmdd = 0
@@ -2197,7 +2199,7 @@ def main():
             _recent = [t for t in _cmp if t.get("buy_date","") >= _recent_cutoff]
             if len(_recent) >= 3:
                 _recent_avg = sum(t.get("return",0) for t in _recent) / len(_recent)
-                if _recent_avg < 5:
+                if _recent_avg < 3:  # 放寬 5→3：近期不崩就好，不要求太高
                     _gate_fail["recent"] += 1
                     continue
             # 🔓 Calmar / 近 2 年 avg gate 移除（放在 kernel scoring 當加分項）
