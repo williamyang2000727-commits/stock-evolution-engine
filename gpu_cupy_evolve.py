@@ -235,7 +235,6 @@ void backtest(
     const float* bias, const float* obv_rising, const float* atr_pct,
     const float* open_price, const float* top100_mask, const float* market_bull,
     const float* up_days, const float* week52_pos, const float* vol_up_days, const float* mom_accel,
-    const float* mfi, const float* cmf, const float* atr_ratio,
     const float* params, const int n_params_per_combo,
     float* results, const int n_combos,
     const int train_start, const int train_end
@@ -303,14 +302,10 @@ void backtest(
     int signal_persist_days = (int)p[72];
     // 賣股後空倉冷卻期（解耦賣跟買）
     int buy_delay_days = (int)p[73];
-    // New indicators (MFI, CMF, ATR contraction)
-    int w_mfi_k = (int)p[74]; float mfi_th_k = p[75];
-    int w_cmf_k = (int)p[76]; float cmf_th_k = p[77];
-    int w_atr_contract_k = (int)p[78]; float atr_contract_th_k = p[79];
-    // MA/MOM 選擇
-    int ma_fast_idx = (int)p[80];
-    int ma_slow_idx = (int)p[81];
-    int mom_idx = (int)p[82];
+    // MA/MOM 選擇（MFI/CMF/ATR 已移出 kernel 恢復速度）
+    int ma_fast_idx = (int)p[74];
+    int ma_slow_idx = (int)p[75];
+    int mom_idx = (int)p[76];
 
     const float* ma_fast_arr = ma_fast_idx==0 ? ma3 : ma_fast_idx==1 ? ma5 : ma10;
     const float* ma_slow_arr = ma_slow_idx==0 ? ma15 : ma_slow_idx==1 ? ma20 : ma_slow_idx==2 ? ma30 : ma60;
@@ -431,9 +426,6 @@ void backtest(
                 if (w_week52_k > 0 && week52_pos[d] >= week52_min_k) sc += w_week52_k;
                 if (w_vol_up_days_k > 0 && vol_up_days[d] >= vol_up_days_min_k) sc += w_vol_up_days_k;
                 if (w_mom_accel_k > 0 && mom_accel[d] >= mom_accel_min_k) sc += w_mom_accel_k;
-                if (w_mfi_k > 0 && mfi[d] >= mfi_th_k) sc += w_mfi_k;
-                if (w_cmf_k > 0 && cmf[d] >= cmf_th_k) sc += w_cmf_k;
-                if (w_atr_contract_k > 0 && atr_ratio[d] <= atr_contract_th_k) sc += w_atr_contract_k;
                 if (consec_green >= 1) {
                     bool ok = true;
                     for (int g = 0; g < consec_green; g++) {
@@ -478,9 +470,6 @@ void backtest(
                     if (w_week52_k > 0 && week52_pos[d] >= week52_min_k) sc += w_week52_k;
                     if (w_vol_up_days_k > 0 && vol_up_days[d] >= vol_up_days_min_k) sc += w_vol_up_days_k;
                     if (w_mom_accel_k > 0 && mom_accel[d] >= mom_accel_min_k) sc += w_mom_accel_k;
-                    if (w_mfi_k > 0 && mfi[d] >= mfi_th_k) sc += w_mfi_k;
-                    if (w_cmf_k > 0 && cmf[d] >= cmf_th_k) sc += w_cmf_k;
-                    if (w_atr_contract_k > 0 && atr_ratio[d] <= atr_contract_th_k) sc += w_atr_contract_k;
                     if (sc < weakest_sc) { weakest_sc = sc; weakest_h = h; }
                 }
                 // 候選分數 - 最弱持股分數 >= margin → 賣弱換強
@@ -548,9 +537,6 @@ void backtest(
                 if (w_week52_k > 0 && week52_pos[d] >= week52_min_k) sc += w_week52_k;
                 if (w_vol_up_days_k > 0 && vol_up_days[d] >= vol_up_days_min_k) sc += w_vol_up_days_k;
                 if (w_mom_accel_k > 0 && mom_accel[d] >= mom_accel_min_k) sc += w_mom_accel_k;
-                if (w_mfi_k > 0 && mfi[d] >= mfi_th_k) sc += w_mfi_k;
-                if (w_cmf_k > 0 && cmf[d] >= cmf_th_k) sc += w_cmf_k;
-                if (w_atr_contract_k > 0 && atr_ratio[d] <= atr_contract_th_k) sc += w_atr_contract_k;
 
                 if (consec_green >= 1) {
                     bool ok = true;
@@ -834,9 +820,7 @@ PARAMS_SPACE = {
     # 0=不等（現況）；2/3/5/7=賣完後空 N 天才買，讓訊號自由生成而非被迫進場
     "buy_delay_days": [0],  # LOCKED: William rejected (misses good stocks)
     # ====== MFI / CMF / ATR contraction ======
-    "w_mfi": [0], "mfi_th": [70],  # LOCKED: 先恢復速度，未來再開
-    "w_cmf": [0], "cmf_th": [0.10],  # LOCKED
-    "w_atr_contract": [0], "atr_contract_th": [0.80],  # LOCKED
+    # MFI/CMF/ATR_contract: removed from kernel entirely (restore speed)
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10,15],  # 擴大：強換股門檻，買到爛股可被強股換掉
     # ====== 多持倉 ======
@@ -878,9 +862,6 @@ PARAM_ORDER = [
     "early_exit_th",   # ⚡ 買後快速認賠閾值（-5/-8/-10/-12，搭 early_exit_days 使用）
     "signal_persist_days",  # 🔥 核心：買入要求過去 N 天都是 top100（0=關，2/3/5=啟用，對抗「單日運氣」）
     "buy_delay_days",  # 🆕 賣股後強制空倉 N 天，解耦賣跟買（0=關，2/3/5/7=啟用）
-    "w_mfi", "mfi_th",
-    "w_cmf", "cmf_th",
-    "w_atr_contract", "atr_contract_th",
 ]
 
 MA_FAST_OPTS = [3,5,10]
@@ -1408,12 +1389,6 @@ def cpu_replay(pre, p):
                 if int(p.get("w_vol_up_days",0))>0 and vol_up_days_arr is not None and vol_up_days_arr[si,d]>=p.get("vol_up_days_min",3): sc+=int(p["w_vol_up_days"])
                 if int(p.get("w_mom_accel",0))>0 and mom_accel_arr is not None and mom_accel_arr[si,d]>=p.get("mom_accel_min",2): sc+=int(p["w_mom_accel"])
                 # New indicators
-                _w_mfi = int(p.get("w_mfi", 0))
-                if _w_mfi > 0 and mfi_arr is not None and mfi_arr[si, day] >= p.get("mfi_th", 70): sc += _w_mfi
-                _w_cmf = int(p.get("w_cmf", 0))
-                if _w_cmf > 0 and cmf_arr is not None and cmf_arr[si, day] >= p.get("cmf_th", 0.1): sc += _w_cmf
-                _w_atrc = int(p.get("w_atr_contract", 0))
-                if _w_atrc > 0 and atr_ratio_arr is not None and atr_ratio_arr[si, day] <= p.get("atr_contract_th", 0.8): sc += _w_atrc
                 return sc
             # 找候選最高分（追蹤 top-1 + top-2）
             cand_si=-1; cand_sc=0; cand_vol=0
@@ -1527,12 +1502,6 @@ def cpu_replay(pre, p):
                 if p.get("gap_up",0) and gap[si,day]>=1.0: sc+=1
                 if p.get("above_ma60",0) and close[si,day]>=ma60[si,day]: sc+=1
                 if p.get("vol_gt_yesterday",0) and day>=1 and vol_ratio[si,day]>vol_prev[si,day]: sc+=1
-                _w_mfi=int(p.get("w_mfi",0))
-                if _w_mfi>0 and mfi_arr is not None and mfi_arr[si,day]>=p.get("mfi_th",70): sc+=_w_mfi
-                _w_cmf=int(p.get("w_cmf",0))
-                if _w_cmf>0 and cmf_arr is not None and cmf_arr[si,day]>=p.get("cmf_th",0.1): sc+=_w_cmf
-                _w_atrc=int(p.get("w_atr_contract",0))
-                if _w_atrc>0 and atr_ratio_arr is not None and atr_ratio_arr[si,day]<=p.get("atr_contract_th",0.8): sc+=_w_atrc
                 vr=float(vol_ratio[si,day]) if vol_ratio is not None else 0
                 if sc>=buy_th and (sc>best_sc or (sc==best_sc and vr>best_vol)): best_si=si; best_sc=sc; best_vol=vr
             if best_si>=0:
@@ -1671,7 +1640,7 @@ def main():
     d_market = cp.asarray(pre["market_bull"])
     d_up_days = cp.asarray(pre["up_days"]); d_week52 = cp.asarray(pre["week52_pos"])
     d_vol_up_days = cp.asarray(pre["vol_up_days"]); d_mom_accel = cp.asarray(pre["mom_accel"])
-    d_mfi = cp.asarray(pre["mfi"]); d_cmf = cp.asarray(pre["cmf"]); d_atr_ratio = cp.asarray(pre["atr_ratio"])
+    # d_mfi/d_cmf/d_atr_ratio removed from kernel (restore speed)
     d_ma60 = cp.asarray(pre["ma60"])
 
     print("[GPU] 開始進化！每批 500,000 組")
@@ -1860,7 +1829,7 @@ def main():
                 d_market = cp.asarray(pre["market_bull"])
                 d_up_days = cp.asarray(pre["up_days"]); d_week52 = cp.asarray(pre["week52_pos"])
                 d_vol_up_days = cp.asarray(pre["vol_up_days"]); d_mom_accel = cp.asarray(pre["mom_accel"])
-                d_mfi = cp.asarray(pre["mfi"]); d_cmf = cp.asarray(pre["cmf"]); d_atr_ratio = cp.asarray(pre["atr_ratio"])
+                # d_mfi/d_cmf/d_atr_ratio removed from kernel (restore speed)
                 d_ma60 = cp.asarray(pre["ma60"])
                 d_ma3 = cp.asarray(pre["ma_d"][3]); d_ma5 = cp.asarray(pre["ma_d"][5])
                 d_ma10 = cp.asarray(pre["ma_d"][10]); d_ma15 = cp.asarray(pre["ma_d"][15])
@@ -2038,7 +2007,6 @@ def main():
             d_vp, d_squeeze, d_newhigh, d_adx, d_bias, d_obv_rising, d_atr_pct,
             d_open, d_top100, d_market,
             d_up_days, d_week52, d_vol_up_days, d_mom_accel,
-            d_mfi, d_cmf, d_atr_ratio,
             d_params, np.int32(N_PARAMS_FULL),
             d_results, np.int32(BATCH),
             np.int32(pre["train_start"]),
