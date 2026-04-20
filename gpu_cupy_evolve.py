@@ -300,6 +300,8 @@ void backtest(
     float early_exit_th = p[71];
     // 訊號持續性：過去 N 天也必須是 top100 強勢股（對抗單日運氣）
     int signal_persist_days = (int)p[72];
+    // 買入確認（0=直接買, 1=需隔天還在 threshold 以上才買）
+    int buy_confirm = (int)p[72];
     // 賣股後空倉冷卻期（解耦賣跟買）
     int buy_delay_days = (int)p[73];
     // MA/MOM 選擇（MFI/CMF/ATR 已移出 kernel 恢復速度）
@@ -321,6 +323,8 @@ void backtest(
     float rets[200];
     int trade_bdays[200];
     int hold_days_arr[200];
+    // 買入確認：追蹤昨天的 #1 候選（buy_confirm 參數控制）
+    int pending_buy_si = -1;
 
     for (int day = 60; day < n_days - 1; day++) {
         // === Phase 1: 檢查所有持倉的賣出條件（用 day 收盤價判斷）===
@@ -555,15 +559,34 @@ void backtest(
                     best_si = si; best_buy_score = sc; best_buy_vol = vol_ratio[d];
                 }
             }
-            if (best_si >= 0) for (int h = 0; h < max_pos; h++) {
-                if (hold_si[h] < 0) {
-                    hold_si[h] = best_si;
-                    hold_bp[h] = close[best_si * n_days + day + 1];  // 買入 D+1 收盤
-                    hold_pk[h] = hold_bp[h];
-                    hold_bd[h] = day + 1;
-                    n_holding++;
-                    break;
+            if (best_si >= 0) {
+                // buy_confirm: 0=direct buy, 1=only buy if yesterday's pending is still good
+                bool do_buy = false;
+                if (buy_confirm == 0) {
+                    do_buy = true;
+                } else {
+                    // Only buy if this stock was ALSO the pending from yesterday
+                    if (best_si == pending_buy_si) {
+                        do_buy = true;
+                    }
+                    // Update pending for tomorrow
+                    pending_buy_si = best_si;
                 }
+                if (do_buy) {
+                    for (int h = 0; h < max_pos; h++) {
+                        if (hold_si[h] < 0) {
+                            hold_si[h] = best_si;
+                            hold_bp[h] = close[best_si * n_days + day + 1];
+                            hold_pk[h] = hold_bp[h];
+                            hold_bd[h] = day + 1;
+                            n_holding++;
+                            pending_buy_si = -1;
+                            break;
+                        }
+                    }
+                }
+            } else {
+                pending_buy_si = -1;
             }
         }
 
@@ -815,7 +838,7 @@ PARAMS_SPACE = {
     "early_exit_days": [0, 3, 5, 7],
     "early_exit_th": [-5, -8, -10, -12],
     # 🔥 signal_persist_days 完全跟 universe 重複 → 禁用（只保留 0）
-    "signal_persist_days": [0],
+    "signal_persist_days": [0,1],  # 0=直接買, 1=要連兩天 #1 才買（過濾假突破提升勝率）
     # 🆕 賣股後強制空倉 N 天（解耦「賣」和「買」，避免時機綁架）
     # 0=不等（現況）；2/3/5/7=賣完後空 N 天才買，讓訊號自由生成而非被迫進場
     "buy_delay_days": [0],  # LOCKED: William rejected (misses good stocks)
@@ -1301,6 +1324,7 @@ def cpu_replay(pre, p):
     if max_pos>3: max_pos=3
     hold_si=[-1]*3; hold_bp=[0]*3; hold_pk=[0]*3; hold_bd=[0]*3; n_holding=0; trades=[]
     last_sell_day=[-99999]*3  # buy_delay 冷卻用
+    _pending_buy_si = -1  # buy_confirm 用：昨天的 #1 候選
     _buy_delay_days = int(p.get("buy_delay_days", 0))
     for day in range(60, nd-1):
         # Phase 1: 賣出（D+1 開盤價）
@@ -1505,12 +1529,24 @@ def cpu_replay(pre, p):
                 vr=float(vol_ratio[si,day]) if vol_ratio is not None else 0
                 if sc>=buy_th and (sc>best_sc or (sc==best_sc and vr>best_vol)): best_si=si; best_sc=sc; best_vol=vr
             if best_si>=0:
-                for h in range(max_pos):
-                    if hold_si[h]<0:
-                        # buy_delay cooldown check
-                        if _buy_delay_days > 0 and (day - last_sell_day[h]) < _buy_delay_days: continue
-                        hold_si[h]=best_si; hold_bp[h]=float(close[best_si,day+1])
-                        hold_pk[h]=hold_bp[h]; hold_bd[h]=day+1; n_holding+=1; break
+                # buy_confirm: 0=direct, 1=must be same as yesterday's pending
+                _buy_confirm = int(p.get("signal_persist_days", 0))
+                do_buy = False
+                if _buy_confirm == 0:
+                    do_buy = True
+                else:
+                    if best_si == _pending_buy_si:
+                        do_buy = True
+                    _pending_buy_si = best_si
+                if do_buy:
+                    for h in range(max_pos):
+                        if hold_si[h]<0:
+                            if _buy_delay_days > 0 and (day - last_sell_day[h]) < _buy_delay_days: continue
+                            hold_si[h]=best_si; hold_bp[h]=float(close[best_si,day+1])
+                            hold_pk[h]=hold_bp[h]; hold_bd[h]=day+1; n_holding+=1
+                            _pending_buy_si=-1; break
+            else:
+                _pending_buy_si = -1
         # Phase 3 已移除（第三檔回測表現不佳）
     # Append active holdings as "持有中"
     for h in range(max_pos):
