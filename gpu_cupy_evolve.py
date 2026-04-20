@@ -2089,13 +2089,10 @@ def main():
                 total_improved += 1
                 print(f"  [GPU] 🌱 SEED 分數：{_seed_score:.1f} | baseline 設為 {best_score:.1f}（90%，讓不同方向的策略也能入 HOF）")
             else:
-                # SEED 無效可能原因：
-                # (1) 真的過不了（strict mode 下 89.90 被 remap 到不合格位置）
-                # (2) Kernel vs cpu_replay 邏輯分歧（Python 全過但 kernel 不認，memory 記錄過）
-                # 地板設 85 當「近 89.90 水準」baseline，避免 GPU 推一堆 60-80 分的爛策略
-                best_score = 85.0
-                print(f"  [GPU] ⚠️ SEED kernel 分數無效（{_seed_score:.1f}，{_seed_nt}筆）— WINRATE-MAX 下 89.90 預估 ~90-95")
-                print(f"  [GPU] 🛡️ 設 best_score=85 當 WINRATE 地板（>85 才通知新突破）")
+                # SEED 在新 universe 上可能完全不適用 → baseline=0 讓 GPU 自由探索
+                best_score = 0
+                print(f"  [GPU] ⚠️ SEED 在此 universe 無效（{_seed_score:.1f}，{_seed_nt}筆）")
+                print(f"  [GPU] baseline=0，從零開始搜尋")
 
         # 收集這批裡分數 > 0 的前 5 名加入名人堂（不用破紀錄也能入）
         top_indices = np.argsort(results[:, 0])[-5:][::-1]
