@@ -729,53 +729,22 @@ void backtest(
                         float s_consistency = min_seg_annual * 0.03f;
                         if (s_consistency > 10) s_consistency = 10;
 
-                        // === BALANCED scoring（2026-04-20 改，勝率+波段雙重視）===
-                        // s_wr: 2.0 cap 80 (勝率 65%=30 / 70%=40 / 75%=50 / 80%=60)
-                        // s_avg: 1.5 cap 30 (avg 15%=0 / 20%=7.5 / 25%=15 / 30%=22.5 / 35%=30)
-                        // 兩者權重接近 = GPU 必須同時追求高勝率 AND 高 avg
+                        // === ORIGINAL scoring（還原 89.90 發現時的公式）===
+                        // s_wr x 2.0 cap 80 + s_avg x 2.0 cap 30 = 找到 89.90 的黃金公式
                         float s_wr = (win_rate_tr - 50.0f) * 2.0f;
                         if (s_wr < 0) s_wr = 0;
                         if (s_wr > 80.0f) s_wr = 80.0f;
 
-                        // s_return 用 min(train, test)，封頂 400% 年化
                         float effective_annual = train_annual < test_annual ? train_annual : test_annual;
                         float capped_annual = effective_annual > 400.0f ? 400.0f : effective_annual;
                         float s_return = capped_annual * 0.05f;
                         if (s_return < 0) s_return = 0;
 
-                        // s_avg 大幅提權（獎勵吃波段，avg 20%+ 顯著加分）
-                        float s_avg = (avg_ret_tr - 15.0f) * 1.5f;
+                        // s_avg x 2.0 cap 30 (avg 20%=+10, 25%=+20, 30%=+30)
+                        float s_avg = (avg_ret_tr - 15.0f) * 2.0f;
                         if (s_avg < 0) s_avg = 0;
                         if (s_avg > 30.0f) s_avg = 30.0f;
 
-                        // 近 2 年勝率獎勵（最後 500 天，當前市場強勢鼓勵）
-                        // 60%=0, 65%=+3, 70%=+6, 75%=+9, 80%=+12, 90%=+15
-                        int recent_start = n_days - 500;
-                        if (recent_start < train_start) recent_start = train_start;
-                        float rec_wins = 0; int rec_n = 0;
-                        for (int i=0; i<n_train; i++) {
-                            if (bdays_train[i] >= recent_start) {
-                                rec_n++;
-                                if (rets_train[i] > 0) rec_wins += 1;
-                            }
-                        }
-                        float s_recent = 0;
-                        if (rec_n >= 5) {
-                            float rec_wr = rec_wins / rec_n * 100.0f;
-                            s_recent = (rec_wr - 60.0f) * 0.5f;
-                            if (s_recent < 0) s_recent = 0;
-                            if (s_recent > 15.0f) s_recent = 15.0f;
-                        }
-
-                        // Calmar 獎勵（CAGR 高 + MaxDD 低 = 風險調整後報酬）
-                        // train_ann 400% / MaxDD 20% = 20 → 超頂，cap 10
-                        float abs_dd = fabsf(max_dd_tr);
-                        float calmar = abs_dd > 1.0f ? (train_annual / abs_dd) : 0;
-                        float s_calmar = 0;
-                        if (calmar > 2.0f) s_calmar = (calmar - 2.0f) * 1.5f;
-                        if (s_calmar > 10.0f) s_calmar = 10.0f;
-
-                        // 輔助評分（權重都降低，讓 s_wr 主導）
                         float s_sharpe = sharpe_tr * 2.0f; if (s_sharpe > 10) s_sharpe = 10;
                         float s_pl = pl_ratio * 0.5f; if (s_pl > 5) s_pl = 5;
                         float s_streak = max_streak * 1.0f;
@@ -788,7 +757,7 @@ void backtest(
                         if (wf_ratio > 1.2f) wf_ratio = 1.2f;
                         float s_wf = wf_ratio * 15.0f;
 
-                        score = s_wr + s_return + s_avg + s_recent + s_calmar + s_sharpe + s_pl + s_consistency + s_wf - s_streak - s_dd - s_hold_pen;
+                        score = s_wr + s_return + s_avg + s_sharpe + s_pl + s_consistency + s_wf - s_streak - s_dd - s_hold_pen;
                     }
                 }
             }
@@ -828,7 +797,7 @@ PARAMS_SPACE = {
     "use_macd_sell": [0,1], "use_kd_sell": [0,1],
     "sell_vol_shrink": [0,0.3,0.5,0.7],
     "sell_below_ma": [0,1,2,3],
-    "hold_days": [5,7,10,15,20,25,30],
+    "hold_days": [5,7,10,15,20,25,30,45,60],  # 加 45/60：讓波段跑更久
     # ====== BIAS 乖離率 ======
     "w_bias": [0,1,2,3], "bias_max": [3,5,8,10,15,20,30],
     # ====== 停滯出場 ======
@@ -865,9 +834,9 @@ PARAMS_SPACE = {
     # 0=不等（現況）；2/3/5/7=賣完後空 N 天才買，讓訊號自由生成而非被迫進場
     "buy_delay_days": [0],  # LOCKED: William rejected (misses good stocks)
     # ====== MFI / CMF / ATR contraction ======
-    "w_mfi": [0,1,2,3], "mfi_th": [60,65,70,75,80],
-    "w_cmf": [0,1,2,3], "cmf_th": [0.05, 0.10, 0.15, 0.20],
-    "w_atr_contract": [0,1,2,3], "atr_contract_th": [0.70, 0.75, 0.80, 0.85],
+    "w_mfi": [0], "mfi_th": [70],  # LOCKED: 先恢復速度，未來再開
+    "w_cmf": [0], "cmf_th": [0.10],  # LOCKED
+    "w_atr_contract": [0], "atr_contract_th": [0.80],  # LOCKED
     # ====== 換股（賣弱換強）======
     "upgrade_margin": [0,3,5,7,10,15],  # 擴大：強換股門檻，買到爛股可被強股換掉
     # ====== 多持倉 ======
@@ -1852,12 +1821,14 @@ def main():
                        "w_vol_up_days":1,"vol_up_days_min":2,"w_mom_accel":1,"mom_accel_min":0,
                        "consecutive_green":1,"gap_up":1,
                        "ma_fast_w":3,"ma_slow_w":15,"momentum_days":3,"max_positions":2}
+            # 88.60 為主 SEED（89.90 的母體），讓 GPU 從它出發在新框架（hold_days 45/60）重新探索
             hall_of_fame = [
-                (0, dict(gist_best_params)),   # 當前 Gist 策略（89.90）
-                (0, dict(SEED_189)),           # 波段強（高 avg）
-                (0, dict(SEED_88)),            # 勝率強
+                (0, dict(SEED_88)),            # 主力起點：88.60（89.90 就是從它微調來的）
+                (0, dict(gist_best_params)),   # 89.90 當參考
+                (0, dict(SEED_189)),           # 189 波段基因
             ]
-            print(f"[GPU] 🌱 多起點播種 HOF：當前 Gist + 189 + 88.60（基因多樣性配種更有效）")
+            best_params = dict(SEED_88)  # 爬山主力從 88.60 出發
+            print(f"[GPU] 🌱 SEED=88.60 為主力起點（hold_days 擴到 45/60，重新探索）")
     except Exception as _e:
         print(f"[GPU] Gist 載入失敗：{_e}")
     # 掃描跳過（曾基於 v5，會污染起點）
@@ -2088,9 +2059,8 @@ def main():
             _seed_nt = int(results[0, 1])
             _seed_total = float(results[0, 3])
             if _seed_score > 0:
-                # 用 SEED 分數的 90% 當 baseline（不是 100%），讓「接近但不同方向」的策略也能被記錄
-                # 這樣 HOF 會有多樣性，配種才有效。106 分 × 0.9 = 95.4 → 95+ 就算突破
-                best_score = _seed_score * 0.9
+                # 用 SEED 分數的 80% 當 baseline — 新框架（hold 45/60）需要從較低起點爬
+                best_score = _seed_score * 0.8
                 best_nt = _seed_nt
                 best_avg = float(results[0, 2])
                 best_total = _seed_total
