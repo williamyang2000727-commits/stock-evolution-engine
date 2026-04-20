@@ -847,9 +847,9 @@ PARAMS_SPACE = {
     # ====== MFI / CMF / ATR contraction ======
     # MFI/CMF/ATR_contract: removed from kernel entirely (restore speed)
     # ====== 換股（賣弱換強）======
-    "upgrade_margin": [0,3,5,7,10,15],  # 擴大：強換股門檻，買到爛股可被強股換掉
+    "upgrade_margin": [0],  # LOCKED: 實驗證明換股=災難（手續費+持有太短）
     # ====== 多持倉 ======
-    "max_positions": [2],  # 鎖定 2 檔（v1 框架，memory 寫過 3 檔資金效率差不可破）
+    "max_positions": [1, 2],  # 解鎖：1 檔集中火力 vs 2 檔分散（最後壓箱寶）
 }
 
 PARAM_ORDER = [
