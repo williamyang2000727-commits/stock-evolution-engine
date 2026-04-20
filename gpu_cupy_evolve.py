@@ -1097,7 +1097,24 @@ def precompute(data):
             count = count + shifted
         return (count >= min_days_in).astype(np.float32)
 
-    if _universe in ("top100_p3", "top100p3"):
+    if _universe in ("mcap70",):
+        # 市值前 70：用 avg(volume × close) 當 market cap proxy，靜態池
+        turnover = (volume * close).mean(axis=1)  # shape (n,)
+        top_indices = np.argsort(-turnover)[:70]
+        top100_mask = np.zeros((n, ml), dtype=np.float32)
+        for si in top_indices:
+            top100_mask[si, :] = 1.0
+        _top_names = [tickers[i] for i in top_indices[:10]]
+        print(f"  Universe: mcap70（市值前 70，靜態池）")
+        print(f"    Top 10: {', '.join(_top_names)}")
+    elif _universe in ("mcap100",):
+        turnover = (volume * close).mean(axis=1)
+        top_indices = np.argsort(-turnover)[:100]
+        top100_mask = np.zeros((n, ml), dtype=np.float32)
+        for si in top_indices:
+            top100_mask[si, :] = 1.0
+        print(f"  Universe: mcap100（市值前 100，靜態池）")
+    elif _universe in ("top100_p3", "top100p3"):
         top100_mask = _build_persist_mask(100, 3)
         print(f"  🎯 Universe: top100 連續 3 天（寬鬆版）")
     elif _universe in ("top100_p2", "top100p2"):
