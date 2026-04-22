@@ -2088,14 +2088,13 @@ def main():
             _seed_nt = int(results[0, 1])
             _seed_total = float(results[0, 3])
             if _seed_score > 0:
-                # 新 universe 時 SEED 分數可能很低，用 50% 當起跑線不擋路
-                best_score = _seed_score * 0.5
+                # 直接用 SEED 分數當 baseline（要找真正超越的策略）
+                best_score = _seed_score
                 best_nt = _seed_nt
                 best_avg = float(results[0, 2])
                 best_total = _seed_total
                 best_wr = float(results[0, 4])
-                total_improved += 1
-                print(f"  [GPU] 🌱 SEED 分數：{_seed_score:.1f} | baseline 設為 {best_score:.1f}（50%，讓不同方向的策略也能入 HOF）")
+                print(f"  [GPU] 🌱 SEED 分數：{_seed_score:.1f} | baseline = {best_score:.1f}（100%，只接受真正超越的策略）")
             else:
                 # SEED 在新 universe 上可能完全不適用 → baseline=0 讓 GPU 自由探索
                 best_score = 0
