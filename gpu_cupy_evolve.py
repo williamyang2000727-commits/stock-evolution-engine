@@ -1647,7 +1647,7 @@ def main():
     print(f"  Seg 3 段都要正報酬 | seg[2] ≥ seg[0] × 0.6（防老化）")
     print(f"")
     print(f"  ═══ Python gate（top-20 cpu_replay 驗證）═══")
-    print(f"  全期 40-200 筆 | avg ≥ 8% | avg_hold ≥ 5 | MaxDD ≥ -50%")
+    print(f"  全期 15-200 筆 | avg ≥ 3% | avg_hold ≥ 5 | MaxDD ≥ -50% | 總報酬 ≥ 2100% | 勝率 ≥ 69%")
     print(f"  WF ratio ≥ 0.4 | test_total > 0")
     print(f"  報酬地板: train 年化 ≥ {MIN_TRAIN_ANNUAL}% | test 年化 ≥ {MIN_TEST_ANNUAL}%")
     print(f"  勝率地板: train ≥ {MIN_WR_TRAIN*100:.0f}% | test ≥ {MIN_WR_TEST*100:.0f}%")
@@ -2095,7 +2095,7 @@ def main():
                 best_total = _seed_total
                 best_wr = float(results[0, 4])
                 total_improved += 1
-                print(f"  [GPU] 🌱 SEED 分數：{_seed_score:.1f} | baseline 設為 {best_score:.1f}（90%，讓不同方向的策略也能入 HOF）")
+                print(f"  [GPU] 🌱 SEED 分數：{_seed_score:.1f} | baseline 設為 {best_score:.1f}（50%，讓不同方向的策略也能入 HOF）")
             else:
                 # SEED 在新 universe 上可能完全不適用 → baseline=0 讓 GPU 自由探索
                 best_score = 0
@@ -2199,7 +2199,13 @@ def main():
                     _gate_fail["recent"] += 1
                     continue
             # 🔓 Calmar / 近 2 年 avg gate 移除（放在 kernel scoring 當加分項）
-            # 這兩個 gate 太嚴擋掉真正有潛力的策略，改用 scoring 獎勵代替硬擋
+            # Hard gate: 全期績效必須真的贏 89.90（總報酬 >= 2100% AND 勝率 >= 69%）
+            # 防止分數高但績效差的假突破污染 best_score
+            _hg_total_pre = _ctr_tot + _cts_tot
+            _hg_wr_pre = sum(1 for t in _cmp if t.get("return", 0) > 0) / len(_cmp) * 100 if _cmp else 0
+            if _hg_total_pre < 2100 or _hg_wr_pre < 69:
+                _gate_fail["perf_vs_89.90"] = _gate_fail.get("perf_vs_89.90", 0) + 1
+                continue
             # 過了所有 gate，接受
             best_score = _sc
             best_nt = int(results[_ti, 1])
@@ -2296,13 +2302,6 @@ def main():
             try:
                 trade_details = _candidate_trades
                 _completed_td = [t for t in trade_details if t.get("reason") != "持有中"]
-                # Hard gate: 必須真的贏 89.90 才推通知（避免分數高但績效差的假突破）
-                _hg_total = sum(t.get("return", 0) for t in _completed_td)
-                _hg_wr = sum(1 for t in _completed_td if t.get("return", 0) > 0) / len(_completed_td) * 100 if _completed_td else 0
-                if _hg_total < 2100 or _hg_wr < 69:
-                    print(f"  [GPU] 分數 {best_score:.2f} 但績效未贏 89.90（總{_hg_total:.0f}% 勝率{_hg_wr:.0f}%）→ 不推通知")
-                    last_synced_improved = total_improved
-                    continue
                 # train = buy_date 在 [train_start, train_end] 區間；test = 其他（支援正向/反向 WF）
                 _tr_start_str2 = str(pre["dates"][pre["train_start"]].date())
                 _tr_end_str2 = str(pre["dates"][pre["train_end"]-1].date()) if pre["train_end"] < pre["n_days"] else str(pre["dates"][-1].date())
