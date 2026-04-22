@@ -2296,6 +2296,13 @@ def main():
             try:
                 trade_details = _candidate_trades
                 _completed_td = [t for t in trade_details if t.get("reason") != "持有中"]
+                # Hard gate: 必須真的贏 89.90 才推通知（避免分數高但績效差的假突破）
+                _hg_total = sum(t.get("return", 0) for t in _completed_td)
+                _hg_wr = sum(1 for t in _completed_td if t.get("return", 0) > 0) / len(_completed_td) * 100 if _completed_td else 0
+                if _hg_total < 2100 or _hg_wr < 69:
+                    print(f"  [GPU] 分數 {best_score:.2f} 但績效未贏 89.90（總{_hg_total:.0f}% 勝率{_hg_wr:.0f}%）→ 不推通知")
+                    last_synced_improved = total_improved
+                    continue
                 # train = buy_date 在 [train_start, train_end] 區間；test = 其他（支援正向/反向 WF）
                 _tr_start_str2 = str(pre["dates"][pre["train_start"]].date())
                 _tr_end_str2 = str(pre["dates"][pre["train_end"]-1].date()) if pre["train_end"] < pre["n_days"] else str(pre["dates"][-1].date())
