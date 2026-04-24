@@ -82,17 +82,29 @@ def main():
     print(f"  source = {source}")
     print(f"  params 欄位數 = {len(params)}")
 
-    # Step 2: precompute（base 會載入 Windows cache）
-    print("\n[2/4] base.precompute 載入 cache...")
-    data = None  # base.precompute 從 CACHE_PATH 讀，不需要傳 data
-    # 不過看 base.precompute 簽名：def precompute(data)，裡面用 data 還是自己讀 cache？
-    # grep 結果 line 905: def precompute(data) 但裡面 h = data[key]['Close']
-    # 所以必須先載 cache 再傳進去
+    # Step 2: precompute（mirror base.main() 的過濾邏輯）
+    print("\n[2/4] 載入 cache + 過濾...")
     cache_path = os.path.join(_USER_SE, "stock_data_cache.pkl")
-    cache = pickle.load(open(cache_path, "rb"))
-    print(f"  cache 載入：{len(cache)} 檔")
-    pre = base.precompute(cache)
-    print(f"  precompute done：{pre['n_stocks']} 檔 × {pre['n_days']} 天")
+    raw = pickle.load(open(cache_path, "rb"))
+    print(f"  raw cache: {len(raw)} 檔")
+
+    # 動態選擇 TARGET_DAYS（複製 base.main() line 1696-1708 邏輯）
+    _lens = [len(v) for v in raw.values()]
+    _n_1500 = sum(1 for l in _lens if l >= 1500)
+    _n_1200 = sum(1 for l in _lens if l >= 1200)
+    _n_900 = sum(1 for l in _lens if l >= 900)
+    if _n_1500 >= 500:
+        TARGET_DAYS = 1500
+    elif _n_1200 >= 800:
+        TARGET_DAYS = 1200
+    else:
+        TARGET_DAYS = 900
+    data = {k: v.tail(TARGET_DAYS) for k, v in raw.items() if len(v) >= TARGET_DAYS}
+    print(f"  過濾後: {len(data)} 檔 × {TARGET_DAYS} 天（1500-q {_n_1500} / 1200-q {_n_1200} / 900-q {_n_900}）")
+
+    print("\n  base.precompute 執行中...")
+    pre = base.precompute(data)
+    print(f"  precompute done: {pre['n_stocks']} 檔 × {pre['n_days']} 天")
 
     # Step 3: 算 regime array（用跟 V35 一致的邏輯）
     print(f"\n[3/4] 算 regime array（ma20={MA20_LEN}, ma60={MA60_LEN}）...")
