@@ -43,6 +43,15 @@ def compute_indicators(margin_df: pd.DataFrame, cache_df: pd.DataFrame, referenc
     if reference_dates is not None:
         # BUG #12 修正（2026-04-25）：用全局 reference_dates 對齊，每檔 tensor 的日期一致
         cache_dates = reference_dates
+        # 把該檔的 cache_df reindex 到 reference_dates 對齊（用於算 price5d 發散）
+        _cache_idx = cache_df.index
+        if _cache_idx.tz is not None:
+            _cache_naive = cache_df.copy()
+            _cache_naive.index = _cache_idx.tz_convert("Asia/Taipei").tz_localize(None).normalize()
+        else:
+            _cache_naive = cache_df.copy()
+            _cache_naive.index = _cache_idx.normalize()
+        cache_tail = _cache_naive.reindex(reference_dates, method="ffill")
     else:
         # Legacy fallback：取該檔最後 1500 天
         cache_tail = cache_df.tail(TARGET_DAYS).copy()
