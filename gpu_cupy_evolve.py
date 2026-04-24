@@ -2083,40 +2083,67 @@ def main():
         results = d_results.get()
         total_tested += BATCH
 
-        # SEED：R1 抓 Gist 策略（position 0）的 kernel 分數當 baseline
+        # SEED：R1 baseline 用 cpu_replay 手動算 Gist 策略分數（不依賴 kernel 浮點結果）
+        # 原因：kernel 和 cpu_replay 實作有細微差距（浮點、buy/sell 順序），kernel 有時給 -999999
+        # 改用 cpu_replay trades + 手算 scoring 公式，更穩定可靠
         if rnd == 1 and gist_best_params:
-            _seed_score = float(results[0, 0])
-            _seed_nt = int(results[0, 1])
-            _seed_total = float(results[0, 3])
-            if _seed_score > 0:
-                # 直接用 SEED 分數當 baseline（要找真正超越的策略）
-                best_score = _seed_score
-                best_nt = _seed_nt
-                best_avg = float(results[0, 2])
-                best_total = _seed_total
-                best_wr = float(results[0, 4])
-                print(f"  [GPU] 🌱 SEED 分數：{_seed_score:.1f} | baseline = {best_score:.1f}（100%，只接受真正超越的策略）")
+            import math as _m2
+            _bt = _baseline_trades  # cpu_replay 產生（line 1751）
+            _n_all = len(_bt)
+            if _n_all < 15 or _n_all > 200:
+                best_score = 20.0
+                print(f"  [GPU] ⚠️ SEED cpu_replay 筆數 {_n_all} 超出 15-200 → baseline=20（絕對底線）")
             else:
-                # SEED(Gist) 在新 cache 無效 → 試 HOF 其他 seed (88.60 → 189)
-                # 絕不從 0 搜（會放水垃圾策略）
-                _fallback_found = False
-                for _name, _idx in [("88.60", 1), ("189", 2)]:
-                    _fsc = float(results[_idx, 0])
-                    if _fsc > 0:
-                        best_score = _fsc
-                        best_nt = int(results[_idx, 1])
-                        best_avg = float(results[_idx, 2])
-                        best_total = float(results[_idx, 3])
-                        best_wr = float(results[_idx, 4])
-                        best_params = dict(hall_of_fame[_idx][1])
-                        print(f"  [GPU] ⚠️ SEED(Gist)={_seed_score:.1f} 無效 → fallback 到 {_name}: {_fsc:.1f}")
-                        _fallback_found = True
-                        break
-                if not _fallback_found:
-                    # 全部 HOF 都無效：用 MIN_* 換算的最低合格分數當底線
-                    # s_wr(wr 55%) + s_return(年化 80%) ≈ 10 + 4 = 14，加 buffer 到 20
-                    best_score = 20.0
-                    print(f"  [GPU] ⚠️ SEED + HOF 全部無效 → baseline=20（MIN_* 絕對門檻換算，絕不從 0）")
+                # 分 train / test
+                _tr_s = pre["dates"][pre["train_start"]].date().isoformat()
+                _tr_e = pre["dates"][pre["train_end"]-1].date().isoformat() if pre["train_end"] < pre["n_days"] else pre["dates"][-1].date().isoformat()
+                _tr = [t for t in _bt if _tr_s <= t.get("buy_date","") <= _tr_e]
+                _te = [t for t in _bt if t.get("buy_date","") < _tr_s or t.get("buy_date","") > _tr_e]
+                _n_tr = len(_tr)
+                _max_pos = int(gist_best_params.get("max_positions", 2))
+                _pos_adj = 1.0 / _max_pos
+                _tot_tr = sum(t.get("return",0) for t in _tr)
+                _tot_te = sum(t.get("return",0) for t in _te)
+                _avg_tr = _tot_tr / _n_tr if _n_tr else 0
+                _wr_tr = sum(1 for t in _tr if t.get("return",0)>0) / _n_tr * 100 if _n_tr else 0
+                _tr_y = (pre["train_end"] - pre["train_start"]) / 250.0
+                _te_y = (pre["train_start"] - 60) / 250.0
+                _tr_ann = (_tot_tr * _pos_adj) / _tr_y if _tr_y > 0.5 else _tot_tr * _pos_adj
+                _te_ann = (_tot_te * _pos_adj) / _te_y if _te_y > 0.3 else _tot_te * _pos_adj
+                # Scoring（對齊 kernel line 745-773）
+                _s_wr = max(0, min(80, (_wr_tr - 50) * 2.0))
+                _eff_ann = min(_tr_ann, _te_ann) if (_tr_ann > 0 and _te_ann > 0) else 0
+                _s_return = max(0, min(20, _eff_ann * 0.05))
+                _s_avg = max(0, min(30, (_avg_tr - 15) * 2.0))
+                if _n_tr > 1:
+                    _std = _m2.sqrt(sum((t.get("return",0) - _avg_tr)**2 for t in _tr) / _n_tr)
+                    _sharpe = _avg_tr / _std if _std > 0.5 else _avg_tr
+                    _s_sharpe = min(10, _sharpe * 2.0)
+                else:
+                    _s_sharpe = 0
+                _wins = [t.get("return",0) for t in _tr if t.get("return",0) > 0]
+                _losses = [abs(t.get("return",0)) for t in _tr if t.get("return",0) <= 0]
+                _aw = sum(_wins)/len(_wins) if _wins else 0
+                _al = sum(_losses)/len(_losses) if _losses else 0
+                _pl = min(20, _aw/_al if _al > 0.5 else _aw)
+                _s_pl = min(5, _pl * 0.5)
+                _wf_r = min(1.2, _te_ann / _tr_ann) if _tr_ann > 1.0 else 1.0
+                _s_wf = _wf_r * 15.0
+                _s_consistency = 3.0
+                _max_dd = 0; _run = 0
+                for _t in _tr:
+                    _r = _t.get("return",0)
+                    _run = _run + _r if _r < 0 else 0
+                    if _run < _max_dd: _max_dd = _run
+                _s_dd = abs(_max_dd) * 0.05
+                _seed_manual = _s_wr + _s_return + _s_avg + _s_sharpe + _s_pl + _s_consistency + _s_wf - _s_dd
+                best_score = max(20.0, _seed_manual)  # 至少 20 分絕對底線
+                best_nt = _n_all
+                best_avg = sum(t.get("return",0) for t in _bt) / _n_all
+                best_total = sum(t.get("return",0) for t in _bt)
+                best_wr = sum(1 for t in _bt if t.get("return",0)>0) / _n_all * 100
+                print(f"  [GPU] 🌱 SEED(Gist) cpu_replay 分數 = {_seed_manual:.1f} | baseline = {best_score:.1f}")
+                print(f"       明細：s_wr={_s_wr:.1f} s_return={_s_return:.1f} s_avg={_s_avg:.1f} s_sharpe={_s_sharpe:.1f} s_pl={_s_pl:.1f} s_wf={_s_wf:.1f} -s_dd={_s_dd:.1f}")
 
         # 收集這批裡分數 > 0 的前 5 名加入名人堂（不用破紀錄也能入）
         top_indices = np.argsort(results[:, 0])[-5:][::-1]
