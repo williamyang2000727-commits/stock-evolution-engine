@@ -4,7 +4,7 @@ V34 Margin Gambit — 抓 FinMind 個股融資融券完整歷史 (Windows 版)
 輸出：C:\stock-evolution\margin_data_full.pkl  {stock_id: DataFrame(date, 15 欄 margin)}
 
 日期範圍自動從 stock_data_cache.pkl 讀取，和 GPU cache 1:1 對齊。
-FinMind 免費 API rate limit: ~600 calls/hour，script 內建 time.sleep(0.4) 防 block。
+FinMind 免費 API rate limit: 600 calls/hour，script 用 4s 間隔 + 402 長 sleep retry。
 """
 import os, sys, time, pickle
 import requests
@@ -61,8 +61,10 @@ def load_cache_info():
     return sorted(qualified), str(window_start), str(window_end)
 
 
-def fetch_one(stock_id, start, end, retry=3):
-    for _ in range(retry):
+def fetch_one(stock_id, start, end, retry=5):
+    """FinMind 免費 600 calls/hour。402 先 sleep 10 min，第 3 次起 sleep 60 min（小時重置）。"""
+    long_wait_triggered = 0
+    for attempt in range(retry):
         try:
             r = requests.get(BASE, params={
                 "dataset": DATASET,
@@ -74,12 +76,14 @@ def fetch_one(stock_id, start, end, retry=3):
             if j.get("status") == 200:
                 return j.get("data", [])
             if j.get("status") == 402:
-                log(f"  Rate limit (402) on {stock_id}, sleep 60s")
-                time.sleep(60)
+                long_wait_triggered += 1
+                wait = 600 if long_wait_triggered <= 2 else 3600
+                log(f"  Rate limit (402) on {stock_id}, sleep {wait}s (attempt {attempt+1}/{retry})")
+                time.sleep(wait)
                 continue
         except Exception as e:
             log(f"  retry {stock_id}: {e}")
-            time.sleep(2)
+            time.sleep(5)
     return None
 
 
@@ -126,9 +130,9 @@ def main():
             rate = (i + 1) / max(elapsed, 0.1)
             eta = (len(remaining) - i - 1) / max(rate, 0.01)
             log(f"  {i+1}/{len(remaining)}  rate={rate:.1f}/s  eta={eta/60:.1f}min  data_cnt={len(result)}")
-        # Rate control：免費 tier 600 calls/hour = 1 call / 6s
-        # 測試顯示快跑 4s 內 5 次 OK，但長跑要穩，取中間值 0.4s 配合 402 自動處理
-        time.sleep(0.4)
+        # Rate control：FinMind 免費 600 calls/hour = 1 call / 6s
+        # 保守 4s 間隔（900/hour 理論上限，留空間給 402 retry 消耗）
+        time.sleep(4)
 
     with open(OUT, "wb") as f:
         pickle.dump(result, f)
