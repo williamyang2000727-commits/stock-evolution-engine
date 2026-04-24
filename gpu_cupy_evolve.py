@@ -2241,13 +2241,18 @@ def main():
                 if _recent_avg < 3:  # 放寬 5→3：近期不崩就好，不要求太高
                     _gate_fail["recent"] += 1
                     continue
-            # 🔓 Calmar / 近 2 年 avg gate 移除（放在 kernel scoring 當加分項）
-            # 🔓 perf_vs_89.90 硬編 gate 移除（2026-04-25）：
-            # 原邏輯：total >= 2100 AND wr >= 69（= 4/18 89.90 指紋）
-            # 問題：cache drift 後 89.90 自己只剩 1976%/64% → 連自己都過不了 → GPU 永遠 0 突破
-            # 解法：「贏當前策略」由 Layer 2 SEED baseline（Gist kernel score）動態執行
-            #       「絕對品質」由 MIN_WR_TRAIN/TEST + MIN_TRAIN/TEST_ANNUAL 執行
-            #       兩層聯手 = 動態底線 + 絕對品質，不再硬編歷史指紋
+            # 🔓 perf_vs_89.90 硬編 gate 移除（2026-04-25），改用動態 vs SEED 比較
+            # 動態 gate：新策略 全期總報酬 >= SEED × 0.95 AND 勝率 >= SEED × 0.95
+            # 2026-04-25 教訓：只靠 MIN_* 絕對門檻 + kernel score 放水太嚴重（81.6 分 70 筆 1241% 爛策略過關）
+            # 必須強制「至少不輸 SEED 5%」才能當新紀錄
+            if gist_best_params and _baseline_trades:
+                _seed_total = sum(t.get("return",0) for t in _baseline_trades)
+                _seed_wr_pct = sum(1 for t in _baseline_trades if t.get("return",0)>0) / len(_baseline_trades) * 100
+                _cand_total = _ctr_tot + _cts_tot
+                _cand_wr_pct = sum(1 for t in _cmp if t.get("return", 0) > 0) / len(_cmp) * 100 if _cmp else 0
+                if _cand_total < _seed_total * 0.95 or _cand_wr_pct < _seed_wr_pct * 0.95:
+                    _gate_fail["vs_seed"] = _gate_fail.get("vs_seed", 0) + 1
+                    continue
             # 過了所有 gate，接受
             best_score = _sc
             best_nt = int(results[_ti, 1])
