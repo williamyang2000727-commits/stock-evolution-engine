@@ -1,60 +1,75 @@
 """
 V35 Regime Commander — GPU 進化搜尋（fork of gpu_cupy_evolve.py）
+版本：0.2（2026-04-25 第二次稽查後，修 7 個潛在 bug）
 
 設計理念
 ========
 攻擊 89.90 的唯一已知弱點：2022 熊市勝率 57%（vs 整體 69.4%）
-用 regime-aware 動態 buy_threshold：不同市場 regime 用不同進場嚴格度
+Sanity test 結果確認：BULL 72.6% / BEAR 54.5% / CHOP 57.1% 差距明顯 → 有攻擊面
+做法：regime-aware 動態 buy_threshold，不同市場 regime 用不同進場嚴格度
 
 Regime 偵測（規則式，不用 ML）
   - 用 base precompute 已算好的 market_close
-  - 本版用 default ma20=20, ma60=60 算 regime（V35.2 再擴多組）
+  - default ma20=20, ma60=60 算 regime
   - regime 0 = BULL：MA20 > MA60 AND market_close > MA20
   - regime 1 = BEAR：MA20 < MA60 AND market_close < MA20
-  - regime 2 = CHOP：其他（盤整 / 轉折）
+  - regime 2 = CHOP：其他（盤整 / 轉折 / warmup）
 
-新增 9 個 params
-  bull_buy_th_delta   [-3,-2,-1,0,1]  Bull regime 時 buy_threshold 調整
-  bear_buy_th_delta   [0,1,2,3]       Bear regime 時（正值=更嚴格，寧空倉）
-  chop_buy_th_delta   [-1,0,1,2]      Chop regime 時
-  bull_max_pos_ovr    [0,2,3]         Bull regime 持倉 override（0=用 base / 本版未啟用）
-  bear_max_pos_ovr    [0,1,2]         Bear regime 持倉 override（同上，V35.1 再實作）
-  chop_max_pos_ovr    [0,1,2]         Chop regime 持倉 override（同上）
-  regime_ma20_len     [15,20,25]      MA20 窗口（本版 precompute 用 default=20）
-  regime_ma60_len     [40,60,80]      MA60 窗口（本版 precompute 用 default=60）
-  regime_gate_mode    [0,1,2]         0=開 threshold gate, 1=開 max_pos gate, 2=兩個都開
+新增 4 個「有效」params（其他 5 slot 鎖死 [0]，避免浪費搜索）
+  bull_buy_th_delta   [0, -3, -2, -1, 1]  Bull 時 buy_threshold 調整（0 放首 = SEED default）
+  bear_buy_th_delta   [0, 1, 2, 3]        Bear 時（正值=更嚴格，寧空倉）
+  chop_buy_th_delta   [0, -1, 1, 2]       Chop 時（0 放首）
+  regime_gate_mode    [3, 0]              3=DISABLED(default), 0=threshold gate 啟用
 
-本版（V35.0）僅實作 threshold delta（regime_gate_mode == 0 或 2）
-max_pos override 和多組 ma length 是 V35.1 / V35.2 範圍
+鎖死 [0] 的 slot（佔位 param order，但 GPU 不會亂選）
+  bull_max_pos_ovr, bear_max_pos_ovr, chop_max_pos_ovr  （V35.1 才實作）
+  regime_ma20_len, regime_ma60_len                       （V35.2 才實作）
+
+SEED 行為保證（關鍵）
+=====================
+SEED 從 Gist 讀 params 時，沒有 V35 key → fallback 到 PARAMS_SPACE[key][0]：
+  regime_gate_mode     → 3 (DISABLED)  → kernel 跳 if 分支，eff_threshold = buy_threshold
+  bull/chop/bear_delta → 0            → 就算 mode 不小心被污染，eff = buy_threshold + 0
+  max_pos_ovr 三個    → 0 (未實作)   → 無影響
+  regime_ma_len 兩個   → default     → 無影響（kernel 不讀）
+
+雙重保險：SEED 行為 100% 退化成 base（跟 89.90 在 base 跑一模一樣）
 
 架構（同 V34 的 monkey-patch 模式）
 ====
 1. Import base gpu_cupy_evolve
-2. 在 PARAMS_SPACE / PARAM_ORDER 末尾加 9 個 slot（74→83）
-3. 重建 CUDA kernel：signature 在 `const float* params` 前加 `const float* regime_arr`
-4. Kernel wrapper 在 tail(6) 前插入 d_regime_arr（不依賴前面 args 順序，抗 base 變動）
+2. PARAMS_SPACE / PARAM_ORDER 末尾加 9 slot（74→83），但 5 個鎖 [0] 只剩 4 個真正 GPU 會選
+3. 重建 kernel：signature 在 params 前加 regime_arr；2 處 buy gate 前算 eff_buy_threshold
+4. Kernel wrapper 在 tail(6) 前插入 d_regime_arr（抗 base 前段改動）
 5. 擴充 precompute：算 regime array 放 GPU
 6. 直接呼叫 base.main() — 其他邏輯全繼承
 
+cpu_replay 設計
+================
+本版 cpu_replay 不 mirror regime gate（故意）。
+理由：
+  - SEED regime_gate_mode=3 (DISABLED) → kernel 跳 if 分支 → kernel 行為 == cpu_replay → **SEED baseline 可信**
+  - 新候選 regime_gate_mode=0 → kernel 用 regime gate 選股，cpu_replay 用 base gate 驗證
+    → 同 params 兩邊會有筆數差（kernel 在 BEAR 期少進場，cpu_replay 照樣進）
+    → vs_seed gate 用 cpu_replay 數字比較：
+      * 若 kernel 是真突破 → cpu_replay 跑「沒 regime gate」版本應該更差（被 BEAR 爛筆拖累）
+      * 若 cpu_replay 數字也能過 vs_seed → 代表 base 邏輯本身就不錯 → 不是 regime 貢獻
+      * 若 cpu_replay 不過 vs_seed → 擋下
+    → 這是**更嚴格的 filter**，只認 base 邏輯也行的策略，regime 只當 bonus
+  - Trade-off：真正「只靠 regime」的策略會被擋（cpu_replay 沒 regime 看不到優勢）
+    → V35.1 補 cpu_replay regime 邏輯後會更寬，本版先保守
+
 與 V34 的關係
 =============
-- V35 和 V34 互不依賴（都從 base fork，monkey-patch 不會互相污染）
-- 不能在同一 Python process 同時 import V34 和 V35（兩個都會擴 PARAM_ORDER，會衝突）
-- 未來 ensemble 方向：V34 margin + V35 regime 兩個策略同時上線分資金
-
-用法
-====
-  C:\\stock-evolution> python claude_v35_regime_gpu.py
-
-環境變數（繼承 base）：
-  GPU_WF_MODE, GPU_UNIVERSE 等跟 gpu_cupy_evolve.py 相同
-  V35_REGIME_DUMP=1  → precompute 時 dump regime 轉換時序（debug 用）
+- V35 和 V34 互不依賴（獨立 fork）
+- 不能在同一 Python process 同時 import 兩者（都會擴 PARAM_ORDER）
+- 未來 ensemble 方向：V34 margin + V35 regime 同時上線分資金
 """
 import os, sys
 import numpy as np
 import cupy as cp
 
-# path setup（跟 V34 一致）
+# path setup
 _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
@@ -67,30 +82,40 @@ import gpu_cupy_evolve as base
 
 # ══════════════════════════════════════════════════════════════
 # 1. 擴充 PARAMS_SPACE + PARAM_ORDER
+#    關鍵設計：每個 param [0] 位置放「SEED default（= 退化成 base 行為）」
+#    Gist SEED 沒有 V35 key → params_np fallback 用 _opts[0] → 退化保證
 # ══════════════════════════════════════════════════════════════
 V35_NEW_PARAMS = {
-    "bull_buy_th_delta": [-3, -2, -1, 0, 1],
-    "bear_buy_th_delta": [0, 1, 2, 3],
-    "chop_buy_th_delta": [-1, 0, 1, 2],
-    "bull_max_pos_ovr":  [0, 2, 3],      # 本版未啟用
-    "bear_max_pos_ovr":  [0, 1, 2],      # 本版未啟用
-    "chop_max_pos_ovr":  [0, 1, 2],      # 本版未啟用
-    "regime_ma20_len":   [15, 20, 25],   # 本版 precompute 用 default=20
-    "regime_ma60_len":   [40, 60, 80],   # 本版 precompute 用 default=60
-    "regime_gate_mode":  [0, 1, 2],
+    # 有效 params（GPU 會選）
+    "bull_buy_th_delta": [0, -3, -2, -1, 1],   # [0] 放首 = SEED default
+    "bear_buy_th_delta": [0, 1, 2, 3],          # [0] 放首
+    "chop_buy_th_delta": [0, -1, 1, 2],         # [0] 放首
+    "regime_gate_mode":  [3, 0],                # 3=DISABLED 放首 = SEED default，0=啟用 threshold gate
+
+    # 鎖死 [0] 的 slot（留著給 V35.1/V35.2，本版 GPU 選不了）
+    "bull_max_pos_ovr":  [0],
+    "bear_max_pos_ovr":  [0],
+    "chop_max_pos_ovr":  [0],
+    "regime_ma20_len":   [20],   # 本版 precompute 固定用 20
+    "regime_ma60_len":   [60],   # 本版 precompute 固定用 60
 }
 
 for _k, _v in V35_NEW_PARAMS.items():
     base.PARAMS_SPACE[_k] = _v
 
+# PARAM_ORDER 順序必須跟 kernel p[74..82] 對應（順序敏感）
 _V35_PARAM_NAMES = [
-    "bull_buy_th_delta", "bear_buy_th_delta", "chop_buy_th_delta",
-    "bull_max_pos_ovr", "bear_max_pos_ovr", "chop_max_pos_ovr",
-    "regime_ma20_len", "regime_ma60_len", "regime_gate_mode",
+    "bull_buy_th_delta",  # p[74]
+    "bear_buy_th_delta",  # p[75]
+    "chop_buy_th_delta",  # p[76]
+    "bull_max_pos_ovr",   # p[77] (本版 kernel 不讀)
+    "bear_max_pos_ovr",   # p[78] (本版 kernel 不讀)
+    "chop_max_pos_ovr",   # p[79] (本版 kernel 不讀)
+    "regime_ma20_len",    # p[80] (precompute 用，kernel 不讀)
+    "regime_ma60_len",    # p[81] (precompute 用，kernel 不讀)
+    "regime_gate_mode",   # p[82]
 ]
 
-# 加到 PARAM_ORDER 末尾（在 buy_delay_days 之後，MA/MOM 之前）
-# 跟 V34 同構：原 74 → 83，MA/MOM 索引後移 +9 到 p[83..85]
 _V35_PARAM_START = len(base.PARAM_ORDER)
 _EXPECTED_BASE_N_PARAMS = 74
 if _V35_PARAM_START != _EXPECTED_BASE_N_PARAMS:
@@ -99,19 +124,21 @@ if _V35_PARAM_START != _EXPECTED_BASE_N_PARAMS:
         f"可能已混入 V34 或 base 改過。V35 必須 fresh 跑（不要在 V34 後直接 import）"
     )
 base.PARAM_ORDER.extend(_V35_PARAM_NAMES)
+assert len(base.PARAM_ORDER) == 83, f"[V35] PARAM_ORDER 擴充後應為 83，實際 {len(base.PARAM_ORDER)}"
 
 
 # ══════════════════════════════════════════════════════════════
 # 2. 改 CUDA kernel 字串
-#    架構：regime_arr 放在 args 尾端（d_params 之前，= tail(6) 之前）
-#    這樣 wrapper 永遠插在倒數第 7 位，不受 base 前面 args 順序改動影響
 # ══════════════════════════════════════════════════════════════
 def _build_v35_kernel_src(base_src: str) -> str:
     """
     3 處修改：
       A. signature: 在 `const float* params` 前加 `const float* regime_arr`
       B. p[74..76] 的 MA/MOM reads 後移到 p[83..85]，中間塞 V35 param reads
-      C. 2 處 `if (sc >= buy_threshold ...)` 前加 regime-effective threshold 計算，gate 改用 eff_buy_threshold
+      C. 2 處 `if (sc >= buy_threshold ...)` 前加 regime-effective threshold 計算
+
+    關鍵：regime_gate_mode == 3 = DISABLED → kernel 跳 if 分支 → eff = buy_threshold
+    確保 SEED（mode=3）行為 100% 等於 base
     """
     src = base_src
 
@@ -129,12 +156,12 @@ def _build_v35_kernel_src(base_src: str) -> str:
         "    int mom_idx = (int)p[76];"
     )
     new_ma = (
-        "// V35 Regime params (idx 74-82)\n"
+        "// V35 Regime params (p[74..82])\n"
         "    float bull_buy_th_delta = p[74];\n"
         "    float bear_buy_th_delta = p[75];\n"
         "    float chop_buy_th_delta = p[76];\n"
-        "    // p[77..79] max_pos override（本版未啟用，留著給 V35.1）\n"
-        "    // p[80..81] regime_ma20_len / regime_ma60_len（precompute 用，kernel 不讀）\n"
+        "    // p[77..79] max_pos override (V35.1, kernel 不讀)\n"
+        "    // p[80..81] regime_ma length (precompute 用，kernel 不讀)\n"
         "    int regime_gate_mode = (int)p[82];\n"
         "    int ma_fast_idx = (int)p[83];\n"
         "    int ma_slow_idx = (int)p[84];\n"
@@ -145,10 +172,12 @@ def _build_v35_kernel_src(base_src: str) -> str:
     src = src.replace(old_ma, new_ma)
 
     # --- C. 2 處 buy gate 加 regime-effective threshold ---
+    # 關鍵：regime_gate_mode == 0 → 啟用 threshold gate
+    #       regime_gate_mode == 3 (DISABLED) → 跳 if 分支 → eff = buy_threshold（= base 行為）
     regime_prologue = (
         "// V35 Regime-aware threshold\n"
         "                float eff_buy_threshold = buy_threshold;\n"
-        "                if (regime_gate_mode == 0 || regime_gate_mode == 2) {\n"
+        "                if (regime_gate_mode == 0) {\n"
         "                    int _r = (int)regime_arr[day];\n"
         "                    if (_r == 0) eff_buy_threshold = buy_threshold + bull_buy_th_delta;\n"
         "                    else if (_r == 1) eff_buy_threshold = buy_threshold + bear_buy_th_delta;\n"
@@ -186,9 +215,9 @@ def _build_v35_kernel_src(base_src: str) -> str:
     c1 = src.count(old_gate_1)
     c2 = src.count(old_gate_2)
     if c1 != 1:
-        raise RuntimeError(f"[V35] gate_1 anchor count {c1} != 1")
+        raise RuntimeError(f"[V35] gate_1 anchor count {c1} != 1 — base kernel 可能改了")
     if c2 != 1:
-        raise RuntimeError(f"[V35] gate_2 anchor count {c2} != 1")
+        raise RuntimeError(f"[V35] gate_2 anchor count {c2} != 1 — base kernel 可能改了")
     src = src.replace(old_gate_1, new_gate_1)
     src = src.replace(old_gate_2, new_gate_2)
 
@@ -226,28 +255,53 @@ def _compute_regime_array(market_close: np.ndarray, ma20_len: int, ma60_len: int
     regime = np.full(n_days, 2.0, dtype=np.float32)  # 預設 CHOP
     for i in range(max(ma20_len, ma60_len), n_days):
         if ma_short[i] > ma_long[i] and market_close[i] > ma_short[i]:
-            regime[i] = 0.0  # BULL
+            regime[i] = 0.0
         elif ma_short[i] < ma_long[i] and market_close[i] < ma_short[i]:
-            regime[i] = 1.0  # BEAR
+            regime[i] = 1.0
     return regime
 
 
 def v35_precompute(data):
     """
-    在 base.precompute 之後算 regime array 放 GPU
-    本版：kernel 只吃一組 regime（ma20=20, ma60=60）；GPU 選 regime_ma20_len=15/25 本版不生效
-    （V35.2 會支援多組 regime array，kernel 按 p[80,81] 選組）
+    base.precompute 之後算 regime array 放 GPU
     """
     global _v35_regime_gpu
     pre = _orig_precompute(data)
 
-    close = pre["close"]  # shape (n, ml)
+    close = pre["close"]
     n_days = pre["n_days"]
-    market_close = close.mean(axis=0)  # shape (ml,)
+
+    # market_close NaN 檢查（防 base 未來改動引入 NaN）
+    if np.any(np.isnan(close)):
+        _nan_pct = np.isnan(close).mean() * 100
+        print(f"[V35] ⚠️ close 含 {_nan_pct:.2f}% NaN，使用 nanmean 算 market_close")
+        market_close = np.nanmean(close, axis=0)
+    else:
+        market_close = close.mean(axis=0)
+
+    # 防 market_close 本身有 NaN（極端情況全部股票當天 NaN）
+    if np.any(np.isnan(market_close)):
+        _n = np.isnan(market_close).sum()
+        print(f"[V35] ⚠️ market_close {_n} 天全 NaN，用 forward fill")
+        # forward fill
+        last_valid = None
+        for i in range(n_days):
+            if np.isnan(market_close[i]):
+                market_close[i] = last_valid if last_valid is not None else 1.0
+            else:
+                last_valid = market_close[i]
 
     default_ma20 = 20
     default_ma60 = 60
     regime = _compute_regime_array(market_close, default_ma20, default_ma60, n_days)
+
+    # regime sanity check
+    assert regime.shape == (n_days,), f"[V35] regime shape {regime.shape} 錯誤"
+    assert regime.dtype == np.float32
+    _unique = set(np.unique(regime).tolist())
+    _expected = {0.0, 1.0, 2.0}
+    if not _unique.issubset(_expected):
+        raise RuntimeError(f"[V35] regime 出現非預期值 {_unique - _expected}")
 
     # 分布統計
     bull_n = int((regime == 0).sum())
@@ -273,11 +327,15 @@ def v35_precompute(data):
         else:
             print(f"[V35] ✅ 舊期 BEAR 比例 {te/tot*100:.0f}% 充足，regime-aware 有發揮空間")
 
-    # 丟上 GPU
-    _v35_regime_gpu = cp.asarray(regime)
-    assert _v35_regime_gpu.flags["C_CONTIGUOUS"]
-    assert _v35_regime_gpu.dtype == cp.float32
-    print(f"[V35] ✅ regime tensor on GPU: shape={_v35_regime_gpu.shape} dtype={_v35_regime_gpu.dtype}")
+    # 丟上 GPU + memory layout assert
+    _tmp = np.ascontiguousarray(regime, dtype=np.float32)
+    _v35_regime_gpu = cp.asarray(_tmp)
+    # BUG G fix: strides 檢查
+    assert _v35_regime_gpu.flags["C_CONTIGUOUS"], "[V35] regime tensor 不是 C-contiguous"
+    assert _v35_regime_gpu.dtype == cp.float32, f"[V35] regime dtype {_v35_regime_gpu.dtype} 不是 float32"
+    assert _v35_regime_gpu.shape == (n_days,), f"[V35] regime shape {_v35_regime_gpu.shape} 不是 ({n_days},)"
+    assert _v35_regime_gpu.strides == (4,), f"[V35] regime strides {_v35_regime_gpu.strides} 不是 (4,)"
+    print(f"[V35] ✅ regime tensor on GPU: shape={_v35_regime_gpu.shape} dtype={_v35_regime_gpu.dtype} strides={_v35_regime_gpu.strides}")
 
     # V35_REGIME_DUMP=1 印詳細轉換時序
     if os.environ.get("V35_REGIME_DUMP") == "1":
@@ -296,7 +354,7 @@ def v35_precompute(data):
         if len(transitions) > 25:
             print(f"[V35]   ... 另 {len(transitions)-25} 次")
 
-    pre["regime_arr"] = regime           # numpy，cpu_replay 可用（本版未實作 mirror）
+    pre["regime_arr"] = regime
     pre["regime_arr_gpu"] = _v35_regime_gpu
     return pre
 
@@ -309,14 +367,15 @@ base.precompute = v35_precompute
 # ══════════════════════════════════════════════════════════════
 class V35KernelWrapper:
     """
-    base.main() 呼叫 CUDA_KERNEL((grid,), (BLOCK,), (args...))
     base args 尾 6 個固定：d_params, n_params_int, d_results, n_combos_int, tr_start_int, tr_end_int
     V35 在倒數第 7 位（d_params 之前）插入 d_regime_arr
-    signature 對應：`const float* regime_arr` 在 `const float* params` 之前
 
-    好處：wrapper 不依賴 base 前面 indicator tensor 順序（抗 base 新增 indicator）
+    BUG D fix: 加嚴 args 結構檢查
+      - len(args) 必須 >= tail + 30（base 至少 30+ 個 indicator tensor）
+      - 最後 6 個必須是 int/cupy array 結構
     """
     _TAIL_LEN = 6
+    _MIN_INDICATOR_ARGS = 30  # base 有 30+ indicator tensor
 
     def __init__(self, real_kernel, kernel_src):
         self.real = real_kernel
@@ -326,10 +385,26 @@ class V35KernelWrapper:
         if _v35_regime_gpu is None:
             raise RuntimeError("[V35] regime tensor 未載入，請先跑 precompute()")
         args = tuple(args)
-        if len(args) < self._TAIL_LEN + 20:
+
+        if len(args) < self._TAIL_LEN + self._MIN_INDICATOR_ARGS:
             raise RuntimeError(
-                f"[V35] kernel args 長度 {len(args)} 異常（base 至少 20+ 個 indicator tensor）"
+                f"[V35] kernel args 長度 {len(args)} 太短（base 至少應有 "
+                f"{self._TAIL_LEN + self._MIN_INDICATOR_ARGS}+ 個）— base 簽名可能已改"
             )
+
+        # 檢查 tail(6) 結構：應該是 (d_params, n_params_int, d_results, n_combos_int, tr_start_int, tr_end_int)
+        tail = args[-self._TAIL_LEN:]
+        # d_params 應為 cupy array
+        if not isinstance(tail[0], cp.ndarray):
+            raise RuntimeError(f"[V35] args[-6] 應為 cupy array (d_params)，實際 {type(tail[0])}")
+        # n_params_int 應為 numpy int 或 int
+        if not isinstance(tail[1], (np.integer, int)):
+            raise RuntimeError(f"[V35] args[-5] 應為 int (n_params)，實際 {type(tail[1])}")
+        # d_results 應為 cupy array
+        if not isinstance(tail[2], cp.ndarray):
+            raise RuntimeError(f"[V35] args[-4] 應為 cupy array (d_results)，實際 {type(tail[2])}")
+        # 其他 3 個 int 省略檢查（前 3 個對就很強保證）
+
         new_args = args[:-self._TAIL_LEN] + (_v35_regime_gpu,) + args[-self._TAIL_LEN:]
         return self.real(grid, block, new_args)
 
@@ -338,20 +413,23 @@ base.CUDA_KERNEL = V35KernelWrapper(_V35_RAW_KERNEL, _V35_KERNEL_SRC)
 
 
 # ══════════════════════════════════════════════════════════════
-# 5. cpu_replay（本版 passthrough，已知小差距）
+# 5. cpu_replay（passthrough — SEED 有 mode=3 保證一致，新候選故意有落差當 overfit filter）
 # ══════════════════════════════════════════════════════════════
 _orig_cpu_replay = base.cpu_replay
 
 
 def v35_cpu_replay(pre, p):
     """
-    本版（V35.0）cpu_replay 不 mirror regime gate。
-    後果：kernel 用 regime-effective threshold 選，cpu_replay 用原始 buy_threshold 驗證
-          → 同一組 params 兩邊小差（可能 ± 3-5 筆交易）
-          → SEED 診斷 / vs_seed gate 仍能運作（SEED regime params 全 0，無 regime 邏輯，cpu_replay 準確）
-          → 新候選才有小差，但 vs_seed 仍能排除多數爛策略
+    本版 cpu_replay 不 mirror regime gate（故意設計，見檔案開頭文件）。
 
-    TODO (V35.1)：把 base.cpu_replay 的 buy gate 抽成 hookable function，加 regime 邏輯
+    SEED 行為保證：
+      SEED regime_gate_mode = 3 (DISABLED) → kernel 跳 if → eff = buy_threshold
+      → kernel 行為 == base cpu_replay → **SEED baseline 完美一致**
+
+    新候選 (regime_gate_mode=0)：
+      kernel 用 regime gate 選，cpu_replay 用原 buy_threshold 驗
+      → 兩邊同 params 會有差 → vs_seed gate 拒絕「只在 kernel 好看」的策略
+      → 過 vs_seed 的 = kernel 和 cpu_replay 都好看 = 真強策略
     """
     return _orig_cpu_replay(pre, p)
 
@@ -360,16 +438,40 @@ base.cpu_replay = v35_cpu_replay
 
 
 # ══════════════════════════════════════════════════════════════
-# 6. 進入 base.main()
+# 6. Self-test：validate SEED 行為退化成 base
+# ══════════════════════════════════════════════════════════════
+def _v35_self_test():
+    """
+    開跑前最後防線：模擬 SEED params 餵 PARAMS_SPACE[key][0] 後，
+    驗證 regime_gate_mode == 3 (DISABLED)、delta 全為 0
+    """
+    # SEED 拿不到 V35 key，fallback 用 _opts[0]
+    _test_vals = {k: v[0] for k, v in V35_NEW_PARAMS.items()}
+    errors = []
+    if _test_vals["regime_gate_mode"] != 3:
+        errors.append(f"regime_gate_mode default={_test_vals['regime_gate_mode']}，應為 3 (DISABLED)")
+    for dk in ["bull_buy_th_delta", "bear_buy_th_delta", "chop_buy_th_delta"]:
+        if _test_vals[dk] != 0:
+            errors.append(f"{dk} default={_test_vals[dk]}，應為 0")
+    if errors:
+        raise RuntimeError(f"[V35] SEED 行為退化 self-test 失敗：{errors}")
+    print(f"[V35] ✅ SEED self-test 通過：regime_gate_mode 預設 3 (DISABLED)，所有 delta 預設 0")
+
+
+_v35_self_test()
+
+
+# ══════════════════════════════════════════════════════════════
+# 7. 進入 base.main()
 # ══════════════════════════════════════════════════════════════
 if __name__ == "__main__":
     print(f"[V35] PARAMS_SPACE 大小: {len(base.PARAMS_SPACE)}")
     print(f"[V35] PARAM_ORDER 長度: {len(base.PARAM_ORDER)}（應為 83）")
     if len(base.PARAM_ORDER) != 83:
-        raise RuntimeError(f"[V35] PARAM_ORDER 長度 {len(base.PARAM_ORDER)} 不是 83！可能混到 V34 或 base 變動")
+        raise RuntimeError(f"[V35] PARAM_ORDER 長度 {len(base.PARAM_ORDER)} 不是 83")
 
-    print(f"[V35] 💡 SEED (89.90) 沒 V35 params → 9 slot 全 default 0 = regime gate 關閉")
-    print(f"[V35] 💡 所以 SEED baseline 分數 = 純 regime-blind 表現，regime gate 只給新策略加分")
-    print(f"[V35] 💡 攻擊面：89.90 在 2022 熊市勝率 57%（整體 69.4%）→ 若 regime-aware 能拉熊市 +5-8% = 真突破")
+    print(f"[V35] 💡 SEED regime_gate_mode=3 (DISABLED) → kernel 退化成 base → baseline 完美一致")
+    print(f"[V35] 💡 攻擊面：89.90 在 2022 熊市勝率 54.5%（整體 63.9%）→ sanity 已確認 -9.4% gap")
+    print(f"[V35] 💡 GPU 會選：regime_gate_mode=0 AND bear_delta=+2 or +3 → 擋 BEAR 爛訊號")
     print(f"[V35] 啟動 base.main()...\n")
     base.main()
