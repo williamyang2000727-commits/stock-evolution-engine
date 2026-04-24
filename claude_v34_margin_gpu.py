@@ -193,6 +193,10 @@ def v34_precompute(data):
 
     print(f"[V34] margin raw: {margin_raw.shape}  tickers={len(margin_tickers)}")
 
+    # 先取 ns/nd（BUG #12 檢查會用到，原本在下方 alignment 區才定義）
+    ns = pre["n_stocks"]
+    nd = pre["n_days"]
+
     # BUG #3 修正：時序方向驗證（assert margin_raw 軸 0 是從舊到新）
     # 檢查方式：比對 margin_meta 裡的 dates 和 pre["dates"] 最後一天
     _meta_dates = margin_meta.get("dates")
@@ -239,11 +243,10 @@ def v34_precompute(data):
         print(f"[V34] ⚠️ margin_meta 沒有 dates 欄位，無法驗證時序方向和日期對齊")
 
     # 把 margin 重排成跟 pre["tickers"] 一致的順序
-    # BUG #4 修正：missing stock 填 -1（不是 0）→ kernel/cpu_replay 用 sentinel guard 過濾
-    ns = pre["n_stocks"]
-    nd = pre["n_days"]
+    # BUG #4 修正：missing stock 填 -999（sentinel）→ kernel/cpu_replay 用 > -900 guard 過濾
+    # (ns/nd 已在上方定義)
     margin_idx_map = {t: i for i, t in enumerate(margin_tickers)}
-    aligned = np.full((ns, nd, 5), -1.0, dtype=np.float32)  # -1 = sentinel
+    aligned = np.full((ns, nd, 5), -999.0, dtype=np.float32)  # -999 = sentinel
     missing = 0
     for si, t in enumerate(pre["tickers"]):
         mi = margin_idx_map.get(t)
@@ -258,7 +261,7 @@ def v34_precompute(data):
             aligned[si, -m_days:, :] = margin_raw[:, mi, :]
 
     # BUG #5 修正：把 warmup 期（前 60 天）填 -1，避免「沒資料的 0」混進 scoring
-    aligned[:, :60, :] = -1.0
+    aligned[:, :60, :] = -999.0
 
     # BUG #14/#15 已在 preprocess_margin.py 修正：無效情境（NaN/除零）填 -1，不再靠 zero_mask 後處理
     # Legacy zero_mask 已移除（會誤殺合法的「當天 0 交易」）
