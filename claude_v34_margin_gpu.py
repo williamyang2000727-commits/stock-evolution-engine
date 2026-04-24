@@ -115,18 +115,26 @@ def _build_v34_kernel_src(base_src: str) -> str:
 
     # --- C. 加 margin scoring 到 3 處 ---
     # Anchor: 每處 scoring 的最後一行都是 w_mom_accel_k 那行
+    # 注意：kernel 裡有的位置用 [d] 索引（買入當天），有的用 [day] 索引（換股 day）
+    # 用 "sc += w_mom_accel_k;" 統一當 anchor，前面的日期索引不同但後綴相同
+    # Sentinel guard：margin_tensor 值 > -0.5 才算有效（missing / warmup 填 -1）
     old_anchor = "if (w_mom_accel_k > 0 && mom_accel[d] >= mom_accel_min_k) sc += w_mom_accel_k;"
     v34_scoring = (
         old_anchor + "\n"
-        "                // V34 Margin scoring — margin_tensor layout: (stocks, days, 5)\n"
+        "                // V34 Margin scoring — tensor layout (stocks, days, 5): heat/accel/short/offset/diverge\n"
+        "                // Sentinel -1 = missing/warmup，> -0.5 才算有效資料\n"
         "                {\n"
         "                    int midx = (si * n_days + day) * 5;\n"
-        "                    // margin_heat_th 是百分比（0-100），tensor 值是 0-1 比例 → × 100\n"
-        "                    if (w_margin_heat > 0 && margin_tensor[midx+0] * 100.0f <= margin_heat_th) sc += w_margin_heat;\n"
-        "                    if (w_margin_accel > 0 && margin_tensor[midx+1] <= margin_accel_th) sc += w_margin_accel;\n"
-        "                    if (w_short_ratio > 0 && margin_tensor[midx+2] <= short_ratio_th) sc += w_short_ratio;\n"
-        "                    if (w_offset_rate > 0 && margin_tensor[midx+3] <= offset_rate_th) sc += w_offset_rate;\n"
-        "                    if (w_margin_diverge > 0 && margin_tensor[midx+4] <= 0.0f) sc += w_margin_diverge;\n"
+        "                    float _m0 = margin_tensor[midx+0];\n"
+        "                    float _m1 = margin_tensor[midx+1];\n"
+        "                    float _m2 = margin_tensor[midx+2];\n"
+        "                    float _m3 = margin_tensor[midx+3];\n"
+        "                    float _m4 = margin_tensor[midx+4];\n"
+        "                    if (w_margin_heat > 0 && _m0 > -0.5f && _m0 * 100.0f <= margin_heat_th) sc += w_margin_heat;\n"
+        "                    if (w_margin_accel > 0 && _m1 > -0.5f && _m1 <= margin_accel_th) sc += w_margin_accel;\n"
+        "                    if (w_short_ratio > 0 && _m2 > -0.5f && _m2 <= short_ratio_th) sc += w_short_ratio;\n"
+        "                    if (w_offset_rate > 0 && _m3 > -0.5f && _m3 <= offset_rate_th) sc += w_offset_rate;\n"
+        "                    if (w_margin_diverge > 0 && _m4 > -0.5f && _m4 <= 0.0f) sc += w_margin_diverge;\n"
         "                }"
     )
     n_hits = src.count(old_anchor)
@@ -141,6 +149,15 @@ print("[V34] 重建 CUDA kernel 字串...")
 _V34_KERNEL_SRC = _build_v34_kernel_src(base.CUDA_KERNEL.code)
 print(f"[V34] kernel source: {len(_V34_KERNEL_SRC)} chars")
 
+# BUG #6 修正：驗證 base kernel 結構沒變（V34 patch 還對得上 base 的 param 索引）
+# 如果 base 改了 PARAM_ORDER 長度，V34 的 p[74-82] 注入會錯位
+_EXPECTED_BASE_N_PARAMS = 74  # V34 對應的 base version
+if _V34_PARAM_START != _EXPECTED_BASE_N_PARAMS:
+    raise RuntimeError(
+        f"[V34] base.PARAM_ORDER 長度改變！原本 {_EXPECTED_BASE_N_PARAMS}，現在 {_V34_PARAM_START}。\n"
+        f"V34 kernel patch 的 p[74-82] 索引會錯位，必須修正 _build_v34_kernel_src()"
+    )
+
 # 編譯 V34 kernel（之後會用 wrapper 包它）
 _V34_RAW_KERNEL = cp.RawKernel(_V34_KERNEL_SRC, "backtest")
 
@@ -153,7 +170,12 @@ _v34_margin_gpu = None   # 將在 precompute 裡填入
 
 
 def v34_precompute(data):
-    """在 base.precompute 之後額外載入 margin tensor 放上 GPU"""
+    """在 base.precompute 之後額外載入 margin tensor 放上 GPU
+
+    Sentinel 設計（BUG #4/#5 修正 2026-04-25）：
+      - missing stock / warmup 期 / 值為 0 的 early days → 填 -1
+      - kernel 和 cpu_replay 用 `value > -0.5f` 檢查，避免把「沒資料」當成「低熱度加分」
+    """
     global _v34_margin_gpu
     pre = _orig_precompute(data)
 
@@ -167,36 +189,78 @@ def v34_precompute(data):
 
     margin_raw = np.load(MARGIN_TENSOR_PATH)  # shape (days, stocks_in_margin, 5)
     margin_meta = pickle.load(open(MARGIN_META_PATH, "rb"))
-    margin_tickers = margin_meta["tickers"]   # list of "2330.TW" etc.
+    margin_tickers = margin_meta["tickers"]
 
     print(f"[V34] margin raw: {margin_raw.shape}  tickers={len(margin_tickers)}")
 
+    # BUG #3 修正：時序方向驗證（assert margin_raw 軸 0 是從舊到新）
+    # 檢查方式：比對 margin_meta 裡的 dates 和 pre["dates"] 最後一天
+    _meta_dates = margin_meta.get("dates")
+    if _meta_dates is not None and len(_meta_dates) >= 2:
+        _first_md = str(_meta_dates[0])[:10]
+        _last_md = str(_meta_dates[-1])[:10]
+        _pre_first = str(pre["dates"][0].date() if hasattr(pre["dates"][0], 'date') else pre["dates"][0])[:10]
+        _pre_last = str(pre["dates"][-1].date() if hasattr(pre["dates"][-1], 'date') else pre["dates"][-1])[:10]
+        print(f"[V34] margin dates: {_first_md} ~ {_last_md}  |  OHLCV dates: {_pre_first} ~ {_pre_last}")
+        if _first_md > _last_md:
+            raise RuntimeError(f"[V34] margin_raw 時序顛倒（{_first_md} > {_last_md}），先重跑 preprocess_margin.py 修正")
+        if _last_md < _pre_last:
+            print(f"[V34] ⚠️ margin 最後一天 {_last_md} 早於 OHLCV 最後一天 {_pre_last}（差 {len(pre['dates'])-1} 天以內正常）")
+    else:
+        print(f"[V34] ⚠️ margin_meta 沒有 dates 欄位，無法驗證時序方向")
+
     # 把 margin 重排成跟 pre["tickers"] 一致的順序
-    # 不在 margin 裡的股票 → 填 0（等於關掉該股 margin scoring）
+    # BUG #4 修正：missing stock 填 -1（不是 0）→ kernel/cpu_replay 用 sentinel guard 過濾
     ns = pre["n_stocks"]
     nd = pre["n_days"]
     margin_idx_map = {t: i for i, t in enumerate(margin_tickers)}
-    aligned = np.zeros((ns, nd, 5), dtype=np.float32)
+    aligned = np.full((ns, nd, 5), -1.0, dtype=np.float32)  # -1 = sentinel
     missing = 0
     for si, t in enumerate(pre["tickers"]):
         mi = margin_idx_map.get(t)
         if mi is None:
             missing += 1
-            continue
+            continue  # 保持 -1
         # margin_raw shape (days_m, stocks_m, 5)；取最後 nd 天對齊
         m_days = margin_raw.shape[0]
         if m_days >= nd:
             aligned[si, :, :] = margin_raw[-nd:, mi, :]
         else:
             aligned[si, -m_days:, :] = margin_raw[:, mi, :]
+
+    # BUG #5 修正：把 warmup 期（前 60 天）填 -1，避免「沒資料的 0」混進 scoring
+    aligned[:, :60, :] = -1.0
+
+    # BUG #4 額外：把整筆全 0 的 stock-day 組合視為 missing（填 -1）
+    # 融資融券資料週末停擺，若某天 5 維全為 0 = 沒報（非 legitimately low）
+    _zero_mask = np.all(aligned == 0.0, axis=2)  # (ns, nd)
+    aligned[_zero_mask] = -1.0
+    _zero_cnt = int(_zero_mask.sum())
+
     print(f"[V34] aligned margin to GPU layout (stocks, days, 5): {aligned.shape}  "
-          f"missing tickers {missing}/{ns}")
+          f"missing tickers {missing}/{ns}  zero-fill 消除 {_zero_cnt} stock-days")
+
+    # Sanity check：每維度的數值範圍應符合預期（只看 > -0.5 的有效值）
+    _dim_names = ["margin_heat (0-1 比例)", "margin_accel (%)", "short_ratio (%)", "offset_rate (%)", "margin_diverge (%)"]
+    _expect_ranges = [(0.0, 1.0), (-100.0, 500.0), (0.0, 200.0), (0.0, 100.0), (-100.0, 100.0)]
+    for _di, (_name, (_lo, _hi)) in enumerate(zip(_dim_names, _expect_ranges)):
+        _valid = aligned[:, :, _di][aligned[:, :, _di] > -0.5]
+        if len(_valid) > 0:
+            _min, _max, _mean = float(_valid.min()), float(_valid.max()), float(_valid.mean())
+            _ok = "✅" if _lo <= _min and _max <= _hi else "⚠️"
+            print(f"[V34] dim[{_di}] {_name}: min={_min:.3f} max={_max:.3f} mean={_mean:.3f}  {_ok}")
+            if _max > _hi * 1.5 or _min < _lo - _hi * 0.5:
+                print(f"[V34]    ⚠️ dim[{_di}] 超出預期範圍 [{_lo}, {_hi}]，檢查 preprocess_margin.py")
+        else:
+            print(f"[V34] dim[{_di}] {_name}: 全部 missing/warmup")
 
     # 丟上 GPU，存為 module-level 讓 kernel wrapper 取用
     _v34_margin_gpu = cp.asarray(aligned)
     print(f"[V34] margin tensor on GPU: {_v34_margin_gpu.nbytes/1024/1024:.1f} MB")
 
-    pre["margin_tensor"] = _v34_margin_gpu   # 也掛在 pre 上備用
+    # BUG #2 修正：cpu_replay 需要 numpy 版（不能用 cupy，cpu_replay 是 Python 迴圈）
+    pre["margin_tensor_np"] = aligned  # numpy, for cpu_replay
+    pre["margin_tensor"] = _v34_margin_gpu  # cupy, for kernel 備查
     return pre
 
 
@@ -211,7 +275,11 @@ class V34KernelWrapper:
     base.main() 會呼叫 base.CUDA_KERNEL((grid,), (BLOCK,), (args...)) 。
     我們要把 d_margin_tensor 插到 d_params（原 args[-6]）之前。
     也暴露 .code 讓外部診斷仍能拿 source。
+
+    BUG #9 修正：加 args 結構檢查，base 改 kernel 簽名會立即炸出來
     """
+    _EXPECTED_TAIL_LEN = 6  # d_params, n_params, d_results, BATCH, train_start, train_end
+
     def __init__(self, real_kernel, kernel_src):
         self.real = real_kernel
         self.code = kernel_src
@@ -220,8 +288,14 @@ class V34KernelWrapper:
         if _v34_margin_gpu is None:
             raise RuntimeError("[V34] margin tensor 未載入，請先跑 precompute()")
         args = tuple(args)
-        # d_params 在 args[-6]（kernel 簽名結構固定），插入 margin_tensor 在它前面
-        new_args = args[:-6] + (_v34_margin_gpu,) + args[-6:]
+        # 基本結構檢查：最後 6 個 args 應該是 (d_params, n_params_int, d_results, BATCH_int, train_start_int, train_end_int)
+        if len(args) < self._EXPECTED_TAIL_LEN + 30:  # base 有 40+ 個 indicator tensor args
+            raise RuntimeError(
+                f"[V34] kernel args 長度 {len(args)} 太短，base.CUDA_KERNEL 簽名可能已改。"
+                f"檢查 base.main() 裡 CUDA_KERNEL((grid,), (BLOCK,), (...)) 呼叫。"
+            )
+        # 插入 margin_tensor 在 d_params 前面
+        new_args = args[:-self._EXPECTED_TAIL_LEN] + (_v34_margin_gpu,) + args[-self._EXPECTED_TAIL_LEN:]
         return self.real(grid, block, new_args)
 
 
@@ -254,5 +328,7 @@ base.cpu_replay = v34_cpu_replay
 if __name__ == "__main__":
     print(f"[V34] PARAMS_SPACE 大小: {len(base.PARAMS_SPACE)}")
     print(f"[V34] PARAM_ORDER 長度: {len(base.PARAM_ORDER)}  (MA/MOM idx 會在 +3)")
+    print(f"[V34] 💡 SEED (89.90) 沒有 margin params → margin 9 slot 全部 default 0 = margin scoring 關閉")
+    print(f"[V34] 💡 這代表 baseline 分數 = 89.90 純 OHLCV 表現，margin 只給「新策略」加分用")
     print(f"[V34] 啟動 base.main()...\n")
     base.main()

@@ -298,9 +298,12 @@ void backtest(
     // 快速認賠：買後 N 天內虧 threshold% 立刻砍
     int early_exit_days = (int)p[70];
     float early_exit_th = p[71];
-    // 訊號持續性：過去 N 天也必須是 top100 強勢股（對抗單日運氣）
+    // p[72] 共用 slot（歷史原因，PARAMS_SPACE 鎖 [0] 永遠 0，兩個功能都不啟用）
+    // signal_persist_days: 過去 N 天都在 top100（對抗單日運氣）— 已禁用
+    // buy_confirm: 需隔天還在 threshold 以上才買 — 未啟用
+    // BUG #1 稽查（2026-04-25）：兩個功能共用 p[72] 不會衝突，因 PARAMS_SPACE["signal_persist_days"]=[0] 鎖死
+    // 若未來要啟用任一功能，需先拆開兩個 slot
     int signal_persist_days = (int)p[72];
-    // 買入確認（0=直接買, 1=需隔天還在 threshold 以上才買）
     int buy_confirm = (int)p[72];
     // 賣股後空倉冷卻期（解耦賣跟買）
     int buy_delay_days = (int)p[73];
@@ -1343,6 +1346,15 @@ def cpu_replay(pre, p):
     sector_hot=pre.get("sector_hot")
     up_days_arr=pre.get("up_days"); week52_arr=pre.get("week52_pos"); vol_up_days_arr=pre.get("vol_up_days"); mom_accel_arr=pre.get("mom_accel")
     mfi_arr=pre.get("mfi"); cmf_arr=pre.get("cmf"); atr_ratio_arr=pre.get("atr_ratio")
+    # V34 margin tensor (optional) — shape (stocks, days, 5): heat/accel/short/offset/diverge
+    # cpu_replay 的 margin_tensor 是 numpy array（不是 cupy）— V34 precompute 掛 pre["margin_tensor_np"]
+    _margin_np=pre.get("margin_tensor_np")
+    _w_mh=int(p.get("w_margin_heat",0)); _mh_th=float(p.get("margin_heat_th",30))
+    _w_ma_acc=int(p.get("w_margin_accel",0)); _ma_acc_th=float(p.get("margin_accel_th",10))
+    _w_sr=int(p.get("w_short_ratio",0)); _sr_th=float(p.get("short_ratio_th",5))
+    _w_or=int(p.get("w_offset_rate",0)); _or_th=float(p.get("offset_rate_th",5))
+    _w_md=int(p.get("w_margin_diverge",0))
+    _margin_active = _margin_np is not None and (_w_mh>0 or _w_ma_acc>0 or _w_sr>0 or _w_or>0 or _w_md>0)
     maf=pre["ma_d"].get(int(p.get("ma_fast_w",5)), pre["ma_d"][5])
     mas=pre["ma_d"].get(int(p.get("ma_slow_w",20)), pre["ma_d"][20])
     ma60=pre["ma60"]
@@ -1547,6 +1559,15 @@ def cpu_replay(pre, p):
                 if _wvud>0 and vol_up_days_arr is not None and vol_up_days_arr[si,day]>=p.get("vol_up_days_min",3): sc+=_wvud
                 _wma=int(p.get("w_mom_accel",0))
                 if _wma>0 and mom_accel_arr is not None and mom_accel_arr[si,day]>=p.get("mom_accel_min",2): sc+=_wma
+                # V34 Margin scoring（mirror kernel logic line 125-129）— 用 sentinel > -0.5 過濾 missing/warmup
+                if _margin_active:
+                    _mh=float(_margin_np[si,day,0]); _mac=float(_margin_np[si,day,1])
+                    _sr=float(_margin_np[si,day,2]); _ofr=float(_margin_np[si,day,3]); _mdv=float(_margin_np[si,day,4])
+                    if _w_mh>0 and _mh>-0.5 and _mh*100.0<=_mh_th: sc+=_w_mh
+                    if _w_ma_acc>0 and _mac>-0.5 and _mac<=_ma_acc_th: sc+=_w_ma_acc
+                    if _w_sr>0 and _sr>-0.5 and _sr<=_sr_th: sc+=_w_sr
+                    if _w_or>0 and _ofr>-0.5 and _ofr<=_or_th: sc+=_w_or
+                    if _w_md>0 and _mdv>-0.5 and _mdv<=0.0: sc+=_w_md
                 cg=int(p.get("consecutive_green",0))
                 if cg>=1:
                     ok=True
