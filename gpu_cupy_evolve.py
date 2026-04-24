@@ -1458,11 +1458,11 @@ def cpu_replay(pre, p):
                 if _margin_active:
                     _mh=float(_margin_np[si,d,0]); _mac=float(_margin_np[si,d,1])
                     _sr=float(_margin_np[si,d,2]); _ofr=float(_margin_np[si,d,3]); _mdv=float(_margin_np[si,d,4])
-                    if _w_mh>0 and _mh>-0.5 and _mh*100.0<=_mh_th: sc+=_w_mh
-                    if _w_ma_acc>0 and _mac>-0.5 and _mac<=_ma_acc_th: sc+=_w_ma_acc
-                    if _w_sr>0 and _sr>-0.5 and _sr<=_sr_th: sc+=_w_sr
-                    if _w_or>0 and _ofr>-0.5 and _ofr<=_or_th: sc+=_w_or
-                    if _w_md>0 and _mdv>-0.5 and _mdv<=0.0: sc+=_w_md
+                    if _w_mh>0 and _mh>-900.0 and _mh*100.0<=_mh_th: sc+=_w_mh
+                    if _w_ma_acc>0 and _mac>-900.0 and _mac<=_ma_acc_th: sc+=_w_ma_acc
+                    if _w_sr>0 and _sr>-900.0 and _sr<=_sr_th: sc+=_w_sr
+                    if _w_or>0 and _ofr>-900.0 and _ofr<=_or_th: sc+=_w_or
+                    if _w_md>0 and _mdv>-900.0 and _mdv<=0.0: sc+=_w_md
                 # New indicators
                 return sc
             # 找候選最高分（追蹤 top-1 + top-2）
@@ -1568,15 +1568,15 @@ def cpu_replay(pre, p):
                 if _wvud>0 and vol_up_days_arr is not None and vol_up_days_arr[si,day]>=p.get("vol_up_days_min",3): sc+=_wvud
                 _wma=int(p.get("w_mom_accel",0))
                 if _wma>0 and mom_accel_arr is not None and mom_accel_arr[si,day]>=p.get("mom_accel_min",2): sc+=_wma
-                # V34 Margin scoring（mirror kernel logic line 125-129）— 用 sentinel > -0.5 過濾 missing/warmup
+                # V34 Margin scoring（mirror kernel logic line 125-129）— 用 sentinel > -900 過濾 missing/warmup
                 if _margin_active:
                     _mh=float(_margin_np[si,day,0]); _mac=float(_margin_np[si,day,1])
                     _sr=float(_margin_np[si,day,2]); _ofr=float(_margin_np[si,day,3]); _mdv=float(_margin_np[si,day,4])
-                    if _w_mh>0 and _mh>-0.5 and _mh*100.0<=_mh_th: sc+=_w_mh
-                    if _w_ma_acc>0 and _mac>-0.5 and _mac<=_ma_acc_th: sc+=_w_ma_acc
-                    if _w_sr>0 and _sr>-0.5 and _sr<=_sr_th: sc+=_w_sr
-                    if _w_or>0 and _ofr>-0.5 and _ofr<=_or_th: sc+=_w_or
-                    if _w_md>0 and _mdv>-0.5 and _mdv<=0.0: sc+=_w_md
+                    if _w_mh>0 and _mh>-900.0 and _mh*100.0<=_mh_th: sc+=_w_mh
+                    if _w_ma_acc>0 and _mac>-900.0 and _mac<=_ma_acc_th: sc+=_w_ma_acc
+                    if _w_sr>0 and _sr>-900.0 and _sr<=_sr_th: sc+=_w_sr
+                    if _w_or>0 and _ofr>-900.0 and _ofr<=_or_th: sc+=_w_or
+                    if _w_md>0 and _mdv>-900.0 and _mdv<=0.0: sc+=_w_md
                 cg=int(p.get("consecutive_green",0))
                 if cg>=1:
                     ok=True

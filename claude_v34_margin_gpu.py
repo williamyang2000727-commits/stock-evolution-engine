@@ -117,12 +117,12 @@ def _build_v34_kernel_src(base_src: str) -> str:
     # Anchor: 每處 scoring 的最後一行都是 w_mom_accel_k 那行
     # 注意：kernel 裡有的位置用 [d] 索引（買入當天），有的用 [day] 索引（換股 day）
     # 用 "sc += w_mom_accel_k;" 統一當 anchor，前面的日期索引不同但後綴相同
-    # Sentinel guard：margin_tensor 值 > -0.5 才算有效（missing / warmup 填 -1）
+    # Sentinel guard：margin_tensor 值 > -900 才算有效（missing / warmup / NaN 填 -999）
     old_anchor = "if (w_mom_accel_k > 0 && mom_accel[d] >= mom_accel_min_k) sc += w_mom_accel_k;"
     v34_scoring = (
         old_anchor + "\n"
         "                // V34 Margin scoring — tensor layout (stocks, days, 5): heat/accel/short/offset/diverge\n"
-        "                // Sentinel -1 = missing/warmup，> -0.5 才算有效資料\n"
+        "                // Sentinel -999 = missing/warmup/NaN，> -900 才算有效資料\n"
         "                {\n"
         "                    int midx = (si * n_days + day) * 5;\n"
         "                    float _m0 = margin_tensor[midx+0];\n"
@@ -130,11 +130,11 @@ def _build_v34_kernel_src(base_src: str) -> str:
         "                    float _m2 = margin_tensor[midx+2];\n"
         "                    float _m3 = margin_tensor[midx+3];\n"
         "                    float _m4 = margin_tensor[midx+4];\n"
-        "                    if (w_margin_heat > 0 && _m0 > -0.5f && _m0 * 100.0f <= margin_heat_th) sc += w_margin_heat;\n"
-        "                    if (w_margin_accel > 0 && _m1 > -0.5f && _m1 <= margin_accel_th) sc += w_margin_accel;\n"
-        "                    if (w_short_ratio > 0 && _m2 > -0.5f && _m2 <= short_ratio_th) sc += w_short_ratio;\n"
-        "                    if (w_offset_rate > 0 && _m3 > -0.5f && _m3 <= offset_rate_th) sc += w_offset_rate;\n"
-        "                    if (w_margin_diverge > 0 && _m4 > -0.5f && _m4 <= 0.0f) sc += w_margin_diverge;\n"
+        "                    if (w_margin_heat > 0 && _m0 > -900.0f && _m0 * 100.0f <= margin_heat_th) sc += w_margin_heat;\n"
+        "                    if (w_margin_accel > 0 && _m1 > -900.0f && _m1 <= margin_accel_th) sc += w_margin_accel;\n"
+        "                    if (w_short_ratio > 0 && _m2 > -900.0f && _m2 <= short_ratio_th) sc += w_short_ratio;\n"
+        "                    if (w_offset_rate > 0 && _m3 > -900.0f && _m3 <= offset_rate_th) sc += w_offset_rate;\n"
+        "                    if (w_margin_diverge > 0 && _m4 > -900.0f && _m4 <= 0.0f) sc += w_margin_diverge;\n"
         "                }"
     )
     n_hits = src.count(old_anchor)
@@ -174,7 +174,7 @@ def v34_precompute(data):
 
     Sentinel 設計（BUG #4/#5 修正 2026-04-25）：
       - missing stock / warmup 期 / 值為 0 的 early days → 填 -1
-      - kernel 和 cpu_replay 用 `value > -0.5f` 檢查，避免把「沒資料」當成「低熱度加分」
+      - kernel 和 cpu_replay 用 `value > -900.0f` 檢查，避免把「沒資料」當成「低熱度加分」
     """
     global _v34_margin_gpu
     pre = _orig_precompute(data)
@@ -262,17 +262,17 @@ def v34_precompute(data):
 
     # BUG #14/#15 已在 preprocess_margin.py 修正：無效情境（NaN/除零）填 -1，不再靠 zero_mask 後處理
     # Legacy zero_mask 已移除（會誤殺合法的「當天 0 交易」）
-    _sentinel_cnt = int((aligned <= -0.5).sum())
+    _sentinel_cnt = int((aligned <= -900.0).sum())
 
     print(f"[V34] aligned margin to GPU layout (stocks, days, 5): {aligned.shape}  "
           f"missing tickers {missing}/{ns}  sentinel(-1) 總數 {_sentinel_cnt:,}")
 
-    # Sanity check：每維度的有效值範圍（sentinel -1 排除在外，只看 > -0.5）
+    # Sanity check：每維度的有效值範圍（sentinel -999 排除在外，只看 > -900）
     _dim_names = ["margin_heat (0-1 比例)", "margin_accel (%)", "short_ratio (%)", "offset_rate (%)", "margin_diverge (%)"]
     # BUG #14/#15 後：無效已填 -1，有效值範圍就是 clip 的上下限
     _expect_ranges = [(0.0, 1.0), (-100.0, 200.0), (0.0, 500.0), (0.0, 200.0), (-200.0, 200.0)]
     for _di, (_name, (_lo, _hi)) in enumerate(zip(_dim_names, _expect_ranges)):
-        _valid = aligned[:, :, _di][aligned[:, :, _di] > -0.5]
+        _valid = aligned[:, :, _di][aligned[:, :, _di] > -900.0]
         if len(_valid) > 0:
             _min, _max, _mean = float(_valid.min()), float(_valid.max()), float(_valid.mean())
             _ok = "✅" if _lo <= _min and _max <= _hi else "⚠️"
