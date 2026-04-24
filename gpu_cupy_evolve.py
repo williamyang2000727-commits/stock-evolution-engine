@@ -1647,12 +1647,12 @@ def main():
     print(f"  Seg 3 段都要正報酬 | seg[2] ≥ seg[0] × 0.6（防老化）")
     print(f"")
     print(f"  ═══ Python gate（top-20 cpu_replay 驗證）═══")
-    print(f"  全期 15-200 筆 | avg ≥ 3% | avg_hold ≥ 5 | MaxDD ≥ -50% | 總報酬 ≥ 2100% | 勝率 ≥ 69%")
+    print(f"  全期 15-200 筆 | avg ≥ 3% | avg_hold ≥ 5 | MaxDD ≥ -50%")
     print(f"  WF ratio ≥ 0.4 | test_total > 0")
     print(f"  報酬地板: train 年化 ≥ {MIN_TRAIN_ANNUAL}% | test 年化 ≥ {MIN_TEST_ANNUAL}%")
     print(f"  勝率地板: train ≥ {MIN_WR_TRAIN*100:.0f}% | test ≥ {MIN_WR_TEST*100:.0f}%")
     print(f"  最新 60 天 avg ≥ 3%")
-    print(f"  ═══ 新框架 ═══ hold_days 加入 45/60 天 | SEED=88.60 | 診斷每 5 輪印")
+    print(f"  ═══ 新框架 ═══ hold_days 加入 45/60 天 | SEED=Gist 當前策略（動態地板）| 診斷每 5 輪印")
     print(f"")
 
     # 啟動時歸檔舊 pending_push.json（避免上次 session 的未推 pending 跟新 session 混淆）
@@ -1851,14 +1851,15 @@ def main():
                        "w_vol_up_days":1,"vol_up_days_min":2,"w_mom_accel":1,"mom_accel_min":0,
                        "consecutive_green":1,"gap_up":1,
                        "ma_fast_w":3,"ma_slow_w":15,"momentum_days":3,"max_positions":2}
-            # 88.60 為主 SEED（89.90 的母體），讓 GPU 從它出發在新框架（hold_days 45/60）重新探索
+            # Gist 當前策略為 SEED（動態地板），kernel 會算它的分數當 baseline
+            # 88.60 / 189 提供基因多樣性（配種用）
             hall_of_fame = [
-                (0, dict(SEED_88)),            # 主力起點：88.60（89.90 就是從它微調來的）
-                (0, dict(gist_best_params)),   # 89.90 當參考
-                (0, dict(SEED_189)),           # 189 波段基因
+                (0, dict(gist_best_params)),   # position 0：SEED = Gist 當前策略（動態地板）
+                (0, dict(SEED_88)),            # position 1：88.60 基因（89.90 父輩）
+                (0, dict(SEED_189)),           # position 2：189 基因（報酬優先流派）
             ]
-            best_params = dict(SEED_88)  # 爬山主力從 88.60 出發
-            print(f"[GPU] 🌱 SEED=88.60 為主力起點（hold_days 擴到 45/60，重新探索）")
+            best_params = dict(gist_best_params)  # 爬山主力從當前 Gist 出發
+            print(f"[GPU] 🌱 SEED=Gist 當前策略（動態地板）| HOF 基因：Gist + 88.60 + 189")
     except Exception as _e:
         print(f"[GPU] Gist 載入失敗：{_e}")
     # 掃描跳過（曾基於 v5，會污染起點）
@@ -2096,10 +2097,26 @@ def main():
                 best_wr = float(results[0, 4])
                 print(f"  [GPU] 🌱 SEED 分數：{_seed_score:.1f} | baseline = {best_score:.1f}（100%，只接受真正超越的策略）")
             else:
-                # SEED 在新 universe 上可能完全不適用 → baseline=0 讓 GPU 自由探索
-                best_score = 0
-                print(f"  [GPU] ⚠️ SEED 在此 universe 無效（{_seed_score:.1f}，{_seed_nt}筆）")
-                print(f"  [GPU] baseline=0，從零開始搜尋")
+                # SEED(Gist) 在新 cache 無效 → 試 HOF 其他 seed (88.60 → 189)
+                # 絕不從 0 搜（會放水垃圾策略）
+                _fallback_found = False
+                for _name, _idx in [("88.60", 1), ("189", 2)]:
+                    _fsc = float(results[_idx, 0])
+                    if _fsc > 0:
+                        best_score = _fsc
+                        best_nt = int(results[_idx, 1])
+                        best_avg = float(results[_idx, 2])
+                        best_total = float(results[_idx, 3])
+                        best_wr = float(results[_idx, 4])
+                        best_params = dict(hall_of_fame[_idx][1])
+                        print(f"  [GPU] ⚠️ SEED(Gist)={_seed_score:.1f} 無效 → fallback 到 {_name}: {_fsc:.1f}")
+                        _fallback_found = True
+                        break
+                if not _fallback_found:
+                    # 全部 HOF 都無效：用 MIN_* 換算的最低合格分數當底線
+                    # s_wr(wr 55%) + s_return(年化 80%) ≈ 10 + 4 = 14，加 buffer 到 20
+                    best_score = 20.0
+                    print(f"  [GPU] ⚠️ SEED + HOF 全部無效 → baseline=20（MIN_* 絕對門檻換算，絕不從 0）")
 
         # 收集這批裡分數 > 0 的前 5 名加入名人堂（不用破紀錄也能入）
         top_indices = np.argsort(results[:, 0])[-5:][::-1]
@@ -2198,13 +2215,12 @@ def main():
                     _gate_fail["recent"] += 1
                     continue
             # 🔓 Calmar / 近 2 年 avg gate 移除（放在 kernel scoring 當加分項）
-            # Hard gate: 全期績效必須真的贏 89.90（總報酬 >= 2100% AND 勝率 >= 69%）
-            # 防止分數高但績效差的假突破污染 best_score
-            _hg_total_pre = _ctr_tot + _cts_tot
-            _hg_wr_pre = sum(1 for t in _cmp if t.get("return", 0) > 0) / len(_cmp) * 100 if _cmp else 0
-            if _hg_total_pre < 2100 or _hg_wr_pre < 69:
-                _gate_fail["perf_vs_89.90"] = _gate_fail.get("perf_vs_89.90", 0) + 1
-                continue
+            # 🔓 perf_vs_89.90 硬編 gate 移除（2026-04-25）：
+            # 原邏輯：total >= 2100 AND wr >= 69（= 4/18 89.90 指紋）
+            # 問題：cache drift 後 89.90 自己只剩 1976%/64% → 連自己都過不了 → GPU 永遠 0 突破
+            # 解法：「贏當前策略」由 Layer 2 SEED baseline（Gist kernel score）動態執行
+            #       「絕對品質」由 MIN_WR_TRAIN/TEST + MIN_TRAIN/TEST_ANNUAL 執行
+            #       兩層聯手 = 動態底線 + 絕對品質，不再硬編歷史指紋
             # 過了所有 gate，接受
             best_score = _sc
             best_nt = int(results[_ti, 1])
