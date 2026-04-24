@@ -1,6 +1,6 @@
 """
 V35 Regime Commander — GPU 進化搜尋（fork of gpu_cupy_evolve.py）
-版本：0.2（2026-04-25 第二次稽查後，修 7 個潛在 bug）
+版本：0.3（2026-04-25 第三次稽查修致命 BUG V35-E：cpu_replay 必須 mirror regime gate）
 
 設計理念
 ========
@@ -44,20 +44,17 @@ SEED 從 Gist 讀 params 時，沒有 V35 key → fallback 到 PARAMS_SPACE[key]
 5. 擴充 precompute：算 regime array 放 GPU
 6. 直接呼叫 base.main() — 其他邏輯全繼承
 
-cpu_replay 設計
+cpu_replay 設計（2026-04-25 稽查後修正：v0.3）
 ================
-本版 cpu_replay 不 mirror regime gate（故意）。
-理由：
-  - SEED regime_gate_mode=3 (DISABLED) → kernel 跳 if 分支 → kernel 行為 == cpu_replay → **SEED baseline 可信**
-  - 新候選 regime_gate_mode=0 → kernel 用 regime gate 選股，cpu_replay 用 base gate 驗證
-    → 同 params 兩邊會有筆數差（kernel 在 BEAR 期少進場，cpu_replay 照樣進）
-    → vs_seed gate 用 cpu_replay 數字比較：
-      * 若 kernel 是真突破 → cpu_replay 跑「沒 regime gate」版本應該更差（被 BEAR 爛筆拖累）
-      * 若 cpu_replay 數字也能過 vs_seed → 代表 base 邏輯本身就不錯 → 不是 regime 貢獻
-      * 若 cpu_replay 不過 vs_seed → 擋下
-    → 這是**更嚴格的 filter**，只認 base 邏輯也行的策略，regime 只當 bonus
-  - Trade-off：真正「只靠 regime」的策略會被擋（cpu_replay 沒 regime 看不到優勢）
-    → V35.1 補 cpu_replay regime 邏輯後會更寬，本版先保守
+**v0.2 版本錯誤設計**：cpu_replay 不 mirror regime gate。
+**問題**：真正 regime-aware 強策略（kernel 靠避開 BEAR 期得分 85）在 cpu_replay（不看 regime）跑出來會被 BEAR 期拖累 → total 跟 SEED 差不多 → vs_seed gate 擋下
+→ **真突破全被誤擋**
+
+**v0.3 修復**：在 base.cpu_replay 加 `_eff_buy_th(day)` helper，兩處 buy gate 都用
+  - SEED regime_gate_mode=3 (DISABLED) → _v35_active = False → _eff_buy_th 回傳原 buy_threshold → 行為同 base
+  - 新候選 regime_gate_mode=0 → _v35_active = True → cpu_replay mirror kernel 的 regime 邏輯
+  - kernel 跟 cpu_replay 對同組 params 跑出相同 trades
+  - vs_seed gate 公平比較
 
 與 V34 的關係
 =============
@@ -420,16 +417,14 @@ _orig_cpu_replay = base.cpu_replay
 
 def v35_cpu_replay(pre, p):
     """
-    本版 cpu_replay 不 mirror regime gate（故意設計，見檔案開頭文件）。
+    v0.3：base.cpu_replay 已加 regime-aware 邏輯（_eff_buy_th helper）
+    V35 不需要覆寫，passthrough 即可。
 
-    SEED 行為保證：
-      SEED regime_gate_mode = 3 (DISABLED) → kernel 跳 if → eff = buy_threshold
-      → kernel 行為 == base cpu_replay → **SEED baseline 完美一致**
+    base.cpu_replay 讀 pre["regime_arr"]（V35 precompute 塞入）+ p["regime_gate_mode"]
+      - mode=3 (DISABLED) or V35 key 不存在 → 退化成純 base 行為
+      - mode=0 + 有 delta → mirror kernel 的 regime gate 邏輯
 
-    新候選 (regime_gate_mode=0)：
-      kernel 用 regime gate 選，cpu_replay 用原 buy_threshold 驗
-      → 兩邊同 params 會有差 → vs_seed gate 拒絕「只在 kernel 好看」的策略
-      → 過 vs_seed 的 = kernel 和 cpu_replay 都好看 = 真強策略
+    這樣 kernel 跟 cpu_replay 對同 params 產出相同 trades，vs_seed gate 公平。
     """
     return _orig_cpu_replay(pre, p)
 

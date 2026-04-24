@@ -1355,6 +1355,26 @@ def cpu_replay(pre, p):
     _w_or=int(p.get("w_offset_rate",0)); _or_th=float(p.get("offset_rate_th",5))
     _w_md=int(p.get("w_margin_diverge",0))
     _margin_active = _margin_np is not None and (_w_mh>0 or _w_ma_acc>0 or _w_sr>0 or _w_or>0 or _w_md>0)
+    # V35 Regime-aware buy threshold（mirror kernel 邏輯）
+    _regime_arr = pre.get("regime_arr")  # numpy float32, shape (nd,) 值 {0,1,2}
+    _regime_gate_mode = int(p.get("regime_gate_mode", 3))  # 預設 3 = DISABLED（= base 行為）
+    _bull_delta = float(p.get("bull_buy_th_delta", 0))
+    _bear_delta = float(p.get("bear_buy_th_delta", 0))
+    _chop_delta = float(p.get("chop_buy_th_delta", 0))
+    _v35_active = _regime_arr is not None and _regime_gate_mode == 0 and (_bull_delta != 0 or _bear_delta != 0 or _chop_delta != 0)
+    def _eff_buy_th(day_idx):
+        """V35 regime-aware effective buy threshold；若不啟用則返回原值"""
+        _base_th = p.get("buy_threshold", 5)
+        if not _v35_active:
+            return _base_th
+        _r = int(_regime_arr[day_idx])
+        if _r == 0:
+            _eff = _base_th + _bull_delta
+        elif _r == 1:
+            _eff = _base_th + _bear_delta
+        else:
+            _eff = _base_th + _chop_delta
+        return max(1.0, _eff)  # 下限 1.0（對齊 kernel）
     maf=pre["ma_d"].get(int(p.get("ma_fast_w",5)), pre["ma_d"][5])
     mas=pre["ma_d"].get(int(p.get("ma_slow_w",20)), pre["ma_d"][20])
     ma60=pre["ma60"]
@@ -1490,7 +1510,8 @@ def cpu_replay(pre, p):
                     if not _persist_ok: continue
                 sc=_score_stock(si,day)
                 vr=float(vol_ratio[si,day]) if vol_ratio is not None else 0
-                if sc>=p.get("buy_threshold",5):
+                _eff_th = _eff_buy_th(day)  # V35 regime-aware
+                if sc>=_eff_th:
                     if sc>cand_sc or (sc==cand_sc and vr>cand_vol):
                         _second_sc = cand_sc
                         cand_si=si; cand_sc=sc; cand_vol=vr
@@ -1587,7 +1608,8 @@ def cpu_replay(pre, p):
                 if p.get("above_ma60",0) and close[si,day]>=ma60[si,day]: sc+=1
                 if p.get("vol_gt_yesterday",0) and day>=1 and vol_ratio[si,day]>vol_prev[si,day]: sc+=1
                 vr=float(vol_ratio[si,day]) if vol_ratio is not None else 0
-                if sc>=buy_th and (sc>best_sc or (sc==best_sc and vr>best_vol)): best_si=si; best_sc=sc; best_vol=vr
+                _eff_th_2 = _eff_buy_th(day)  # V35 regime-aware（進場段）
+                if sc>=_eff_th_2 and (sc>best_sc or (sc==best_sc and vr>best_vol)): best_si=si; best_sc=sc; best_vol=vr
             if best_si>=0:
                 # buy_confirm: 0=direct, 1=must be same as yesterday's pending
                 _buy_confirm = int(p.get("signal_persist_days", 0))
