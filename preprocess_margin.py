@@ -33,21 +33,24 @@ NUMERIC_COLS = [
 ]
 
 
-def compute_indicators(margin_df: pd.DataFrame, cache_df: pd.DataFrame) -> np.ndarray:
+def compute_indicators(margin_df: pd.DataFrame, cache_df: pd.DataFrame, reference_dates=None) -> np.ndarray:
     """
     margin_df: raw FinMind DataFrame
     cache_df:  OHLCV DataFrame (tz-aware DatetimeIndex)
+    reference_dates: 可選，全局統一的日期軸（避免每檔 tail 對齊不同日期造成 tensor 日期錯位）
     returns: np.ndarray shape (TARGET_DAYS, 5)
     """
-    # 取最後 1500 天作為基準日期
-    cache_tail = cache_df.tail(TARGET_DAYS).copy()
-
-    # 構造統一的 naive date 作為對齊 key
-    cache_idx = cache_tail.index
-    if cache_idx.tz is not None:
-        cache_dates = cache_idx.tz_convert("Asia/Taipei").tz_localize(None).normalize()
+    if reference_dates is not None:
+        # BUG #12 修正（2026-04-25）：用全局 reference_dates 對齊，每檔 tensor 的日期一致
+        cache_dates = reference_dates
     else:
-        cache_dates = cache_idx.normalize()
+        # Legacy fallback：取該檔最後 1500 天
+        cache_tail = cache_df.tail(TARGET_DAYS).copy()
+        cache_idx = cache_tail.index
+        if cache_idx.tz is not None:
+            cache_dates = cache_idx.tz_convert("Asia/Taipei").tz_localize(None).normalize()
+        else:
+            cache_dates = cache_idx.normalize()
 
     # margin df: date string → datetime, set as index
     m = margin_df.copy()
@@ -124,13 +127,32 @@ def main():
     print(f"  跳過 (<1500 天): {skipped_short}")
     print(f"  跳過 (無 margin 資料): {skipped_no_margin}")
 
+    # BUG #12 修正（2026-04-25）：建立全局 reference_dates，讓所有 stock 的 tensor 對齊同一日期軸
+    # 找合格股票裡最長的 cache tail 當基準（覆蓋所有股票的日期）
+    _ref_df = cache[qualified[0]].tail(TARGET_DAYS)
+    _ref_idx = _ref_df.index
+    if _ref_idx.tz is not None:
+        reference_dates = _ref_idx.tz_convert("Asia/Taipei").tz_localize(None).normalize()
+    else:
+        reference_dates = _ref_idx.normalize()
+    # 找所有合格股票的 tail dates union → 取最完整的作為 ref
+    for key in qualified[:50]:  # 取前 50 檔嘗試找最完整的
+        _df = cache[key].tail(TARGET_DAYS)
+        if len(_df) == TARGET_DAYS:
+            _idx = _df.index
+            _d = _idx.tz_convert("Asia/Taipei").tz_localize(None).normalize() if _idx.tz else _idx.normalize()
+            if _d[-1] >= reference_dates[-1]:
+                reference_dates = _d
+    print(f"reference_dates: {reference_dates[0].date()} ~ {reference_dates[-1].date()} ({len(reference_dates)} 天)")
+
     # Build tensor
     tensor = np.zeros((TARGET_DAYS, len(qualified), 5), dtype=np.float32)
     fail = []
     for i, key in enumerate(qualified):
         tk = key.split(".")[0]
         try:
-            tensor[:, i, :] = compute_indicators(margin[tk], cache[key])
+            # 用 reference_dates 對齊（每檔 tensor 日期軸完全一致）
+            tensor[:, i, :] = compute_indicators(margin[tk], cache[key], reference_dates=reference_dates)
         except Exception as e:
             fail.append((key, str(e)))
             # 失敗就 0 填充，不中斷
@@ -142,11 +164,14 @@ def main():
 
     # Save
     np.save(OUT_TENSOR, tensor)
+    # BUG #3 修正：meta 加 dates 欄位，讓 V34 precompute 能驗證時序方向和日期對齊
+    _dates_iso = [d.date().isoformat() for d in reference_dates]
     pickle.dump({
         "shape": tensor.shape,
         "tickers": qualified,
         "indicators": ["margin_heat", "margin_accel", "short_ratio", "offset_rate", "margin_diverge"],
         "target_days": TARGET_DAYS,
+        "dates": _dates_iso,  # ISO 格式 "2020-02-11" 等，長度 = TARGET_DAYS
     }, open(OUT_META, "wb"))
 
     # Sanity stats

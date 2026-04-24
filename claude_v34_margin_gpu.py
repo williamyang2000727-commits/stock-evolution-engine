@@ -196,18 +196,47 @@ def v34_precompute(data):
     # BUG #3 修正：時序方向驗證（assert margin_raw 軸 0 是從舊到新）
     # 檢查方式：比對 margin_meta 裡的 dates 和 pre["dates"] 最後一天
     _meta_dates = margin_meta.get("dates")
+    _ohlcv_dates_str = [str(d.date() if hasattr(d, 'date') else d)[:10] for d in pre["dates"]]
+
     if _meta_dates is not None and len(_meta_dates) >= 2:
-        _first_md = str(_meta_dates[0])[:10]
-        _last_md = str(_meta_dates[-1])[:10]
-        _pre_first = str(pre["dates"][0].date() if hasattr(pre["dates"][0], 'date') else pre["dates"][0])[:10]
-        _pre_last = str(pre["dates"][-1].date() if hasattr(pre["dates"][-1], 'date') else pre["dates"][-1])[:10]
+        _margin_dates_str = [str(md)[:10] for md in _meta_dates]
+        _first_md = _margin_dates_str[0]
+        _last_md = _margin_dates_str[-1]
+        _pre_first = _ohlcv_dates_str[0]
+        _pre_last = _ohlcv_dates_str[-1]
         print(f"[V34] margin dates: {_first_md} ~ {_last_md}  |  OHLCV dates: {_pre_first} ~ {_pre_last}")
+
         if _first_md > _last_md:
             raise RuntimeError(f"[V34] margin_raw 時序顛倒（{_first_md} > {_last_md}），先重跑 preprocess_margin.py 修正")
-        if _last_md < _pre_last:
-            print(f"[V34] ⚠️ margin 最後一天 {_last_md} 早於 OHLCV 最後一天 {_pre_last}（差 {len(pre['dates'])-1} 天以內正常）")
+
+        # BUG #12 (2026-04-25)：交易日對齊精確性檢查
+        # FinMind 和 TWSE 的交易日可能有差（除權息日、開盤異常日）
+        # 比對最後 nd 天的 margin dates 和 OHLCV dates 逐天對應
+        _m_last_nd = _margin_dates_str[-nd:] if len(_margin_dates_str) >= nd else _margin_dates_str
+        _mismatch = 0
+        _mismatch_examples = []
+        for _i in range(min(len(_m_last_nd), nd)):
+            _ohlcv_day = _ohlcv_dates_str[-(nd - _i)] if (nd - _i - 1) < len(_ohlcv_dates_str) else None
+            _margin_day = _m_last_nd[_i]
+            if _ohlcv_day and _ohlcv_day != _margin_day:
+                _mismatch += 1
+                if len(_mismatch_examples) < 3:
+                    _mismatch_examples.append(f"idx={_i}: OHLCV={_ohlcv_day} vs margin={_margin_day}")
+        if _mismatch == 0:
+            print(f"[V34] ✅ 交易日 1:1 對齊（{min(len(_m_last_nd), nd)} 天全部一致）")
+        else:
+            _pct = _mismatch / min(len(_m_last_nd), nd) * 100
+            print(f"[V34] ⚠️ 交易日錯位 {_mismatch}/{min(len(_m_last_nd), nd)} 天 ({_pct:.1f}%)")
+            for _ex in _mismatch_examples:
+                print(f"[V34]    {_ex}")
+            if _pct > 5.0:
+                raise RuntimeError(
+                    f"[V34] 交易日錯位 {_pct:.1f}% 超過 5% 閾值，資料嚴重錯位。\n"
+                    f"可能原因：FinMind 和 TWSE 交易日定義不同、margin_raw 天數 ({len(_margin_dates_str)}) "
+                    f"vs OHLCV 天數 ({len(_ohlcv_dates_str)}) 不符"
+                )
     else:
-        print(f"[V34] ⚠️ margin_meta 沒有 dates 欄位，無法驗證時序方向")
+        print(f"[V34] ⚠️ margin_meta 沒有 dates 欄位，無法驗證時序方向和日期對齊")
 
     # 把 margin 重排成跟 pre["tickers"] 一致的順序
     # BUG #4 修正：missing stock 填 -1（不是 0）→ kernel/cpu_replay 用 sentinel guard 過濾
@@ -254,8 +283,23 @@ def v34_precompute(data):
         else:
             print(f"[V34] dim[{_di}] {_name}: 全部 missing/warmup")
 
+    # BUG #11 稽查（2026-04-25）：memory layout 驗證
+    # aligned 是 numpy row-major (C-contiguous)，cupy 預設也 row-major
+    # kernel 用 (si * n_days + day) * 5 索引，要求 strides = (n_days*5*4, 5*4, 4) bytes
+    assert aligned.flags["C_CONTIGUOUS"], "[V34] aligned 不是 C-contiguous！kernel 索引會錯"
+    assert aligned.strides == (nd * 5 * 4, 5 * 4, 4), (
+        f"[V34] aligned strides 異常 {aligned.strides}，預期 {(nd*5*4, 5*4, 4)}"
+    )
+    print(f"[V34] ✅ numpy memory layout: C-contiguous, strides={aligned.strides}")
+
     # 丟上 GPU，存為 module-level 讓 kernel wrapper 取用
     _v34_margin_gpu = cp.asarray(aligned)
+    # cupy 應該繼承 numpy 的 layout，但 double check
+    assert _v34_margin_gpu.flags["C_CONTIGUOUS"], "[V34] cupy tensor 不是 C-contiguous！kernel 索引會錯"
+    assert _v34_margin_gpu.strides == (nd * 5 * 4, 5 * 4, 4), (
+        f"[V34] cupy strides 異常 {_v34_margin_gpu.strides}"
+    )
+    print(f"[V34] ✅ cupy memory layout: C-contiguous, strides={_v34_margin_gpu.strides}")
     print(f"[V34] margin tensor on GPU: {_v34_margin_gpu.nbytes/1024/1024:.1f} MB")
 
     # BUG #2 修正：cpu_replay 需要 numpy 版（不能用 cupy，cpu_replay 是 Python 迴圈）

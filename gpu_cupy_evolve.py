@@ -1454,6 +1454,15 @@ def cpu_replay(pre, p):
                 if int(p.get("w_week52",0))>0 and week52_arr is not None and week52_arr[si,d]>=p.get("week52_min",0.7): sc+=int(p["w_week52"])
                 if int(p.get("w_vol_up_days",0))>0 and vol_up_days_arr is not None and vol_up_days_arr[si,d]>=p.get("vol_up_days_min",3): sc+=int(p["w_vol_up_days"])
                 if int(p.get("w_mom_accel",0))>0 and mom_accel_arr is not None and mom_accel_arr[si,d]>=p.get("mom_accel_min",2): sc+=int(p["w_mom_accel"])
+                # V34 Margin scoring（mirror kernel 換股處的 margin 注入）
+                if _margin_active:
+                    _mh=float(_margin_np[si,d,0]); _mac=float(_margin_np[si,d,1])
+                    _sr=float(_margin_np[si,d,2]); _ofr=float(_margin_np[si,d,3]); _mdv=float(_margin_np[si,d,4])
+                    if _w_mh>0 and _mh>-0.5 and _mh*100.0<=_mh_th: sc+=_w_mh
+                    if _w_ma_acc>0 and _mac>-0.5 and _mac<=_ma_acc_th: sc+=_w_ma_acc
+                    if _w_sr>0 and _sr>-0.5 and _sr<=_sr_th: sc+=_w_sr
+                    if _w_or>0 and _ofr>-0.5 and _ofr<=_or_th: sc+=_w_or
+                    if _w_md>0 and _mdv>-0.5 and _mdv<=0.0: sc+=_w_md
                 # New indicators
                 return sc
             # 找候選最高分（追蹤 top-1 + top-2）
