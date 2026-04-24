@@ -260,18 +260,17 @@ def v34_precompute(data):
     # BUG #5 修正：把 warmup 期（前 60 天）填 -1，避免「沒資料的 0」混進 scoring
     aligned[:, :60, :] = -1.0
 
-    # BUG #4 額外：把整筆全 0 的 stock-day 組合視為 missing（填 -1）
-    # 融資融券資料週末停擺，若某天 5 維全為 0 = 沒報（非 legitimately low）
-    _zero_mask = np.all(aligned == 0.0, axis=2)  # (ns, nd)
-    aligned[_zero_mask] = -1.0
-    _zero_cnt = int(_zero_mask.sum())
+    # BUG #14/#15 已在 preprocess_margin.py 修正：無效情境（NaN/除零）填 -1，不再靠 zero_mask 後處理
+    # Legacy zero_mask 已移除（會誤殺合法的「當天 0 交易」）
+    _sentinel_cnt = int((aligned <= -0.5).sum())
 
     print(f"[V34] aligned margin to GPU layout (stocks, days, 5): {aligned.shape}  "
-          f"missing tickers {missing}/{ns}  zero-fill 消除 {_zero_cnt} stock-days")
+          f"missing tickers {missing}/{ns}  sentinel(-1) 總數 {_sentinel_cnt:,}")
 
-    # Sanity check：每維度的數值範圍應符合預期（只看 > -0.5 的有效值）
+    # Sanity check：每維度的有效值範圍（sentinel -1 排除在外，只看 > -0.5）
     _dim_names = ["margin_heat (0-1 比例)", "margin_accel (%)", "short_ratio (%)", "offset_rate (%)", "margin_diverge (%)"]
-    _expect_ranges = [(0.0, 1.0), (-100.0, 500.0), (0.0, 200.0), (0.0, 100.0), (-100.0, 100.0)]
+    # BUG #14/#15 後：無效已填 -1，有效值範圍就是 clip 的上下限
+    _expect_ranges = [(0.0, 1.0), (-100.0, 200.0), (0.0, 500.0), (0.0, 200.0), (-200.0, 200.0)]
     for _di, (_name, (_lo, _hi)) in enumerate(zip(_dim_names, _expect_ranges)):
         _valid = aligned[:, :, _di][aligned[:, :, _di] > -0.5]
         if len(_valid) > 0:

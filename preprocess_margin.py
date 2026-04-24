@@ -74,35 +74,52 @@ def compute_indicators(margin_df: pd.DataFrame, cache_df: pd.DataFrame, referenc
     # Reindex to cache dates, ffill 讓停牌/無 margin 活動日沿用前值
     aligned = m[NUMERIC_COLS].reindex(cache_dates, method="ffill").fillna(0)
 
+    # BUG #14/#15 修正（2026-04-25）：「沒資料」情境統一填 -1（sentinel），讓 V34 kernel/cpu_replay 用 > -0.5 guard 擋掉
+    # 原設計：NaN / 除以 0 → fillna(0) → 被誤當作「低數值 = 好訊號」加分（禁融股、新上市股全被優先）
+    # 新設計：無效情境 → -1，V34 sentinel 過濾
+
     # ── 指標 1: margin_heat = balance / limit ──
+    # 禁融股（MarginPurchaseLimit = 0）→ -1 而非 0
     limit = aligned["MarginPurchaseLimit"].replace(0, np.nan)
-    heat = (aligned["MarginPurchaseTodayBalance"] / limit).fillna(0).clip(0, 1)
+    heat = (aligned["MarginPurchaseTodayBalance"] / limit).clip(0, 1)  # NaN 保留
+    heat = heat.fillna(-1.0)  # 只把 NaN 填 -1，真正的 heat=0 保持 0
 
     # ── 指標 2: margin_accel = 5d % change ──
+    # 新上市 / 停融（bal5 = 0）→ -1 而非 0
     bal = aligned["MarginPurchaseTodayBalance"]
     bal5 = bal.shift(5).replace(0, np.nan)
-    accel = ((bal - bal5) / bal5 * 100).fillna(0).clip(-200, 200)
+    accel = ((bal - bal5) / bal5 * 100).clip(-200, 200)
+    accel = accel.fillna(-1.0)  # NaN = 5 天前沒融資 = 無效
 
     # ── 指標 3: short_ratio = short / margin * 100 ──
+    # 融資趨近 0（禁融或極低活躍度）→ -1
     margin_bal = aligned["MarginPurchaseTodayBalance"].replace(0, np.nan)
-    short_ratio = (aligned["ShortSaleTodayBalance"] / margin_bal * 100).fillna(0).clip(0, 500)
+    short_ratio = (aligned["ShortSaleTodayBalance"] / margin_bal * 100).clip(0, 500)
+    short_ratio = short_ratio.fillna(-1.0)
 
     # ── 指標 4: offset_rate = offset / margin_buy * 100 ──
+    # 當日融資買進 = 0（沒人融資買）→ -1
     mbuy = aligned["MarginPurchaseBuy"].replace(0, np.nan)
-    offset = (aligned["OffsetLoanAndShort"] / mbuy * 100).fillna(0).clip(0, 200)
+    offset = (aligned["OffsetLoanAndShort"] / mbuy * 100).clip(0, 200)
+    offset = offset.fillna(-1.0)
 
     # ── 指標 5: margin_diverge = margin_5d_pct - price_5d_pct ──
     close = cache_tail["Close"].values
     price5 = np.concatenate([np.zeros(5), close[5:] / np.where(close[:-5] > 0, close[:-5], np.nan) - 1]) * 100
     price5 = np.nan_to_num(price5, nan=0.0)
-    diverge = (accel.values - price5).clip(-200, 200)
+    # 如果 accel 是 -1（無效），diverge 也應該是 -1（依賴 accel）
+    _accel_valid_mask = accel.values > -0.5
+    diverge_vals = (accel.values - price5).clip(-200, 200)
+    diverge_vals[~_accel_valid_mask] = -1.0
+    # 把 Series 用回（保持 index）
+    diverge = pd.Series(diverge_vals, index=accel.index)
 
     out = np.stack([
         heat.values.astype(np.float32),
         accel.values.astype(np.float32),
         short_ratio.values.astype(np.float32),
         offset.values.astype(np.float32),
-        diverge.astype(np.float32),
+        diverge.values.astype(np.float32),
     ], axis=1)
     return out  # (TARGET_DAYS, 5)
 
@@ -187,14 +204,17 @@ def main():
     print(f"\n=== 輸出 ===")
     print(f"{OUT_TENSOR}  shape={tensor.shape}  大小={tensor.nbytes/1024/1024:.1f} MB")
     print(f"{OUT_META}")
-    print(f"\n=== 指標統計 ===")
+    print(f"\n=== 指標統計（只算有效值 > -0.5）===")
     names = ["margin_heat", "margin_accel", "short_ratio", "offset_rate", "margin_diverge"]
     for i, name in enumerate(names):
         s = tensor[:, :, i]
-        nz = s[s != 0]
-        nz_pct = len(nz) / s.size * 100 if s.size else 0
-        print(f"  {name:<17s} mean={s.mean():7.2f} std={s.std():7.2f} "
-              f"min={s.min():7.2f} max={s.max():7.2f}  non-zero={nz_pct:.1f}%")
+        valid = s[s > -0.5]
+        sentinel_pct = (s <= -0.5).sum() / s.size * 100 if s.size else 0
+        if len(valid) > 0:
+            print(f"  {name:<17s} valid_mean={valid.mean():7.2f} std={valid.std():7.2f} "
+                  f"min={valid.min():7.2f} max={valid.max():7.2f}  sentinel(-1)={sentinel_pct:.1f}%")
+        else:
+            print(f"  {name:<17s} 全部 sentinel！")
 
 
 if __name__ == "__main__":
