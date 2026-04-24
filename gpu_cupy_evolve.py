@@ -2298,9 +2298,15 @@ def main():
             print(f"  [GPU] ✅ 新紀錄（cpu_replay 驗證）！{best_score:.1f} | {_cnt}筆 總{_ctr_tot+_cts_tot:.0f}% MaxDD{_cmdd:.1f}% WF比{_wf_pct:.0f}%")
             break
         if not _candidate_found:
-            no_improve_rounds += 1
+            # BUG 修正（2026-04-25 晚，R72 時用戶發現）：
+            # 舊設計 bug：explore 期間 no_improve 仍累積 → 每 10 輪又觸發 B+，mutate 到 50% 又重啟爬山
+            # 結果：爬山永遠跑不到 15/15，永遠被打斷，HOF 反覆清空
+            # 新設計：explore 期間完全隔離，跑完 15 輪才恢復正常
+            if explore_bases is None:
+                no_improve_rounds += 1
+            # else: 探索中，不累積 no_improve_rounds
             # B+ 週期擾動：每 10 輪無突破，替換最弱 HOF 為隨機策略（打破局部最佳）
-            if no_improve_rounds > 0 and no_improve_rounds % 10 == 0 and len(hall_of_fame) >= 2:
+            if explore_bases is None and no_improve_rounds > 0 and no_improve_rounds % 10 == 0 and len(hall_of_fame) >= 2:
                 # 產生一個完全隨機的新策略
                 rand_p = {}
                 for key in PARAM_ORDER:
@@ -2315,8 +2321,11 @@ def main():
                 hall_of_fame[-1] = (0, rand_p)
                 print(f"  [GPU] 🎲 B+ 週期擾動：{no_improve_rounds}輪無突破，HOF 最弱 slot 換成隨機策略（打破局部最佳）")
             # 變異率到頂 = 爬山已退化成亂射，啟動多起點爬山
-            if mutate_rate >= 0.50:
-                hall_of_fame = []
+            # BUG 修正：explore 中不再重啟；HOF 保留前 3 個受保護 seed（Gist + 88.60 + 189），不清空
+            if explore_bases is None and mutate_rate >= 0.50:
+                # 只清掉動態加入的候選，保留初始 3 個 seed
+                _protected = hall_of_fame[:3] if len(hall_of_fame) >= 3 else hall_of_fame[:]
+                hall_of_fame = list(_protected)
                 no_improve_rounds = 0
                 # 從最佳策略的「遠親」開始爬（核心參數保留80%，微調參數打亂80%）
                 anchor = best_params  # NO-OVERFIT：不 fallback v5
