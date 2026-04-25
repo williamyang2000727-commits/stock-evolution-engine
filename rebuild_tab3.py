@@ -63,23 +63,21 @@ p = strategy.get("params", strategy)
 print(f"  Cache: {len(data)} tickers / Strategy: {strategy.get('score', 0):.3f}")
 
 # 2. precompute + cpu_replay 跑全期
-# ⭐ 固定起點 = 2020-05-20（不用 tail，避免每天起點滑動）
-# 每天 cache 多一天 → 末尾多一天，起點永遠不動 → Tab 3 過去明細永遠不變
+# ⭐ 固定起點 = 2020-01-02（cache 真實起點，1721/1950 = 88.3% ticker 從這天開始）
+# 每天 cache 末尾多一天，起點永遠不動 → Tab 3 過去明細永遠不變
 import pandas as _pd_anchor
-FIXED_START = _pd_anchor.Timestamp("2020-05-20").normalize()
-print(f"\n[2/5] 固定起點 {FIXED_START.date()}（不用 tail 避免起點漂移）...")
+FIXED_START = _pd_anchor.Timestamp("2020-01-02").normalize()
+print(f"\n[2/5] 固定起點 {FIXED_START.date()}（cache 真實起點，避免每天滑動）...")
 data_t = {}
 for k, v in data.items():
-    # 篩 index >= FIXED_START
     idx = v.index
-    # 處理 timezone
     if hasattr(idx, "tz") and idx.tz is not None:
         idx_naive = idx.tz_localize(None)
     else:
         idx_naive = idx
     mask = idx_naive.normalize() >= FIXED_START
     df = v[mask]
-    if len(df) >= 100:  # 最少 100 天才納入
+    if len(df) >= 100:
         data_t[k] = df
 print(f"  {len(data_t)} stocks 通過 (起點 {FIXED_START.date()} ~ 末日)")
 pre = precompute(data_t)
