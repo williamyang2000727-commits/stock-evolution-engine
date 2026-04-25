@@ -2,31 +2,47 @@
 比較 cpu_replay 和 scanner.py 在 04-17 對達邁/聯茂/希華 算的 score
 看是不是兩邊邏輯有差
 """
-import os, sys, json, types, urllib.request, pickle
+import os, sys, json, types, urllib.request, pickle, importlib.util
 mock_cp = types.ModuleType("cupy")
 mock_cp.RawKernel = lambda *a, **k: None
 sys.modules["cupy"] = mock_cp
 import numpy as np
 import pandas as pd
 
-# add web app dir to path so we can import scanner.py
-WEB_APP = r"C:\stock-web-app"  # Windows
-if not os.path.isdir(WEB_APP):
-    # Mac
-    WEB_APP = os.path.expanduser("~/stock-web-app")
-if not os.path.isdir(WEB_APP):
-    print(f"❌ 找不到 stock-web-app，試了：{WEB_APP}")
-    sys.exit(1)
-sys.path.insert(0, WEB_APP)
-
 from gpu_cupy_evolve import precompute, download_data
 
+# 從 GitHub 抓 scanner.py 到本機 tmp，再 import
+HERE = os.path.dirname(os.path.abspath(__file__))
+SCANNER_LOCAL = os.path.join(HERE, "_tmp_scanner.py")
+if not os.path.exists(SCANNER_LOCAL):
+    print("從 GitHub 抓 scanner.py ...")
+    try:
+        # repo: williamyang2000727-commits/stock-web-app
+        url = "https://api.github.com/repos/williamyang2000727-commits/stock-web-app/contents/scanner.py"
+        r = urllib.request.urlopen(urllib.request.Request(url), timeout=30)
+        d = json.loads(r.read())
+        import base64
+        content = base64.b64decode(d["content"])
+        with open(SCANNER_LOCAL, "wb") as f:
+            f.write(content)
+        print(f"  下載完成 → {SCANNER_LOCAL}")
+    except Exception as e:
+        print(f"❌ 下載 scanner.py 失敗：{e}")
+        sys.exit(1)
+
+# import scanner from _tmp_scanner.py
+HAS_SCANNER = False
 try:
-    from scanner import compute_indicators, score_stock
+    spec = importlib.util.spec_from_file_location("scanner_tmp", SCANNER_LOCAL)
+    scanner_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(scanner_mod)
+    compute_indicators = scanner_mod.compute_indicators
+    score_stock = scanner_mod.score_stock
     HAS_SCANNER = True
-except ImportError as e:
-    print(f"❌ 無法載入 scanner.py: {e}")
-    HAS_SCANNER = False
+    print("✅ scanner.py 載入成功")
+except Exception as e:
+    print(f"❌ scanner.py 載入失敗：{e}")
+    import traceback; traceback.print_exc()
 
 
 def fetch_gist_strategy():
