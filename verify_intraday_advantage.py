@@ -93,13 +93,17 @@ def main():
                 df = raw[cand]; break
         if df is None:
             n_skip_ticker += 1; continue
-        # 確保 datetime index + normalize（移除時間部分，只比對日期）
+        # 確保 datetime index + 處理 timezone（raw cache 帶 Asia/Taipei tz）
         if not isinstance(df.index, pd.DatetimeIndex):
             df = df.copy()
             df.index = pd.to_datetime(df.index)
-        df_dates_normalized = df.index.normalize()
+        # 把 raw 的 tz 拔掉再 normalize，buy_date 是 tz-naive
+        if df.index.tz is not None:
+            df_dates = df.index.tz_localize(None).normalize()
+        else:
+            df_dates = df.index.normalize()
         buy_date = pd.Timestamp(buy_date_str).normalize()
-        matches = np.where(df_dates_normalized == buy_date)[0]
+        matches = np.where(df_dates == buy_date)[0]
         if len(matches) == 0:
             if n_skip_date == 0:
                 print(f"  DEBUG: ticker={ticker} buy_date={buy_date_str}")
