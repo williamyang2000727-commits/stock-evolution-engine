@@ -104,6 +104,8 @@ all_dates_in_pre = [pd.Timestamp(d).strftime("%Y-%m-%d") for d in pre["dates"]]
 start_date = all_dates_in_pre[60] if len(all_dates_in_pre) > 60 else all_dates_in_pre[0]  # warmup 後
 end_date = all_dates_in_pre[-1]
 
+from datetime import datetime, timezone, timedelta
+TW_TZ = timezone(timedelta(hours=8))
 stats = {
     "total_trades": len(completed),
     "total_return_pct": round(sum(rets), 1) if rets else 0,
@@ -119,6 +121,9 @@ stats = {
     "total_days": int(pre["n_days"]),
     "strategy_version": "auto",
     "strategy_score": float(strategy.get("score", 89.905)),
+    # ⭐ 新增：pipeline 跑完時間戳（Web 用來判斷新鮮度）
+    "pipeline_updated": datetime.now(TW_TZ).isoformat(),
+    "pipeline_source": "rebuild_tab3 (cpu_replay 1500 day)",
 }
 
 print(f"  完成 {stats['total_trades']} 筆 / 持有 {len(holding)} 檔")
