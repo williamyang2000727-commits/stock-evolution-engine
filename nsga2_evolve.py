@@ -61,6 +61,11 @@ def get_config(mode):
         raise ValueError(mode)
 
 
+def get_full_keys():
+    """所有 PARAMS_SPACE keys + ma/mom 三個額外 keys"""
+    return list(base.PARAMS_SPACE.keys()) + ["ma_fast_w", "ma_slow_w", "momentum_days"]
+
+
 def random_individual():
     """從 PARAMS_SPACE 隨機抽一個 individual"""
     ind = {}
@@ -72,16 +77,31 @@ def random_individual():
     return ind
 
 
+def normalize_individual(ind):
+    """補足缺漏的 keys（如 SEED 沒有 early_exit_days 等新加的）"""
+    ind = dict(ind)
+    for k, opts in base.PARAMS_SPACE.items():
+        if k not in ind:
+            ind[k] = opts[0]  # 預設第一個值（通常是 0=disabled）
+    if "ma_fast_w" not in ind: ind["ma_fast_w"] = 5
+    if "ma_slow_w" not in ind: ind["ma_slow_w"] = 20
+    if "momentum_days" not in ind: ind["momentum_days"] = 5
+    return ind
+
+
 def crossover(p1, p2):
-    """uniform crossover"""
+    """uniform crossover — 用 full key set，避免 SEED 缺新 key"""
+    p1 = normalize_individual(p1)
+    p2 = normalize_individual(p2)
     child = {}
-    for k in p1:
+    for k in get_full_keys():
         child[k] = p1[k] if random.random() < 0.5 else p2[k]
     return child
 
 
 def mutate(ind, rate=0.15):
-    for k in list(ind.keys()):
+    ind = normalize_individual(ind)
+    for k in get_full_keys():
         if random.random() < rate:
             if k in base.PARAMS_SPACE:
                 ind[k] = random.choice(base.PARAMS_SPACE[k])
@@ -209,11 +229,14 @@ def evaluate_objectives_full(ind, pre):
     對單一 ind 跑 cpu_replay 拿 4 個 objectives:
       total / wr / -MaxDD (negate 變最大化) / n_trades
     """
+    ind = normalize_individual(ind)
     trades = base.cpu_replay(pre, ind)
     completed = [t for t in trades if t.get("sell_date") and t.get("reason") != "持有中"]
     n = len(completed)
-    if n < 15 or n > 200:
-        return None  # gate fail
+    # 放寬 gate（NSGA-II 需要更多 valid ind 才有多樣性）：
+    # 8-300 而非 15-200，n_trades 是 obj 之一會被 evolution 自動修正
+    if n < 8 or n > 300:
+        return None
     rets = np.array([t.get("return", 0) for t in completed])
     total = float(rets.sum())
     wr = float((rets > 0).mean() * 100)
@@ -343,10 +366,13 @@ def main():
     POP = cfg["pop_size"]
     N_GEN = cfg["n_gen"]
 
-    # init population (含 89.90 seed 為 ind 0)
-    print(f"  初始化 population...")
-    pop = [dict(seed_params)]
-    for _ in range(POP - 1):
+    # init population：50% 從 SEED 高變異，50% 純隨機（增加 valid 比例）
+    print(f"  初始化 population (50% SEED+mutate, 50% random)...")
+    seed_norm = normalize_individual(seed_params)
+    pop = [dict(seed_norm)]
+    for _ in range(POP // 2):
+        pop.append(mutate(dict(seed_norm), rate=0.30))  # 從 SEED 30% 變異
+    for _ in range(POP - len(pop)):
         pop.append(random_individual())
 
     # 評估初始 pop（用 cpu_replay 算 4 obj）
