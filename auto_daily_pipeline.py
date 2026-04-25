@@ -109,7 +109,8 @@ def step_self_update():
         "init_state_gist.py",
         "rebuild_tab3.py",
         "update_cache.py",
-        "write_web_data.py",  # 新加：寫 history_cache + scan_results
+        "write_web_data.py",
+        "daily_health_report.py",  # 新加：健康報告 + 異常偵測
     ]
     n_updated = 0
     for fn in files_to_sync:
@@ -227,6 +228,21 @@ def step_write_web_data():
     return True
 
 
+def step_health_report():
+    """推每日健康報告 Telegram（含異常偵測）"""
+    py = sys.executable
+    script = os.path.join(USER_SE, "daily_health_report.py")
+    if not os.path.exists(script):
+        log("  daily_health_report.py 還沒拉，跳過")
+        return False
+    code, out, err = _run_subprocess(py, script, 60)
+    if code != 0:
+        log(f"  ⚠️ health_report 失敗（不擋 pipeline）: {err[-500:]}")
+        return False
+    log(f"  ✅ Telegram 已推每日健康報告")
+    return True
+
+
 # ─────── 健康檢查（成功後驗證 Gist）───────
 def health_check():
     """跑完後驗證 Gist 真的更新了"""
@@ -294,6 +310,7 @@ def main():
         run_step("Step 2: init_state_gist", step_init_state)
         run_step("Step 3: rebuild_tab3", step_rebuild_tab3)
         run_step("Step 4: write_web_data (history+scan)", step_write_web_data)
+        run_step("Step 5: daily_health_report", step_health_report)
 
         log("\n=== Health check ===")
         n_trades, end_date = run_step("Health check", health_check)
