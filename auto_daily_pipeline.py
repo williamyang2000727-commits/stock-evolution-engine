@@ -110,7 +110,7 @@ def step_self_update():
         "rebuild_tab3.py",
         "update_cache.py",
         "write_web_data.py",
-        "daily_health_report.py",  # 新加：健康報告 + 異常偵測
+        "daily_health_report.py",  # 健康報告 + 異常偵測（給 William）
     ]
     n_updated = 0
     for fn in files_to_sync:
@@ -243,6 +243,11 @@ def step_health_report():
     return True
 
 
+# step_monitor_users 已移除 — Web App 即時算每個用戶自己的 sell_signals 已足夠
+# 詳見 app.py:474 check_sell_signals(user_holdings, ...)
+# 每個用戶登入後 Tab 0 即時顯示自己持倉的賣出訊號（客製化）
+
+
 # ─────── 健康檢查（成功後驗證 Gist）───────
 def health_check():
     """跑完後驗證 Gist 真的更新了"""
@@ -310,7 +315,9 @@ def main():
         run_step("Step 2: init_state_gist", step_init_state)
         run_step("Step 3: rebuild_tab3", step_rebuild_tab3)
         run_step("Step 4: write_web_data (history+scan)", step_write_web_data)
-        run_step("Step 5: daily_health_report", step_health_report)
+        run_step("Step 5: daily_health_report (Telegram)", step_health_report)
+        # 註：每個用戶持倉的 sell_signals 由 Web App 即時算（app.py:474 check_sell_signals）
+        # 每個用戶登入時看自己的訊號，已經客製化，不需要 pipeline 預算
 
         log("\n=== Health check ===")
         n_trades, end_date = run_step("Health check", health_check)
