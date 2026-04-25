@@ -22,8 +22,15 @@ r"""
 import os, sys, time, json, traceback, urllib.request
 from datetime import datetime, timezone, timedelta
 
-USER_SE = os.path.join(os.path.expanduser("~"), "stock-evolution")
+# 自動偵測 USER_SE：先看 Windows C:\stock-evolution，fallback 到 ~/stock-evolution
+_candidates = [
+    r"C:\stock-evolution",
+    os.path.join(os.path.expanduser("~"), "stock-evolution"),
+    os.path.dirname(os.path.abspath(__file__)),  # script 自己所在目錄
+]
+USER_SE = next((p for p in _candidates if os.path.isfile(os.path.join(p, "update_cache.py"))), _candidates[0])
 sys.path.insert(0, USER_SE)
+print(f"USER_SE = {USER_SE}")
 
 LOG_FILE = os.path.join(USER_SE, "daily_pipeline.log")
 TW_TZ = timezone(timedelta(hours=8))
