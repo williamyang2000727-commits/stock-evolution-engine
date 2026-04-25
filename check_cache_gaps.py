@@ -14,7 +14,7 @@ import os, pickle, sys
 from collections import Counter
 import pandas as pd
 
-USER_SE = r"C:\stock-evolution" if os.name == "nt" else os.path.expanduser("~/stock-evolution")
+USER_SE = os.path.join(os.path.expanduser("~"), "stock-evolution")
 if not os.path.isdir(USER_SE):
     USER_SE = os.path.dirname(os.path.abspath(__file__))
 

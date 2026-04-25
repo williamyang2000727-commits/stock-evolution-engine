@@ -30,7 +30,7 @@ import os, sys, json, pickle
 import numpy as np
 import pandas as pd
 
-USER_SE = os.path.expanduser(r"C:\stock-evolution") if os.name == "nt" else os.path.expanduser("~/stock-evolution")
+USER_SE = os.path.join(os.path.expanduser("~"), "stock-evolution")
 if not os.path.isdir(USER_SE):
     USER_SE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, USER_SE)
