@@ -1,25 +1,38 @@
 """
-動態股票池回測 v4 — 對齊 Web Tab 3（自動全 cache，不再寫死 900）
+動態股票池回測 v5 — 對齊 Web Tab 3（自動全 cache + Gist live 89.905）
 
-v3 → v4 改動（2026-04-25 William 指出 1500 cache 都有了，不該寫死 900）：
-  - TARGET_DAYS 自動偵測 1500/1200/900（跟 daily_scan 一致）
-  - 全 cache 跑 → 對齊 Tab 3 的 backtest_results.json
+v3 → v4 改動：TARGET_DAYS 自動偵測 1500/1200/900（跟 daily_scan 一致）
+v4 → v5 改動（2026-04-25 William 抓到本地 best_strategy.json 是 189 分舊策略）：
+  - 改從 Gist c1bef892 即時抓 89.905（跟 Web App / GitHub Actions / verify_* 一致）
+  - 不再讀本地 best_strategy.json（會 stale，misleading）
 
 注意：cpu_replay 內部固定 day 60 warmup，所以前 60 天不交易（不是 reverse WF）
      precompute 印「反向 WF」是評估 gate 用的標籤，不影響 cpu_replay 全期模擬
 """
 import numpy as np
 import json, os, sys, types
+import urllib.request
 mock_cp = types.ModuleType('cupy')
 mock_cp.RawKernel = lambda *a, **k: None
 sys.modules['cupy'] = mock_cp
 from gpu_cupy_evolve import precompute, cpu_replay, download_data, get_name
 
+
+def fetch_gist_strategy():
+    """從 GPU Gist 即時抓 live 策略（89.905），不用本地 stale 檔"""
+    GPU_GIST_ID = "c1bef892d33589baef2142ce250d18c2"
+    r = urllib.request.urlopen(
+        urllib.request.Request(f"https://api.github.com/gists/{GPU_GIST_ID}"), timeout=30
+    )
+    d = json.loads(r.read())
+    s = json.loads(d["files"]["best_strategy.json"]["content"])
+    return s
+
+
 data = download_data()
-with open("best_strategy.json", encoding="utf-8") as f:
-    strategy = json.load(f)
-p = strategy["params"]
-print(f"v{strategy.get('version','?')} | {strategy.get('score',0):.2f}分")
+strategy = fetch_gist_strategy()
+p = strategy.get("params", strategy)
+print(f"v{strategy.get('version','?')} | {strategy.get('score',0):.3f}分（從 Gist live 抓）")
 
 # v4: 自動偵測 TARGET_DAYS，全 cache 跑，對齊 Tab 3 的 daily_scan
 _lens = [len(v) for v in data.values()]
