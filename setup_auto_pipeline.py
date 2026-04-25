@@ -7,7 +7,7 @@ r"""
   2. cd C:\stock-evolution
   3. python setup_auto_pipeline.py
 
-排程：週一-週五 17:00（TWSE 收盤資料 16:30 settle 後）
+排程：週一-週五 16:35（TWSE 16:30 settle 後 5 分 buffer）/ retry 17:35 / 18:35
 """
 import os, sys, subprocess, getpass
 
@@ -43,13 +43,21 @@ subprocess.run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"],
 # 開機後 5 分鐘（停電恢復後立刻補跑）
 # 用 DAILY 而非 WEEKLY 避開 schtasks bug
 # auto_daily_pipeline 內部已 weekday 檢查跳過週末（idempotent marker 也會擋第二次）
-# 三個時段對抗停電
+# 三個時段對抗停電（下午 4:30 後 TWSE settle，每小時 retry）
+# 16:30 主時段 / 17:30 retry 1 / 18:30 retry 2 / 開機補跑
 schedules = [
-    (TASK_NAME, "DAILY", "17:00"),
-    (f"{TASK_NAME}_Retry1800", "DAILY", "18:00"),
-    (f"{TASK_NAME}_Retry1900", "DAILY", "19:00"),
-    (f"{TASK_NAME}_OnBoot", "ONSTART", None),  # 開機後 5 分
+    (TASK_NAME, "DAILY", "16:35"),  # TWSE 16:30 settle，留 5 分鐘 buffer
+    (f"{TASK_NAME}_Retry1735", "DAILY", "17:35"),
+    (f"{TASK_NAME}_Retry1835", "DAILY", "18:35"),
+    (f"{TASK_NAME}_OnBoot", "ONSTART", None),
 ]
+# 清理舊版時段排程
+import subprocess as _sp_clean
+for old in [
+    "AutoDailyStockPipeline_Retry1800", "AutoDailyStockPipeline_Retry1900",  # 17:00 版
+    "AutoDailyStockPipeline_Retry1730", "AutoDailyStockPipeline_Retry1830",  # 16:30 版
+]:
+    _sp_clean.run(["schtasks", "/Delete", "/TN", old, "/F"], capture_output=True, text=True)
 
 print(f"\n建立 4 個排程（防停電多重防線）...")
 for task_name, sc_type, st_time in schedules:
@@ -98,7 +106,7 @@ print("\n" + "=" * 60)
 print("✅ 排程已建立")
 print("=" * 60)
 print(f"  排程名:  {TASK_NAME}")
-print(f"  時間:    週一-週五 17:00")
+print(f"  時間:    週一-週五 16:35 / retry 17:35 / retry 18:35")
 print(f"  Python:  {PY_EXE}")
 print(f"  Script:  {SCRIPT_PATH}")
 print(f"  Log:     {os.path.join(WORK_DIR, 'daily_pipeline.log')}")
