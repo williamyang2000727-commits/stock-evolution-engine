@@ -201,18 +201,24 @@ def evaluate_with_kernel(individuals, pre, batch_size_max=4096):
 
 
 def compute_dd_from_trades(trades):
-    """從 trades 算 MaxDD（equity curve peak to trough）"""
+    """從 trades 算 MaxDD %（equity curve peak to trough，用 max_positions 複利近似）
+    回傳 % 數，越接近 0 越好，最差 -100% 全部歸零
+    """
     if not trades:
         return 0.0
-    rets = sorted([t for t in trades if t.get("sell_date")], key=lambda t: t.get("sell_date", ""))
-    if not rets:
+    sorted_trades = sorted([t for t in trades if t.get("sell_date")],
+                          key=lambda t: t.get("sell_date", ""))
+    if not sorted_trades:
         return 0.0
-    cum = np.cumsum([t.get("return", 0) for t in rets])
-    if len(cum) == 0:
-        return 0.0
+    # max_pos 預設 2（89.90 是 2 檔）
+    max_pos = 2
+    # 用每筆 return / max_pos 模擬「該筆對總資金影響」
+    impacts = np.array([t.get("return", 0) / max_pos for t in sorted_trades])
+    # 累積複利 (用 sum 近似而非 product 為了穩定)
+    cum = np.cumsum(impacts)
     peak = np.maximum.accumulate(cum)
-    dd = (cum - peak)
-    return float(dd.min())  # negative
+    dd = cum - peak
+    return float(dd.min())
 
 
 def compute_sharpe(trades):
@@ -233,9 +239,9 @@ def evaluate_objectives_full(ind, pre):
     trades = base.cpu_replay(pre, ind)
     completed = [t for t in trades if t.get("sell_date") and t.get("reason") != "持有中"]
     n = len(completed)
-    # 放寬 gate（NSGA-II 需要更多 valid ind 才有多樣性）：
-    # 8-300 而非 15-200，n_trades 是 obj 之一會被 evolution 自動修正
-    if n < 8 or n > 300:
+    # Hard constraint：n_trades ≥ 60（避免「交易少 DD 自然淺」假 Pareto）
+    # 89.90 是 133，給 60 的下限避免「一年 4 筆」這種垃圾
+    if n < 60 or n > 300:
         return None
     rets = np.array([t.get("return", 0) for t in completed])
     total = float(rets.sum())
@@ -251,8 +257,10 @@ def evaluate_objectives_full(ind, pre):
 
 
 def dominates(a, b):
-    """a dominates b iff: a 在所有 obj >= b, AND 在至少一個 obj > b"""
-    objs = ["total", "wr", "neg_dd", "n_trades"]
+    """a dominates b iff: a 在所有 obj >= b, AND 在至少一個 obj > b
+    3 obj: total / wr / neg_dd（n_trades 移到 hard constraint 不當 obj）
+    """
+    objs = ["total", "wr", "neg_dd"]
     geq = all(a[o] >= b[o] for o in objs)
     gt = any(a[o] > b[o] for o in objs)
     return geq and gt
@@ -297,7 +305,7 @@ def crowding_distance(front_idx, pop_objs):
     if n == 1: return {front_idx[0]: float("inf")}
     if n == 2: return {front_idx[0]: float("inf"), front_idx[1]: float("inf")}
     dist = {i: 0.0 for i in front_idx}
-    objs = ["total", "wr", "neg_dd", "n_trades"]
+    objs = ["total", "wr", "neg_dd"]
     for o in objs:
         sorted_idx = sorted(front_idx, key=lambda i: pop_objs[i][o])
         dist[sorted_idx[0]] = float("inf")
@@ -448,13 +456,13 @@ def main():
               f"max total={max(totals):.0f}%, max wr={max(wrs):.1f}%, "
               f"min DD={max(dds):.1f}%（最小回撤越接近0越好）")
 
-        # 找有沒有 dominate 89.90 的
+        # 找有沒有 dominate 89.90 的（3 obj：total/wr/dd）
         if seed_obj is not None:
             dominators = [o for o in front0
                           if o["total"] >= seed_total and o["wr"] >= seed_wr
-                          and o["dd"] >= seed_dd and o["n_trades"] >= seed_n
+                          and o["dd"] >= seed_dd
                           and (o["total"] > seed_total or o["wr"] > seed_wr
-                               or o["dd"] > seed_dd or o["n_trades"] > seed_n)]
+                               or o["dd"] > seed_dd)]
             if dominators:
                 print(f"    🔥 {len(dominators)} 個策略 dominate 89.90！")
 
@@ -492,14 +500,14 @@ def main():
         print(f"  {i+1:<5} {o['total']:<+10.0f} {o['wr']:<8.1f} {o['dd']:<10.1f} "
               f"{o['n_trades']:<6} {o['sharpe']:<8.3f} {vs_str}")
 
-    # 找 dominate 89.90 的
+    # 找 dominate 89.90 的（3 obj）
     dominators = []
     if seed_obj is not None:
         for ind, o in zip(pareto_inds, pareto_objs):
             if (o["total"] >= seed_total and o["wr"] >= seed_wr
-                and o["dd"] >= seed_dd and o["n_trades"] >= seed_n
+                and o["dd"] >= seed_dd
                 and (o["total"] > seed_total or o["wr"] > seed_wr
-                     or o["dd"] > seed_dd or o["n_trades"] > seed_n)):
+                     or o["dd"] > seed_dd)):
                 dominators.append((ind, o))
 
     print(f"\n  Dominate 89.90: {len(dominators)} 個策略")
