@@ -149,11 +149,65 @@ def cmd_scan():
     kf = KronosFilter()
     decision = kf.should_buy(ohlcv, market_close_history=market_close)
 
-    print(f"\n[3/3] 決策結果...")
+    print(f"\n[3/4] V38 決策結果...")
     print(f"  buy = {decision['buy']}")
     print(f"  pred next-day = {decision['pred_next_pct']:+.2f}% (th {decision['threshold_next']})")
     print(f"  pred 5-day    = {decision['pred_5d_pct']:+.2f}% (th {decision['threshold_5d']:.2f})")
     print(f"  reason: {decision['reason']}")
+
+    # === Track C: V38d (V38 + ML head) ===
+    print(f"\n[4/4] V38d ML head 二次過濾...")
+    track_c_decision = None
+    track_c_proba = None
+    track_c_reason = None
+    try:
+        # 先抽該股當天的 19 features
+        import gpu_cupy_evolve as base
+        from metalabel_features import extract_features_at
+        from v38d_filter import V38dFilter, KRONOS_NEXT_TH
+
+        # 跑 89.90 precompute 拿 features
+        _lens = [len(v) for v in cache.values()]
+        if sum(1 for l in _lens if l >= 1500) >= 500: TARGET = 1500
+        elif sum(1 for l in _lens if l >= 1200) >= 800: TARGET = 1200
+        else: TARGET = 900
+        data_dict = {k: v.tail(TARGET) for k, v in cache.items() if len(v) >= TARGET}
+        pre = base.precompute(data_dict)
+
+        # 找該股 buy_date 對應 day_idx
+        dates = pre["dates"]
+        date_to_day = {str(d.date() if hasattr(d, 'date') else d)[:10]: i for i, d in enumerate(dates)}
+        bd_str = pick["buy_date"]
+        if isinstance(bd_str, pd.Timestamp):
+            bd_str = bd_str.strftime("%Y-%m-%d")
+        elif not isinstance(bd_str, str):
+            bd_str = str(bd_str)[:10]
+        day_idx = date_to_day.get(bd_str)
+        if day_idx is None:
+            track_c_decision = False
+            track_c_reason = f"找不到 buy_date {bd_str} 在 pre.dates"
+        else:
+            features_19d = extract_features_at(pre, pick["ticker"], day_idx)
+            if features_19d is None:
+                track_c_decision = False
+                track_c_reason = "features_19d = None（NaN/Inf）"
+            else:
+                v38d = V38dFilter()
+                d_v38d = v38d.should_buy(
+                    ohlcv, market_close, today=None,
+                    kronos_pred_next=decision["pred_next_pct"],
+                    kronos_pred_5d=decision["pred_5d_pct"],
+                    features_19d=features_19d,
+                )
+                track_c_decision = d_v38d["buy"]
+                track_c_proba = d_v38d.get("ml_proba")
+                track_c_reason = d_v38d["reason"]
+                print(f"  V38d buy = {track_c_decision}")
+                print(f"  ml_proba = {track_c_proba}")
+                print(f"  reason: {track_c_reason}")
+    except Exception as e:
+        print(f"  ⚠️ V38d failed: {e}")
+        track_c_reason = f"exception: {e}"
 
     # 寫 log
     entry = {
@@ -168,6 +222,9 @@ def cmd_scan():
         "kronos_threshold_next": decision["threshold_next"],
         "kronos_threshold_5d": decision["threshold_5d"],
         "kronos_reason": decision["reason"],
+        "track_C_decision": track_c_decision,
+        "track_C_ml_proba": track_c_proba,
+        "track_C_reason": track_c_reason,
         "actual_5d_close": None,  # fill 階段填
         "actual_5d_return_pct": None,
     }
@@ -250,11 +307,21 @@ def cmd_review():
     skip_wr = sum(1 for r in skip_rets if r > 0) / len(skip_rets) * 100 if skip_rets else 0
     skip_avg = np.mean(skip_rets) if skip_rets else 0
 
+    # Track C：V38d (V38 + ML head)
+    c_rets = [t["actual_5d_return_pct"] for t in log["trades"]
+              if t.get("track_C_decision") == True and t.get("actual_5d_return_pct") is not None]
+    c_wr = sum(1 for r in c_rets if r > 0) / len(c_rets) * 100 if c_rets else 0
+    c_total = sum(c_rets)
+    c_avg = np.mean(c_rets) if c_rets else 0
+
     print(f"\n=== Track A: 89.90 全買 ===")
     print(f"  n = {len(a_rets)}, wr = {a_wr:.1f}%, avg = {a_avg:+.2f}%, total = {a_total:+.2f}%")
 
     print(f"\n=== Track B: 89.90 + Kronos filter（V38）===")
     print(f"  n = {len(b_rets)}, wr = {b_wr:.1f}%, avg = {b_avg:+.2f}%, total = {b_total:+.2f}%")
+
+    print(f"\n=== Track C: V38d (V38 + ML head) ===")
+    print(f"  n = {len(c_rets)}, wr = {c_wr:.1f}%, avg = {c_avg:+.2f}%, total = {c_total:+.2f}%")
 
     print(f"\n=== Track B 擋下的 ===")
     print(f"  n = {len(skip_rets)}, wr = {skip_wr:.1f}%, avg = {skip_avg:+.2f}%")
@@ -274,6 +341,18 @@ def cmd_review():
             print(f"  🔴 V38 沒贏，可能要重新評估")
     else:
         print(f"  資料不夠（B {len(b_rets)} A {len(a_rets)}），繼續累積")
+
+    if len(c_rets) >= 3:
+        cb_wr_diff = c_wr - b_wr if len(b_rets) >= 1 else None
+        cb_avg_diff = c_avg - b_avg if len(b_rets) >= 1 else None
+        print(f"\n=== V38d vs V38 對比 ===")
+        if cb_wr_diff is not None:
+            print(f"  V38d wr 比 V38 {cb_wr_diff:+.1f}%")
+            print(f"  V38d avg 比 V38 {cb_avg_diff:+.2f}%")
+        if len(c_rets) >= 10 and cb_wr_diff and cb_wr_diff > 5:
+            print(f"  🟢 V38d 顯著勝 V38（n={len(c_rets)} >= 10）")
+        elif len(c_rets) < 10:
+            print(f"  📝 V38d 樣本數 {len(c_rets)}/10，繼續累積")
 
 
 def main():
