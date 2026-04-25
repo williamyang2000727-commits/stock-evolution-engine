@@ -141,12 +141,17 @@ def parse_paper_log_summary():
 
 
 def parse_progress_reminder():
-    """生成進度提醒（William 不會記得 3 週後該做什麼，每天 Telegram 提醒）
+    """生成進度提醒（William 不會記得幾個月後該做什麼，每天 Telegram 提醒）
 
-    返回包含三個區塊：
-    - 累積進度（Track A/B/C 各自有 actual_return 的筆數）
-    - 距離 review 還差幾筆
-    - 達標後該做什麼（具體指令）
+    現實校準：
+    - 89.90 平均約每 1-2 週 1 次候選（每年 22 筆 ÷ 50 週）
+    - V38 通過率 ~16%，每月 ~0.3 筆 V38 buy → 累積 10 筆要約 3 年（太久）
+    - 改 milestone 制：Track A 累積 5/10/20 筆做階段性 review
+
+    Milestone 設計：
+    - 5 筆 actual filled → 第一次小 review（看趨勢）
+    - 10 筆 → 標準 review（V38 vs 89.90）
+    - 20 筆 → 強統計力 review
     """
     if not os.path.exists(PAPER_LOG):
         return "📅 還沒開始累積（4/27 起每天會自動跑）"
@@ -166,33 +171,61 @@ def parse_progress_reminder():
     n_filled_C = sum(1 for t in trades
                      if t.get("track_C_decision") is True and t.get("actual_5d_return_pct") is not None)
 
-    # 距離 review 還差幾筆（Track B 為主，10 筆是門檻）
-    target = 10
-    remaining = max(0, target - n_filled_B)
+    # Milestone: Track A 為主
+    milestones = [5, 10, 20]
+    next_milestone = next((m for m in milestones if n_filled_A < m), None)
 
     lines = ["", "📅 ═══ 進度提醒 ═══"]
-    lines.append(f"已累積：{n_total} 筆紀錄（{n_filled_A} 筆有 actual）")
-    lines.append(f"  Track A (89.90) 有 actual: {n_filled_A}")
-    lines.append(f"  Track B (V38)   有 actual: {n_filled_B} / {target}")
-    lines.append(f"  Track C (V38d)  有 actual: {n_filled_C}")
+    lines.append(f"已累積：{n_total} 筆紀錄（{n_filled_A} 筆 actual 已填）")
+    lines.append(f"  Track A (89.90) actual: {n_filled_A}")
+    lines.append(f"  Track B (V38)   buy={n_filled_B}（V38 通過才算）")
+    lines.append(f"  Track C (V38d)  buy={n_filled_C}（V38d 通過才算）")
 
-    if remaining > 0:
-        # 估算還要幾天（V38 平均 kept rate 15.8%，每週 5 交易日）
-        days_per_trade = 1 / 0.158 if n_filled_B > 0 else 6.3
-        est_calendar_days = int(remaining * days_per_trade * 1.4)  # 1.4 = 含週末
+    if next_milestone is None:
+        # 已過所有 milestone
         lines.append("")
-        lines.append(f"🎯 還差 {remaining} 筆 V38 buy 才能 review（約 {est_calendar_days} 天後）")
-        lines.append(f"   現在不用做事，等系統自己累積")
-    else:
-        lines.append("")
-        lines.append("🟢🟢🟢 達標！可以 review 了！")
-        lines.append("   Windows 跑這條：")
+        lines.append("🟢🟢🟢 達 20 筆強統計，可下定論")
+        lines.append("   Windows 跑：")
         lines.append("   cd C:\\stock-evolution")
         lines.append("   python paper_trade_tracker.py review")
-        lines.append("")
-        lines.append("   看 V38d wr 是否 > V38 +5%")
-        lines.append("   是 → 整合到 daily_scan 上線")
-        lines.append("   否 → 接受 V38 final，停手等實盤")
+        return "\n".join(lines)
+
+    # 估算還要幾天（用 Track A 累積速度推算）
+    if n_filled_A >= 2:
+        # 用實際資料推算（first_trade 到 latest_filled 的時間 ÷ 筆數）
+        try:
+            dates_with_actual = sorted([t["scan_date"] for t in trades
+                                        if t.get("actual_5d_return_pct") is not None])
+            from datetime import datetime as dt_cls
+            d_first = dt_cls.strptime(dates_with_actual[0], "%Y-%m-%d")
+            d_last = dt_cls.strptime(dates_with_actual[-1], "%Y-%m-%d")
+            days_span = (d_last - d_first).days
+            if days_span >= 7:
+                days_per_actual = days_span / max(1, n_filled_A - 1)
+            else:
+                days_per_actual = 14  # 不夠資料用粗估
+        except Exception:
+            days_per_actual = 14
+    else:
+        # 89.90 平均每年 22 筆 → 每筆約 17 天（含 5 天 actual fill 等待）
+        days_per_actual = 14
+
+    remaining = next_milestone - n_filled_A
+    est_calendar_days = int(remaining * days_per_actual)
+
+    lines.append("")
+    lines.append(f"🎯 下個 milestone: {next_milestone} 筆 actual（還差 {remaining} 筆）")
+    lines.append(f"   約 {est_calendar_days} 天後（每筆平均 {days_per_actual:.0f} 天）")
+
+    if next_milestone == 5:
+        lines.append("   到 5 筆做小 review 看趨勢")
+    elif next_milestone == 10:
+        lines.append("   到 10 筆做標準 review")
+    elif next_milestone == 20:
+        lines.append("   到 20 筆強統計力定論")
+
+    lines.append("")
+    lines.append("📌 達標後：cd C:\\stock-evolution → python paper_trade_tracker.py review")
 
     return "\n".join(lines)
 
