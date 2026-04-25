@@ -37,7 +37,20 @@ if USER_SE not in sys.path: sys.path.insert(0, USER_SE)
 import gpu_cupy_evolve as base
 
 CACHE_PATH = os.path.join(USER_SE, "stock_data_cache.pkl")
-STRATEGY_103_PATH = os.path.join(USER_SE, "strategy_103_1pos_backup.json")
+
+# 找 103 策略的可能位置
+STRATEGY_103_CANDIDATES = [
+    os.path.join(USER_SE, "strategy_103_1pos_backup.json"),
+    "C:\\stock-evolution\\strategy_103_1pos_backup.json",
+    os.path.join(_HERE, "strategy_103_1pos_backup.json"),
+    os.path.join(USER_SE, "pending_push.json.reset_1776673288"),
+    "C:\\stock-evolution\\pending_push.json.reset_1776673288",
+]
+# 找 88.60 策略（可能 push_pending 後備份在 .pushed 或 backups/）
+STRATEGY_88_CANDIDATES = [
+    os.path.join(USER_SE, "backups", "best_strategy_122.6242_v6_breakeven.json"),
+    os.path.join(_HERE, "backups", "best_strategy_122.6242_v6_breakeven.json"),
+]
 
 
 def fetch_gist_strategy():
@@ -49,13 +62,33 @@ def fetch_gist_strategy():
     return s.get("params", s)
 
 
-def load_strategy_103():
-    if not os.path.exists(STRATEGY_103_PATH):
-        print(f"  ⚠️ {STRATEGY_103_PATH} 不存在，跳過 103")
-        return None
-    with open(STRATEGY_103_PATH) as f:
-        d = json.load(f)
-    return d.get("params", d)
+def load_strategy_from_candidates(name, candidates):
+    """從多個候選路徑找策略檔"""
+    for path in candidates:
+        if os.path.exists(path):
+            print(f"  找到 {name}: {path}")
+            with open(path) as f:
+                d = json.load(f)
+            return d.get("params", d)
+    print(f"  ⚠️ {name} 在以下位置都找不到:")
+    for p in candidates:
+        print(f"      {p}")
+    return None
+
+
+def list_files_in_se(pattern_substr):
+    """搜 USER_SE 內所有 .json，找含關鍵字的"""
+    found = []
+    for root in [USER_SE, "C:\\stock-evolution", _HERE]:
+        if not os.path.exists(root):
+            continue
+        try:
+            for f in os.listdir(root):
+                if f.endswith(".json") and pattern_substr.lower() in f.lower():
+                    found.append(os.path.join(root, f))
+        except (PermissionError, OSError):
+            pass
+    return found
 
 
 def normalize_params(p):
@@ -164,16 +197,45 @@ def main():
     if s1:
         strategies.append(s1)
 
-    s103 = load_strategy_103()
+    s103 = load_strategy_from_candidates("103_1pos", STRATEGY_103_CANDIDATES)
     if s103:
         s2 = get_trades_for_strategy("103_1pos", s103, pre)
         if s2:
             strategies.append(s2)
 
+    s88 = load_strategy_from_candidates("88.60_v6", STRATEGY_88_CANDIDATES)
+    if s88:
+        s3 = get_trades_for_strategy("88.60_v6", s88, pre)
+        if s3:
+            strategies.append(s3)
+
+    # 沒找到舊策略 → 自動造變體（max_positions=1 或 hold_days=10 等）
     if len(strategies) < 2:
-        print(f"\n❌ 只有 {len(strategies)} 個策略可用，需要至少 2 個做 portfolio")
-        print(f"   89.90: GPU Gist (always available)")
-        print(f"   103:   {STRATEGY_103_PATH} (需要在 Windows)")
+        print(f"\n  ⚠️ 沒找到 103 / 88.60 備份")
+        print(f"  自動從 89.90 造變體當第二個策略：")
+        s89_params = strategies[0]["params"]
+
+        # 變體 A: max_positions=1（集中火力）
+        v_1pos = dict(s89_params)
+        v_1pos["max_positions"] = 1
+        sA = get_trades_for_strategy("89.90_1pos變體", v_1pos, pre)
+        if sA:
+            strategies.append(sA)
+
+        # 變體 B: hold_days=15（短波段）
+        v_short = dict(s89_params)
+        v_short["hold_days"] = 15
+        sB = get_trades_for_strategy("89.90_短波段變體", v_short, pre)
+        if sB:
+            strategies.append(sB)
+
+    if len(strategies) < 2:
+        print(f"\n❌ 連變體都跑不出來，無法做 portfolio")
+        print(f"  搜尋現有 .json (策略相關):")
+        for p in list_files_in_se("strategy"):
+            print(f"    {p}")
+        for p in list_files_in_se("best_strategy"):
+            print(f"    {p}")
         return
 
     # === 3. 算 daily P&L per strategy ===
