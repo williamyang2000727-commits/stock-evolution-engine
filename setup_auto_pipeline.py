@@ -83,8 +83,8 @@ for task_name, sc_type, st_time in schedules:
 
 # 驗證 4 個排程的真實下次執行時間
 print(f"\n=== 驗證 4 個排程 ===")
-all_tasks = [TASK_NAME, f"{TASK_NAME}_Retry1800",
-             f"{TASK_NAME}_Retry1900", f"{TASK_NAME}_OnBoot"]
+all_tasks = [TASK_NAME, f"{TASK_NAME}_Retry1735",
+             f"{TASK_NAME}_Retry1835", f"{TASK_NAME}_OnBoot"]
 for tn in all_tasks:
     r = subprocess.run(["schtasks", "/Query", "/TN", tn, "/FO", "LIST"],
                        capture_output=True, encoding="cp950", errors="ignore")
