@@ -157,21 +157,36 @@ try:
 except Exception:
     pass
 
+# 計算今天該做什麼
+todo_list = []
+if pending_sells:
+    for ps in pending_sells:
+        todo_list.append(f"📤 D+1 09:00 賣 {ps.get('name','')} ({ps.get('ticker','')})")
+if pending_buy:
+    todo_list.append(f"🎯 D+1 13:25 前買 {pending_buy.get('name','')} ({pending_buy.get('ticker','')})")
+
 # ─── 組訊息 ───
 if errors:
     msg = f"🚨 *Pipeline 異常 {today}*\n\n"
     msg += "\n".join(errors)
     if warnings:
         msg += "\n\n⚠️ Warnings:\n" + "\n".join(warnings)
-    msg += "\n\n手動修復: `python auto_daily_pipeline.py --force`"
+    msg += "\n\n*🛠️ 你要做*：\n手動修復 `python auto_daily_pipeline.py --force`"
 elif warnings:
     msg = f"⚠️ *Pipeline 警告 {today}*\n\n"
     msg += "\n".join(warnings)
     msg += "\n\n" + "\n".join(info)
+    if todo_list:
+        msg += f"\n\n*🎯 D+1 你要做*：\n" + "\n".join(todo_list)
+        msg += "\n\n下單後到 Tab 2 更新持倉"
 else:
     msg = f"✅ *每日健康報告 {today}*\n\n"
     msg += "\n".join(info)
-    msg += f"\n\n_全部正常，可以放心睡覺_"
+    if todo_list:
+        msg += f"\n\n*🎯 D+1 你要做*：\n" + "\n".join(todo_list)
+        msg += "\n\n下單後記得到 Tab 2 更新持倉"
+    else:
+        msg += f"\n\n_今天無動作，可以放心睡覺_ 💤"
 
 print(msg)
 try:

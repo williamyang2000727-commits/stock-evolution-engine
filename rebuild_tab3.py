@@ -62,6 +62,21 @@ strategy = fetch_gist(GPU_GIST, "best_strategy.json")
 p = strategy.get("params", strategy)
 print(f"  Cache: {len(data)} tickers / Strategy: {strategy.get('score', 0):.3f}")
 
+# 🚨 Sanity check：策略合理性（防 GPU Gist 被改錯策略）
+_score_check = float(strategy.get('score', 0))
+if _score_check < 60 or _score_check > 200:
+    raise RuntimeError(f"❌ 策略分數異常 {_score_check}（合理範圍 60-200）→ GPU Gist 可能被改錯，aborting")
+# 必要 params 存在
+for _k in ["stop_loss", "hold_days", "max_positions", "buy_threshold"]:
+    if _k not in p:
+        raise RuntimeError(f"❌ 策略缺 {_k}（GPU Gist 可能損壞）")
+# 賣出參數合理範圍
+if not (-50 <= p.get("stop_loss", -20) <= -5):
+    raise RuntimeError(f"❌ stop_loss={p.get('stop_loss')} 異常（合理 -50 ~ -5）")
+if not (5 <= int(p.get("hold_days", 30)) <= 90):
+    raise RuntimeError(f"❌ hold_days={p.get('hold_days')} 異常（合理 5-90）")
+print(f"  ✅ 策略 sanity 通過")
+
 # 2. precompute + cpu_replay 跑全期
 # ⭐ 固定起點 = 2020-01-02（cache 真實起點）
 # 但只納入「真的從 2020-01-02 就有資料」的 ticker，避免最近上市的拖低 min_len
