@@ -42,24 +42,12 @@ print(f"Day indices: {target_days}")
 print(f"  Note: 4/18 is Saturday, not in cache")
 print()
 
-# Universe: cpu_replay 真實邏輯 (gpu_cupy_evolve.py line 1071-1072)
-# ranks = np.argsort(np.argsort(-volume, axis=0), axis=0)
-# top100_mask = (ranks < 100)
-# → 每天當天 volume 前 100 名
-volume = pre.get("volume")
-if volume is None:
-    print("❌ pre['volume'] missing — try alternate keys")
-    print(f"  pre keys: {list(pre.keys())[:30]}")
-    # 試其他名稱
-    for alt in ["vol", "Volume", "volume_arr"]:
-        if alt in pre:
-            volume = pre[alt]
-            print(f"  fallback: pre['{alt}']")
-            break
-    if volume is None:
-        sys.exit(1)
-# 真實 universe 排序
-ranks_2d = np.argsort(np.argsort(-volume, axis=0), axis=0)
+# Universe: 直接用 pre['top100_mask']（cpu_replay 真實用的）
+top100_mask = pre.get("top100_mask")
+if top100_mask is None:
+    print("❌ pre['top100_mask'] missing")
+    sys.exit(1)
+print(f"✅ 使用 pre['top100_mask'] shape={top100_mask.shape}")
 
 
 def cpu_score(pre, p, si, day):
@@ -131,27 +119,26 @@ print()
 for d_str in sorted(target_days.keys()):
     day = target_days[d_str]
     print(f"━━━ Day {d_str} (index {day}) ━━━")
-    # universe = top100 by 當天 volume (對齊 cpu_replay line 1071-1072)
-    vol_at = volume[:, day]
-    order = np.argsort(-vol_at)
-    top100_idx = order[:100]
-    top100_set = set(top100_idx.tolist())
+    # universe = top100_mask 那天標 1 的所有 si
+    in_uni_si = np.where(top100_mask[:, day] >= 0.5)[0]
+    top100_set = set(in_uni_si.tolist())
+    print(f"  Universe size: {len(in_uni_si)}")
 
-    # 焦點股 vol rank
+    # 焦點股
     for tk in ["3645.TW", "6213.TW", "2484.TW"]:
         if tk not in tickers:
             continue
         si = tickers.index(tk)
-        vol_rank = list(order).index(si) + 1
         sc = cpu_score(pre, p, si, day)
         in_uni = "✅in" if si in top100_set else "❌out"
-        print(f"  {tk} vol_rank=#{vol_rank} {in_uni} score={sc}")
+        print(f"  {tk} {in_uni} score={sc}")
 
-    # universe 內 top 5 score
-    in_uni_scores = [(cpu_score(pre, p, si, day), tickers[si], si) for si in top100_idx]
+    # universe 內 top 10 score
+    in_uni_scores = [(cpu_score(pre, p, si, day), tickers[si], si) for si in in_uni_si]
     in_uni_scores.sort(reverse=True)
-    print(f"  Universe top 5:")
-    for rank, (sc, tk, si) in enumerate(in_uni_scores[:5], 1):
+    print(f"  Universe top 10:")
+    for rank, (sc, tk, si) in enumerate(in_uni_scores[:10], 1):
         flag = "🎯" if sc >= buy_threshold else ""
-        print(f"    #{rank} {tk:>10s} score={sc} {flag}")
+        marker = " ⭐" if tk in ["3645.TW", "6213.TW", "2484.TW"] else ""
+        print(f"    #{rank} {tk:>10s} score={sc} {flag}{marker}")
     print()
