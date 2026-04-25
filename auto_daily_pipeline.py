@@ -109,6 +109,7 @@ def step_self_update():
         "init_state_gist.py",
         "rebuild_tab3.py",
         "update_cache.py",
+        "write_web_data.py",  # 新加：寫 history_cache + scan_results
     ]
     n_updated = 0
     for fn in files_to_sync:
@@ -208,6 +209,24 @@ def step_rebuild_tab3():
     return True
 
 
+def step_write_web_data():
+    """從 1500 天 cache 切 80 天 K + 算 pending + buy_signals 推 Gist"""
+    if not os.environ.get("GH_TOKEN"):
+        raise RuntimeError("GH_TOKEN 未設定")
+    py = sys.executable
+    script = os.path.join(USER_SE, "write_web_data.py")
+    if not os.path.exists(script):
+        log("  write_web_data.py 還沒拉，跳過（下次 step 0 self-update 會拉）")
+        return False
+    code, out, err = _run_subprocess(py, script, 600)
+    if code != 0:
+        raise RuntimeError(f"write_web_data exit {code}\n{out[-1000:]}\n{err[-1000:]}")
+    if "🎉" not in out:
+        raise RuntimeError(f"write_web_data 沒看到完成標記\n{out[-1500:]}")
+    log(f"  write_web_data stdout (tail): {out[-500:]}")
+    return True
+
+
 # ─────── 健康檢查（成功後驗證 Gist）───────
 def health_check():
     """跑完後驗證 Gist 真的更新了"""
@@ -274,6 +293,7 @@ def main():
         run_step("Step 1: update_cache", step_update_cache)
         run_step("Step 2: init_state_gist", step_init_state)
         run_step("Step 3: rebuild_tab3", step_rebuild_tab3)
+        run_step("Step 4: write_web_data (history+scan)", step_write_web_data)
 
         log("\n=== Health check ===")
         n_trades, end_date = run_step("Health check", health_check)
