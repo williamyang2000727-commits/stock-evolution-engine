@@ -151,9 +151,12 @@ def main():
             "ret_A4_d_ohlc_avg": (sell_price / d_intraday_avg - 1) * 100 - 0.585,
             # === 對照組（時間旅行版，當 reference）===
             "ret_REF_d_close": (sell_price / d_close - 1) * 100 - 0.585,
-            # === 現有 SOP ===
-            "ret_B_d1_open": (sell_price / d1_open - 1) * 100 - 0.585,
-            "ret_C_d1_close": (sell_price / d1_close - 1) * 100 - 0.585,
+            # === D+1 各時點（你 SOP 是 D+1 13:25 前買）===
+            "ret_B_d1_open": (sell_price / d1_open - 1) * 100 - 0.585,        # D+1 09:00 開盤掛
+            "ret_B2_d1_high": (sell_price / d1_high - 1) * 100 - 0.585,        # D+1 盤中最高（最壞）
+            "ret_B3_d1_mid": (sell_price / ((d1_open + d1_close) / 2) - 1) * 100 - 0.585,  # D+1 11:00 中點
+            "ret_B4_d1_ohlc_avg": (sell_price / ((d1_open + d1_high + d1_low + d1_close) / 4) - 1) * 100 - 0.585,  # D+1 OHLC 均
+            "ret_C_d1_close": (sell_price / d1_close - 1) * 100 - 0.585,       # D+1 13:25 收盤前買 = 現在 SOP
         })
     df_r = pd.DataFrame(rows)
     print(f"  成功對齊 {len(df_r)} 筆 (skip ticker={n_skip_ticker} skip_date={n_skip_date} skip_idx={n_skip_idx})")
@@ -180,19 +183,21 @@ def main():
 
     print()
     print(f"{'─' * 70}")
-    print("【誠實版：D 盤中真實能拿到的價 vs 現有 SOP】")
-    print(f"  ⚠️ D 收盤價 13:30 後才已知，盤中 09:30-13:25 拿不到")
-    print(f"  → 用 D 開盤/高點/中點/OHLC 均價估算盤中能拿到的價")
+    print("【正確版：D+1 不同時點進場（回測邏輯：D 訊號 → D+1 買入）】")
+    print(f"  你 SOP：D+1 13:25 前買 ≈ C (D+1 收盤價)")
+    print(f"  intraday_scanner 提案：D+1 早盤就買 (B 或 B3)")
     print(f"{'─' * 70}")
     scenarios = [
-        ("A1. D 開盤買 (09:30 訊號早出)   [盤中最樂觀]", "ret_A1_d_open"),
-        ("A2. D 高點買 (盤中最差成交)     [盤中悲觀上限]", "ret_A2_d_high"),
-        ("A3. D 中點 (open+close)/2 買   [盤中居中]", "ret_A3_d_mid"),
-        ("A4. D OHLC 均價買              [盤中保守均]", "ret_A4_d_ohlc_avg"),
+        ("B.  D+1 開盤 09:00 掛 [現在 SOP 早盤版]", "ret_B_d1_open"),
+        ("B3. D+1 中點 11:00 進 [中盤]", "ret_B3_d1_mid"),
+        ("B4. D+1 OHLC 均價 [盤中均勻分布]", "ret_B4_d1_ohlc_avg"),
+        ("B2. D+1 高點 [盤中最差成交]", "ret_B2_d1_high"),
+        ("C.  D+1 收盤 13:25 前買 [你現在 SOP] ⭐", "ret_C_d1_close"),
         ("─" * 50, None),
-        ("REF. D 收盤買 (時間旅行作弊版)  [不可實現]", "ret_REF_d_close"),
-        ("B.  D+1 開盤買 (現有 SOP)      [對照基準]", "ret_B_d1_open"),
-        ("C.  D+1 收盤買 (cpu_replay 計算用)", "ret_C_d1_close"),
+        ("(參考) D 訊號日當天買 — 需即時計算指標 (intraday_scanner 想做的)", None),
+        ("A1. D 開盤 09:30 [需 D-1 訊號 + D 開盤]", "ret_A1_d_open"),
+        ("A4. D OHLC 均價 [盤中均]", "ret_A4_d_ohlc_avg"),
+        ("REF. D 收盤 [作弊參考，不可實現]", "ret_REF_d_close"),
     ]
     for label, col in scenarios:
         if col is None:
@@ -205,46 +210,42 @@ def main():
 
     print()
     print(f"{'─' * 70}")
-    print("【關鍵對比 vs B (現有 SOP D+1 開盤)】")
+    print("【關鍵對比 vs C (你現在 SOP = D+1 13:25 前買)】")
     print(f"{'─' * 70}")
     for label, col in [
-        ("A1 開盤 vs B", "ret_A1_d_open"),
-        ("A2 高點 vs B", "ret_A2_d_high"),
-        ("A3 中點 vs B", "ret_A3_d_mid"),
-        ("A4 OHLC均 vs B", "ret_A4_d_ohlc_avg"),
-        ("REF 收盤 vs B (作弊參考)", "ret_REF_d_close"),
+        ("B (D+1 開盤 09:00) vs C (你 SOP)", "ret_B_d1_open"),
+        ("B3 (D+1 中點 11:00) vs C", "ret_B3_d1_mid"),
+        ("B4 (D+1 OHLC均) vs C", "ret_B4_d1_ohlc_avg"),
+        ("B2 (D+1 高點 最差) vs C", "ret_B2_d1_high"),
     ]:
-        diff = df_r[col] - df_r["ret_B_d1_open"]
+        diff = df_r[col] - df_r["ret_C_d1_close"]
         n_win = (diff > 0).sum()
         flag = "✅" if diff.mean() > 0.3 else ("❌" if diff.mean() < -0.3 else "🟡")
-        print(f"  {flag} {label}: 平均差 {diff.mean():+.3f}% / 筆 / A 贏 B {n_win}/{n} ({n_win/n*100:.1f}%)")
+        print(f"  {flag} {label}: 平均差 {diff.mean():+.3f}% / 筆 / 早買贏 {n_win}/{n} ({n_win/n*100:.1f}%)")
 
-    # 4. 結論
+    # 4. 真結論
     print()
     print(f"{'─' * 70}")
-    print("【誠實結論】")
+    print("【真結論：D+1 早盤買 vs 你 SOP (D+1 收盤前買)】")
     print(f"{'─' * 70}")
-    a1 = (df_r["ret_A1_d_open"] - df_r["ret_B_d1_open"]).mean()
-    a2 = (df_r["ret_A2_d_high"] - df_r["ret_B_d1_open"]).mean()
-    a3 = (df_r["ret_A3_d_mid"] - df_r["ret_B_d1_open"]).mean()
-    a4 = (df_r["ret_A4_d_ohlc_avg"] - df_r["ret_B_d1_open"]).mean()
-    print(f"  最樂觀 (D 開盤)：{a1:+.2f}% / 筆")
-    print(f"  悲觀上限 (D 高點)：{a2:+.2f}% / 筆")
-    print(f"  中點：{a3:+.2f}% / 筆")
-    print(f"  OHLC 均：{a4:+.2f}% / 筆")
+    bvc = (df_r["ret_B_d1_open"] - df_r["ret_C_d1_close"]).mean()
+    b3vc = (df_r["ret_B3_d1_mid"] - df_r["ret_C_d1_close"]).mean()
+    b4vc = (df_r["ret_B4_d1_ohlc_avg"] - df_r["ret_C_d1_close"]).mean()
+    b2vc = (df_r["ret_B2_d1_high"] - df_r["ret_C_d1_close"]).mean()
+    print(f"  D+1 09:00 開盤買 vs 你 SOP：{bvc:+.2f}% / 筆")
+    print(f"  D+1 11:00 中點買 vs 你 SOP：{b3vc:+.2f}% / 筆")
+    print(f"  D+1 OHLC 均買 vs 你 SOP：{b4vc:+.2f}% / 筆")
+    print(f"  D+1 高點買 vs 你 SOP：{b2vc:+.2f}% / 筆")
     print()
-    if a2 > 0.3:
-        print(f"  ✅ 連 D 高點（盤中最差成交）都贏 B → (b) intraday_scanner 真的有用")
-        print(f"     一年 22 筆 × {a2:.2f}% (悲觀) ~ {a1:.2f}% (樂觀) = +{22*a2:.0f}% ~ +{22*a1:.0f}% 總報酬")
-    elif a2 < -0.3 and a1 > 0.3:
-        print(f"  🟡 早盤訊號(A1)贏，但晚盤訊號(A2)輸")
-        print(f"     建議 intraday_scanner 只信 09:30-10:30 訊號，下午訊號跳過")
-    elif a1 < -0.3:
-        print(f"  ❌ 連最樂觀(D 開盤)都輸 B → 盤中買真的不划算")
-        print(f"     William 直覺對，不該做 (b)，跳到 (c)")
+    if bvc > 0.3:
+        print(f"  ✅ D+1 早盤買贏你 SOP {bvc:+.2f}%/筆 → 改 SOP 提早買")
+    elif bvc < -0.3:
+        print(f"  ❌ D+1 早盤買輸你 SOP {-bvc:.2f}%/筆 → 你直覺對，訊號隔天回檔，等收盤前買最好")
+        print(f"     不該做 (b) intraday_scanner，現在 SOP 已最優")
+        print(f"     一年 22 筆 × {-bvc:.2f}% = +{22*(-bvc):.0f}% 反向損失（如果改成早盤買的話）")
     else:
-        print(f"  🟡 樂觀贏悲觀輸，邊際效益不明，看時段而定")
-        print(f"     建議：盤中 09:30 訊號才推 Telegram，避開 13:00 後訊號")
+        print(f"  🟡 D+1 開盤 vs 收盤差距 {bvc:+.3f}%（< 0.3% 不顯著）")
+        print(f"     早晚買差不多，(b) 沒意義，跳到 (c)")
 
     # 存 csv 給 William 自己看
     out_csv = os.path.join(USER_SE, "intraday_advantage_results.csv")
