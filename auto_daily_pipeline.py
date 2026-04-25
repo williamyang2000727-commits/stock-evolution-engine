@@ -167,11 +167,14 @@ def main():
     log("🚀 Auto daily pipeline 啟動")
     log("=" * 70)
 
-    # 週末跳過
+    # 週末跳過（除非 --force）
     now = datetime.now(TW_TZ)
-    if now.weekday() >= 5:
-        log(f"  週末（{now.strftime('%a')}），跳過")
+    force = "--force" in sys.argv
+    if now.weekday() >= 5 and not force:
+        log(f"  週末（{now.strftime('%a')}），跳過。要手動測試請加 --force")
         return 0
+    if force:
+        log("  ⚡ --force mode：強制執行（即使週末/假日）")
 
     try:
         run_step("Step 1: update_cache", step_update_cache)
