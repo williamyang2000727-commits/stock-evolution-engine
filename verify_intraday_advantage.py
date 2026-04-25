@@ -93,10 +93,21 @@ def main():
                 df = raw[cand]; break
         if df is None:
             n_skip_ticker += 1; continue
-        buy_date = pd.Timestamp(buy_date_str)
-        if buy_date not in df.index:
+        # 確保 datetime index + normalize（移除時間部分，只比對日期）
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df = df.copy()
+            df.index = pd.to_datetime(df.index)
+        df_dates_normalized = df.index.normalize()
+        buy_date = pd.Timestamp(buy_date_str).normalize()
+        matches = np.where(df_dates_normalized == buy_date)[0]
+        if len(matches) == 0:
+            if n_skip_date == 0:
+                print(f"  DEBUG: ticker={ticker} buy_date={buy_date_str}")
+                print(f"    df.index dtype={df.index.dtype}")
+                print(f"    df.index range: {df.index.min()} ~ {df.index.max()}")
+                print(f"    df.index sample (last 3): {list(df.index[-3:])}")
             n_skip_date += 1; continue
-        idx_buy = df.index.get_loc(buy_date)
+        idx_buy = int(matches[0])
         if idx_buy <= 0:
             n_skip_idx += 1; continue
         # D = idx_buy - 1（訊號日）/ D+1 = idx_buy（買入日）
