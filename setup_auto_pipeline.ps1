@@ -38,8 +38,9 @@ $Action = New-ScheduledTaskAction `
     -Argument $ScriptPath `
     -WorkingDirectory $WorkDir
 
-# Trigger: 週一到週五，每天 14:00（台股 13:30 收盤後 30 分鐘，TWSE/TPEX 已 settle）
-$Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At "14:00"
+# Trigger: 週一到週五 17:00（TWSE/TPEX 收盤資料 16:30 後才齊全，留 30 分鐘 buffer）
+# 16:35 daily_scan GitHub Actions 跑完後再跑這個，重置 state + Tab 3 用 cpu_replay 真公式
+$Trigger = New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday,Tuesday,Wednesday,Thursday,Friday -At "17:00"
 
 # Settings: 失敗自動重試 + 不要強制電腦睡眠
 $Settings = New-ScheduledTaskSettingsSet `
@@ -66,7 +67,7 @@ Register-ScheduledTask `
 
 Write-Host ""
 Write-Host "✅ 排程已建立: $TaskName"
-Write-Host "   執行時間: 週一-週五 14:00"
+Write-Host "   執行時間: 週一-週五 17:00（TWSE 收盤資料 16:30 齊全後）"
 Write-Host "   Python:   $PyExe"
 Write-Host "   Script:   $ScriptPath"
 Write-Host "   Log:      $LogPath"
