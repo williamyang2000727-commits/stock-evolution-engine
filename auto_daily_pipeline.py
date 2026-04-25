@@ -261,6 +261,14 @@ def main():
     if force:
         log("  ⚡ --force mode：強制執行（即使週末/假日）")
 
+    # ⭐ Idempotent check：今日已成功跑過就跳過（避免 18:00 / 19:00 retry 重複跑）
+    # 用 daily_pipeline.success_marker 檔案標記今日成功
+    today_str = now.strftime("%Y-%m-%d")
+    marker_file = os.path.join(USER_SE, f"daily_pipeline.success.{today_str}")
+    if not force and os.path.exists(marker_file):
+        log(f"  ✅ 今日已成功跑過（marker {marker_file}），跳過")
+        return 0
+
     try:
         run_step("Step 0: self-update from GitHub", step_self_update)
         run_step("Step 1: update_cache", step_update_cache)
@@ -274,6 +282,21 @@ def main():
         log(f"🎉 Pipeline 全部成功！Tab 3: {n_trades} 筆 / 截止 {end_date}")
         log("=" * 70)
         telegram(f"✅ daily pipeline 完成 — Tab 3 {n_trades} 筆 / 截止 {end_date}")
+        # 寫今日成功 marker（idempotent，避免 retry trigger 重跑）
+        try:
+            today_str = now.strftime("%Y-%m-%d")
+            marker_file = os.path.join(USER_SE, f"daily_pipeline.success.{today_str}")
+            # 清理舊 marker（保留最近 7 天）
+            for old_f in os.listdir(USER_SE):
+                if old_f.startswith("daily_pipeline.success.") and old_f != f"daily_pipeline.success.{today_str}":
+                    try:
+                        os.remove(os.path.join(USER_SE, old_f))
+                    except Exception:
+                        pass
+            with open(marker_file, "w") as f:
+                f.write(datetime.now(TW_TZ).isoformat())
+        except Exception as e:
+            log(f"  ⚠️ 寫 success marker 失敗（不影響本次）: {e}")
         return 0
     except Exception as e:
         log(f"\n❌ Pipeline 失敗：{e}")

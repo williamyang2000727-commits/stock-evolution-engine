@@ -36,25 +36,50 @@ print(f"\n刪除既有排程（如果有）...")
 subprocess.run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"],
                capture_output=True, text=True)
 
-# 建立排程：週一-五 17:00
-# /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 17:00
-print(f"\n建立排程: {TASK_NAME}")
-cmd = [
-    "schtasks", "/Create",
-    "/TN", TASK_NAME,
-    "/TR", f'"{PY_EXE}" "{SCRIPT_PATH}"',
-    "/SC", "WEEKLY",
-    "/D", "MON,TUE,WED,THU,FRI",
-    "/ST", "17:00",
-    "/RL", "HIGHEST",
-    "/F",  # 覆蓋
+# 建立 4 個排程（多重防線對抗停電）：
+# 17:00 主時段
+# 18:00 第一重試（萬一 17:00 沒跑）
+# 19:00 第二重試
+# 開機後 5 分鐘（停電恢復後立刻補跑）
+schedules = [
+    (TASK_NAME, "WEEKLY", "17:00", ["/D", "MON,TUE,WED,THU,FRI"]),
+    (f"{TASK_NAME}_Retry1800", "WEEKLY", "18:00", ["/D", "MON,TUE,WED,THU,FRI"]),
+    (f"{TASK_NAME}_Retry1900", "WEEKLY", "19:00", ["/D", "MON,TUE,WED,THU,FRI"]),
+    (f"{TASK_NAME}_OnBoot", "ONSTART", None, []),  # 開機後 5 分鐘
 ]
-result = subprocess.run(cmd, capture_output=True, text=True)
-print(f"  stdout: {result.stdout}")
+
+print(f"\n建立 4 個排程（防停電多重防線）...")
+for task_name, sc_type, st_time, extra_args in schedules:
+    # 先刪舊的
+    subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"],
+                   capture_output=True, text=True)
+    cmd = [
+        "schtasks", "/Create",
+        "/TN", task_name,
+        "/TR", f'"{PY_EXE}" "{SCRIPT_PATH}"',
+        "/SC", sc_type,
+    ]
+    if st_time:
+        cmd += ["/ST", st_time]
+    cmd += extra_args
+    cmd += ["/RL", "HIGHEST", "/F"]
+
+    if sc_type == "ONSTART":
+        # 開機後排程要加 delay（等網路 + 環境變數 ready）
+        cmd += ["/DELAY", "0005:00"]  # 5 分鐘
+
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f"  ✅ {task_name} ({sc_type} {st_time or 'on boot'})")
+    else:
+        print(f"  ❌ {task_name} fail: {result.stderr[:200]}")
+
+# 主排程驗證
+result = subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME, "/V", "/FO", "LIST"],
+                        capture_output=True, text=True, encoding="cp950", errors="ignore")
 if result.returncode != 0:
-    print(f"  stderr: {result.stderr}")
-    print("\n❌ 排程建立失敗")
-    print("可能原因：需要管理員權限。請用 admin PowerShell 重跑")
+    print(f"\n❌ 主排程建立失敗")
+    print(f"可能原因：需要管理員權限。請用 admin PowerShell 重跑")
     sys.exit(1)
 
 # 驗證
