@@ -127,19 +127,74 @@ def parse_paper_log_summary():
         for t in recent:
             date = t.get("scan_date", "?")
             ticker = t.get("track_A_buy") or "no pick"
-            decision = t.get("track_B_decision")
-            if decision is None:
-                decision_str = "—"
-            elif decision is True:
-                decision_str = "✅ buy"
-            else:
-                decision_str = "❌ skip"
+            decision_b = t.get("track_B_decision")
+            decision_c = t.get("track_C_decision")
+            def fmt(d):
+                if d is None: return "—"
+                return "✅" if d else "❌"
             actual = t.get("actual_5d_return_pct")
             actual_str = f"{actual:+.2f}%" if actual is not None else "(待填)"
-            lines.append(f"  {date} {ticker[:8]:<8} V38={decision_str} actual={actual_str}")
+            lines.append(f"  {date} {ticker[:8]:<8} B={fmt(decision_b)} C={fmt(decision_c)} actual={actual_str}")
         return "\n".join(lines)
     except Exception as e:
         return f"讀 log 失敗：{e}"
+
+
+def parse_progress_reminder():
+    """生成進度提醒（William 不會記得 3 週後該做什麼，每天 Telegram 提醒）
+
+    返回包含三個區塊：
+    - 累積進度（Track A/B/C 各自有 actual_return 的筆數）
+    - 距離 review 還差幾筆
+    - 達標後該做什麼（具體指令）
+    """
+    if not os.path.exists(PAPER_LOG):
+        return "📅 還沒開始累積（4/27 起每天會自動跑）"
+
+    try:
+        with open(PAPER_LOG) as f:
+            log_data = json.load(f)
+        trades = log_data.get("trades", [])
+    except Exception:
+        return "📅 讀 log 失敗"
+
+    n_total = len(trades)
+    # 三軌各有 actual_return 的筆數
+    n_filled_A = sum(1 for t in trades if t.get("actual_5d_return_pct") is not None)
+    n_filled_B = sum(1 for t in trades
+                     if t.get("track_B_decision") is True and t.get("actual_5d_return_pct") is not None)
+    n_filled_C = sum(1 for t in trades
+                     if t.get("track_C_decision") is True and t.get("actual_5d_return_pct") is not None)
+
+    # 距離 review 還差幾筆（Track B 為主，10 筆是門檻）
+    target = 10
+    remaining = max(0, target - n_filled_B)
+
+    lines = ["", "📅 ═══ 進度提醒 ═══"]
+    lines.append(f"已累積：{n_total} 筆紀錄（{n_filled_A} 筆有 actual）")
+    lines.append(f"  Track A (89.90) 有 actual: {n_filled_A}")
+    lines.append(f"  Track B (V38)   有 actual: {n_filled_B} / {target}")
+    lines.append(f"  Track C (V38d)  有 actual: {n_filled_C}")
+
+    if remaining > 0:
+        # 估算還要幾天（V38 平均 kept rate 15.8%，每週 5 交易日）
+        days_per_trade = 1 / 0.158 if n_filled_B > 0 else 6.3
+        est_calendar_days = int(remaining * days_per_trade * 1.4)  # 1.4 = 含週末
+        lines.append("")
+        lines.append(f"🎯 還差 {remaining} 筆 V38 buy 才能 review（約 {est_calendar_days} 天後）")
+        lines.append(f"   現在不用做事，等系統自己累積")
+    else:
+        lines.append("")
+        lines.append("🟢🟢🟢 達標！可以 review 了！")
+        lines.append("   Windows 跑這條：")
+        lines.append("   cd C:\\stock-evolution")
+        lines.append("   python paper_trade_tracker.py review")
+        lines.append("")
+        lines.append("   看 V38d wr 是否 > V38 +5%")
+        lines.append("   是 → 整合到 daily_scan 上線")
+        lines.append("   否 → 接受 V38 final，停手等實盤")
+
+    return "\n".join(lines)
 
 
 def main():
@@ -226,6 +281,11 @@ def main():
     summary = parse_paper_log_summary()
     log(f"\n{summary}")
     notify_lines.append("\n" + summary)
+
+    # === Step 5b: 進度提醒（給 William 知道距離 review 還差多少 + 達標後做什麼）===
+    reminder = parse_progress_reminder()
+    log(f"\n{reminder}")
+    notify_lines.append(reminder)
 
     # === Step 6: 發 Telegram ===
     final_msg = "\n".join(notify_lines)
