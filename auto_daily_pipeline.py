@@ -83,17 +83,32 @@ def run_step(step_name, func, max_retry=3):
 
 
 # ─────── Step 1: update_cache ───────
+def _run_subprocess(py, script, timeout):
+    """跑 Python script 並強制 UTF-8 stdout（避免 Windows cp950 emoji 炸）"""
+    import subprocess
+    env = {**os.environ, "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+    r = subprocess.run(
+        [py, script],
+        capture_output=True,
+        timeout=timeout,
+        env=env,
+    )
+    # 手動 decode（避免 text=True 用系統 codec）
+    out = r.stdout.decode("utf-8", errors="replace") if r.stdout else ""
+    err = r.stderr.decode("utf-8", errors="replace") if r.stderr else ""
+    return r.returncode, out, err
+
+
 def step_update_cache():
     """抓 TWSE/TPEX/yfinance 今日 K 線 append 到 cache"""
-    import subprocess
     py = sys.executable
     script = os.path.join(USER_SE, "update_cache.py")
     if not os.path.exists(script):
         raise FileNotFoundError(f"update_cache.py 不在 {script}")
-    r = subprocess.run([py, script], capture_output=True, text=True, timeout=600)
-    if r.returncode != 0:
-        raise RuntimeError(f"update_cache.py exit {r.returncode}\nstdout:\n{r.stdout[-1500:]}\nstderr:\n{r.stderr[-1500:]}")
-    log(f"  update_cache stdout (tail): {r.stdout[-500:]}")
+    code, out, err = _run_subprocess(py, script, 600)
+    if code != 0:
+        raise RuntimeError(f"update_cache.py exit {code}\nstdout:\n{out[-1500:]}\nstderr:\n{err[-1500:]}")
+    log(f"  update_cache stdout (tail): {out[-500:]}")
     return True
 
 
@@ -102,16 +117,14 @@ def step_init_state():
     """從 1500 天完整 cache 算 state 推 Gist"""
     if not os.environ.get("GH_TOKEN"):
         raise RuntimeError("GH_TOKEN 未設定，請 $env:GH_TOKEN = ...")
-    import subprocess
     py = sys.executable
     script = os.path.join(USER_SE, "init_state_gist.py")
-    r = subprocess.run([py, script], capture_output=True, text=True, timeout=600,
-                       env={**os.environ})
-    if r.returncode != 0:
-        raise RuntimeError(f"init_state_gist exit {r.returncode}\n{r.stdout[-1000:]}\n{r.stderr[-1000:]}")
-    if "✅" not in r.stdout:
-        raise RuntimeError(f"init_state 沒看到 ✅ 成功標記\n{r.stdout[-1500:]}")
-    log(f"  init_state stdout (tail): {r.stdout[-500:]}")
+    code, out, err = _run_subprocess(py, script, 600)
+    if code != 0:
+        raise RuntimeError(f"init_state_gist exit {code}\n{out[-1000:]}\n{err[-1000:]}")
+    if "✅" not in out:
+        raise RuntimeError(f"init_state 沒看到 ✅ 成功標記\n{out[-1500:]}")
+    log(f"  init_state stdout (tail): {out[-500:]}")
     return True
 
 
@@ -120,16 +133,14 @@ def step_rebuild_tab3():
     """用 cpu_replay 重建 Tab 3 backtest_results.json"""
     if not os.environ.get("GH_TOKEN"):
         raise RuntimeError("GH_TOKEN 未設定")
-    import subprocess
     py = sys.executable
     script = os.path.join(USER_SE, "rebuild_tab3.py")
-    r = subprocess.run([py, script], capture_output=True, text=True, timeout=900,
-                       env={**os.environ})
-    if r.returncode != 0:
-        raise RuntimeError(f"rebuild_tab3 exit {r.returncode}\n{r.stdout[-1000:]}\n{r.stderr[-1000:]}")
-    if "✅" not in r.stdout:
-        raise RuntimeError(f"rebuild_tab3 沒看到 ✅\n{r.stdout[-1500:]}")
-    log(f"  rebuild_tab3 stdout (tail): {r.stdout[-500:]}")
+    code, out, err = _run_subprocess(py, script, 900)
+    if code != 0:
+        raise RuntimeError(f"rebuild_tab3 exit {code}\n{out[-1000:]}\n{err[-1000:]}")
+    if "✅" not in out:
+        raise RuntimeError(f"rebuild_tab3 沒看到 ✅\n{out[-1500:]}")
+    log(f"  rebuild_tab3 stdout (tail): {out[-500:]}")
     return True
 
 
