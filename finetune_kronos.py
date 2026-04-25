@@ -235,7 +235,12 @@ def main():
         kronos.eval()
         print(f"  Backbone frozen")
     else:
-        print(f"  Backbone UNFROZEN — 真 fine-tune")
+        # 顯式打開 requires_grad（HF 模型有時會 frozen）
+        n_trainable = 0
+        for p in kronos.parameters():
+            p.requires_grad = True
+            n_trainable += p.numel()
+        print(f"  Backbone UNFROZEN — 真 fine-tune ({n_trainable/1e6:.1f}M trainable params)")
 
     # 動態偵測 d_model：先做一次 forward 拿 ctx.shape
     try:
@@ -329,6 +334,13 @@ def main():
     test_combos = test_combos[:cfg["n_paths"]]
     print(f"  跑 {len(test_combos)} paths")
 
+    # 🔥 CRITICAL FIX: 保存 Kronos 原始 weights，每 path 開始前 reset
+    # 否則 path 2 會從 path 1 train 過的 kronos 繼續，跨 path leakage = CPCV 失效
+    import copy
+    kronos_init_state = copy.deepcopy(kronos.state_dict())
+    print(f"  ✅ 保存 Kronos 原始 weights ({sum(p.numel() for p in kronos.parameters())/1e6:.1f}M params)")
+    print(f"     每 path 開始前 reset，避免跨 path 信息洩漏")
+
     # Binary head
     class BinaryHead(nn.Module):
         def __init__(self, d_model, hidden=64):
@@ -357,6 +369,16 @@ def main():
         if in_test.sum() < 5 or in_train.sum() < 20:
             print(f"    skip: train {in_train.sum()} test {in_test.sum()}")
             continue
+
+        # 🔥 reset Kronos 到原始 weights（避免跨 path leakage）
+        kronos.load_state_dict(kronos_init_state)
+        if cfg["freeze_backbone"]:
+            for p in kronos.parameters():
+                p.requires_grad = False
+            kronos.eval()
+        else:
+            for p in kronos.parameters():
+                p.requires_grad = True
 
         # 重新 init head 每 path
         head = BinaryHead(d_model).to(device)
