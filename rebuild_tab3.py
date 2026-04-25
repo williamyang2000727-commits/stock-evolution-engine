@@ -63,23 +63,31 @@ p = strategy.get("params", strategy)
 print(f"  Cache: {len(data)} tickers / Strategy: {strategy.get('score', 0):.3f}")
 
 # 2. precompute + cpu_replay 跑全期
-# ⭐ 固定起點 = 2020-01-02（cache 真實起點，1721/1950 = 88.3% ticker 從這天開始）
-# 每天 cache 末尾多一天，起點永遠不動 → Tab 3 過去明細永遠不變
+# ⭐ 固定起點 = 2020-01-02（cache 真實起點）
+# 但只納入「真的從 2020-01-02 就有資料」的 ticker，避免最近上市的拖低 min_len
+# precompute() 用 min(len(df)) 切共同切片 → 只要有 1 檔 102 天，全部變 102 天 → 災難
 import pandas as _pd_anchor
 FIXED_START = _pd_anchor.Timestamp("2020-01-02").normalize()
 print(f"\n[2/5] 固定起點 {FIXED_START.date()}（cache 真實起點，避免每天滑動）...")
 data_t = {}
+n_short = 0
 for k, v in data.items():
     idx = v.index
     if hasattr(idx, "tz") and idx.tz is not None:
         idx_naive = idx.tz_localize(None)
     else:
         idx_naive = idx
+    # 必須包含 FIXED_START（或更早，那就切起來）
+    first_date = idx_naive.normalize()[0]
+    if first_date > FIXED_START:
+        # 這 ticker 起點晚於 2020-01-02 → 排除（避免拖低 min_len）
+        n_short += 1
+        continue
     mask = idx_naive.normalize() >= FIXED_START
     df = v[mask]
     if len(df) >= 100:
         data_t[k] = df
-print(f"  {len(data_t)} stocks 通過 (起點 {FIXED_START.date()} ~ 末日)")
+print(f"  {len(data_t)} stocks 通過 / 排除 {n_short} 檔起點晚於 {FIXED_START.date()} 的（避免拖低 min_len）")
 pre = precompute(data_t)
 trades = cpu_replay(pre, p)
 trades.sort(key=lambda t: t.get("buy_date", ""))
