@@ -76,6 +76,21 @@ def score_mirror(si, day):
     if int(p.get("w_week52",0))>0 and week52_arr is not None and week52_arr[si,d]>=p.get("week52_min",0.7): sc+=int(p["w_week52"])
     if int(p.get("w_vol_up_days",0))>0 and vol_up_days_arr is not None and vol_up_days_arr[si,d]>=p.get("vol_up_days_min",3): sc+=int(p["w_vol_up_days"])
     if int(p.get("w_mom_accel",0))>0 and mom_accel_arr is not None and mom_accel_arr[si,d]>=p.get("mom_accel_min",2): sc+=int(p["w_mom_accel"])
+    # ⭐ cpu_replay buy 階段 inline 加分（line 1601-1609）— 我前面漏了
+    is_green = pre.get("is_green")
+    gap = pre.get("gap")
+    ma60 = pre.get("ma60")
+    vol_prev = pre.get("vol_prev")
+    cg = int(p.get("consecutive_green", 0))
+    if cg >= 1 and is_green is not None:
+        ok = True
+        for g in range(cg):
+            if d - g < 0 or is_green[si, d-g] != 1:
+                ok = False; break
+        if ok: sc += 1
+    if p.get("gap_up", 0) and gap is not None and gap[si, d] >= 1.0: sc += 1
+    if p.get("above_ma60", 0) and ma60 is not None and close[si, d] >= ma60[si, d]: sc += 1
+    if p.get("vol_gt_yesterday", 0) and d >= 1 and vol_prev is not None and vol_ratio[si, d] > vol_prev[si, d]: sc += 1
     return sc
 
 
