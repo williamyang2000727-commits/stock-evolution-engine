@@ -61,17 +61,13 @@ week52_arr = pre.get("week52_pos")
 vol_up_days_arr = pre.get("vol_up_days")
 mom_accel_arr = pre.get("mom_accel")
 
-# mom 動態 key
-mom_days = int(p.get("momentum_days", 5))
-mom_key = f"mom_{mom_days}"
-mom = pre.get(mom_key, np.zeros((n, nd)))
-print(f"mom_key: {mom_key}, exists: {mom_key in pre}")
-
-# ma_fast_w 動態
+# cpu_replay 真實邏輯 (line 1378-1381)：從 pre["ma_d"] / pre["mom_d"] dict 拿
 ma_fw = int(p.get("ma_fast_w", 5))
-ma_key = f"ma_{ma_fw}"
-maf = pre.get(ma_key, np.zeros((n, nd)))
-print(f"ma_key: {ma_key}, exists: {ma_key in pre}")
+mom_days = int(p.get("momentum_days", 5))
+maf = pre["ma_d"].get(ma_fw, pre["ma_d"][5])
+mom = pre["mom_d"].get(mom_days, pre["mom_d"][5])
+print(f"ma_fast_w={ma_fw} → maf shape={maf.shape}")
+print(f"momentum_days={mom_days} → mom shape={mom.shape}")
 
 
 def score_mirror(si, day):
