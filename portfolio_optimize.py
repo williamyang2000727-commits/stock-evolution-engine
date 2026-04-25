@@ -63,12 +63,21 @@ def fetch_gist_strategy():
 
 
 def load_strategy_from_candidates(name, candidates):
-    """從多個候選路徑找策略檔"""
+    """從多個候選路徑找策略檔（UTF-8 強制，Windows cp950 預設會炸中文）"""
     for path in candidates:
         if os.path.exists(path):
             print(f"  找到 {name}: {path}")
-            with open(path) as f:
-                d = json.load(f)
+            try:
+                with open(path, encoding="utf-8") as f:
+                    d = json.load(f)
+            except (UnicodeDecodeError, json.JSONDecodeError) as e:
+                # 退回 cp950 / latin-1 嘗試
+                try:
+                    with open(path, encoding="cp950", errors="ignore") as f:
+                        d = json.load(f)
+                except Exception:
+                    with open(path, encoding="latin-1", errors="ignore") as f:
+                        d = json.load(f)
             return d.get("params", d)
     print(f"  ⚠️ {name} 在以下位置都找不到:")
     for p in candidates:
