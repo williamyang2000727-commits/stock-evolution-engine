@@ -68,22 +68,37 @@ def main():
     completed = [t for t in trades if t.get("sell_date")]
     print(f"  共 {len(completed)} 筆完成交易")
 
+    # Debug：第一筆結構 + raw cache 樣本 key
+    if completed:
+        print(f"  trade keys: {list(completed[0].keys())}")
+        print(f"  trade[0] sample: ticker={completed[0].get('ticker')} buy_date={completed[0].get('buy_date')}")
+    raw_sample_keys = list(raw.keys())[:5]
+    print(f"  raw cache sample keys: {raw_sample_keys}")
+
     # 2. 對每筆 trade 撈 D close / D+1 open / D+1 close
     print("\n[2/4] 對每筆 trade 撈四個價格...")
     rows = []
+    n_skip_ticker, n_skip_date, n_skip_idx = 0, 0, 0
     for t in completed:
-        ticker = t.get("ticker")
+        # ticker 可能是 "ticker" 或 "stock" 或 "code"
+        ticker = t.get("ticker") or t.get("stock") or t.get("code") or t.get("name")
         buy_date_str = t.get("buy_date")  # D+1
         sell_price = t.get("sell_price", 0)
-        if ticker not in raw or not buy_date_str or not sell_price:
-            continue
-        df = raw[ticker]
+        if not ticker or not buy_date_str or not sell_price:
+            n_skip_ticker += 1; continue
+        # 嘗試多種 ticker 格式
+        df = None
+        for cand in [ticker, f"{ticker}.TW", f"{ticker}.TWO", str(ticker).replace(".TW", "").replace(".TWO", "")]:
+            if cand in raw:
+                df = raw[cand]; break
+        if df is None:
+            n_skip_ticker += 1; continue
         buy_date = pd.Timestamp(buy_date_str)
         if buy_date not in df.index:
-            continue
+            n_skip_date += 1; continue
         idx_buy = df.index.get_loc(buy_date)
         if idx_buy <= 0:
-            continue
+            n_skip_idx += 1; continue
         # D = idx_buy - 1（訊號日）/ D+1 = idx_buy（買入日）
         d_close = float(df["Close"].iloc[idx_buy - 1])
         d1_open = float(df["Open"].iloc[idx_buy])
@@ -113,7 +128,10 @@ def main():
             "ret_D_d1_avg": (sell_price / ((d1_open + d1_high + d1_low + d1_close) / 4) - 1) * 100 - 0.585,
         })
     df_r = pd.DataFrame(rows)
-    print(f"  成功對齊 {len(df_r)} 筆")
+    print(f"  成功對齊 {len(df_r)} 筆 (skip ticker={n_skip_ticker} skip_date={n_skip_date} skip_idx={n_skip_idx})")
+    if len(df_r) == 0:
+        print("\n❌ 0 筆對齊，無法統計。check trade keys vs raw cache keys 不匹配")
+        return
 
     # 3. 統計
     print("\n[3/4] 統計 gap 分布 + 三情境報酬")
