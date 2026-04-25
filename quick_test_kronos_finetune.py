@@ -103,7 +103,9 @@ def main():
 
     # === 3. 加 market context features ===
     print(f"\n[3/5] 加 market context features（大盤狀態）...")
-    market_close = pre["market_close"]  # 大盤等權
+    # pre dict 沒有 market_close key，自己從 close 算（v1 框架的大盤等權 = 所有股票每日 close 平均）
+    close_arr = pre["close"]  # shape (n_stocks, n_days)
+    market_close = np.nanmean(close_arr, axis=0)  # shape (n_days,)
     # 對每筆 trade，算 buy_date 當天的市場狀態
     market_features = []
     for di in df_sanity["day_idx"].values:
