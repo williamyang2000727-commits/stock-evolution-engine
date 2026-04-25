@@ -134,11 +134,25 @@ class KronosFilter:
         Returns:
             float: 大盤 5d return median %
         """
-        if len(market_close_history) < n_days + 5:
-            # 樣本不足，用保守 0%
+        if market_close_history is None or len(market_close_history) < n_days + 5:
             return 0.0
-        recent = market_close_history[-(n_days + 5):]
+        arr = np.asarray(market_close_history, dtype=np.float64)
+        recent = arr[-(n_days + 5):].copy()
+        # 處理 NaN / 0 / Inf：forward fill
+        if np.any(np.isnan(recent)) or np.any(recent <= 0):
+            valid_mask = ~np.isnan(recent) & (recent > 0)
+            if valid_mask.sum() < n_days // 2:
+                return 0.0
+            last_valid = float(recent[valid_mask][0])
+            for i in range(len(recent)):
+                if np.isnan(recent[i]) or recent[i] <= 0:
+                    recent[i] = last_valid
+                else:
+                    last_valid = float(recent[i])
         returns_5d = (recent[5:] / recent[:-5] - 1) * 100
+        returns_5d = returns_5d[np.isfinite(returns_5d)]
+        if len(returns_5d) == 0:
+            return 0.0
         return float(np.median(returns_5d))
 
     def should_buy(self, ohlcv_df: pd.DataFrame, market_close_history: np.ndarray = None,
@@ -234,8 +248,8 @@ if __name__ == "__main__":
             all_closes.append(v["Close"].tail(100).values)
     if all_closes:
         all_closes = np.array(all_closes)
-        market_close = all_closes.mean(axis=0)
-        print(f"  大盤 proxy: {len(market_close)} 天")
+        market_close = np.nanmean(all_closes, axis=0)  # 處理 NaN
+        print(f"  大盤 proxy: {len(market_close)} 天 (NaN: {int(np.isnan(market_close).sum())})")
     else:
         market_close = None
 
