@@ -1,37 +1,30 @@
 """
 V41 Kronos 真 fine-tune — 跟 V38b/c/d calibration head 不同
-用法：C:\\stock-evolution> python finetune_kronos.py [--mode 3060|5090]
+用法：C:\\stock-evolution> python finetune_kronos.py [--mode 3060|3060real|5090]
 
-V38b/c/d 教訓（已敗）：
-  - 都是 frozen Kronos features + LogReg/GB head
-  - 學不到 89.90 沒看到的 pattern
-  - WQ101 教訓 (V40)：「過濾 89.90 trades」框架已 31 種失敗
+V38b/c/d 教訓（已敗）：frozen Kronos features + LogReg/GB head 學不到新東西
+V40 WQ101 教訓：「過濾 89.90 trades」框架 31 種失敗
+V41 真 fine-tune（新方向）：學 89.90 沒看到的 K 線 pattern
 
-V41 真 fine-tune（5090 才有可能）：
-  - 整個 Kronos backprop（不 frozen）
-  - 用 89.90 的 ~133 winning trades + 同期 ~133 losing candidates 做 binary classification
-  - 學「89.90 看不到的 K 線 pattern」← 跟 V40 過濾框架不同維度
-  - 用 CPCV LOO 評估（同 V36/V40 標準）
+API 對齊（2026-04 從 shiyu-coder/Kronos 確認）：
+  tokenizer.encode(x, half=True) → (s1_ids, s2_ids)
+  model.decode_s1(s1_ids, s2_ids, stamp) → (s1_logits, context)
+                                            context shape (B, T, d_model)
+  stamp tensor shape (B, T, 5): [minute, hour, weekday, day, month]
+  Input x: (B, T, d_in) normalized OHLCV+amount
 
-3060 vs 5090 設定差異（同程式可跑兩邊）：
-  3060 (12GB):  Kronos-small (24.7M) + batch 4 + epoch 3   約 2-4 小時
-  5090 (32GB):  Kronos-base (102M)   + batch 16 + epoch 10 約 1-3 小時
+模式：
+  --mode 3060      Kronos-small + freeze backbone, 3 path, 3 epoch (~30min, 驗證 pipeline)
+  --mode 3060real  Kronos-small + UNFREEZE backbone, 全 15 path, 5 epoch (~6-12h, 真版本)
+  --mode 5090      Kronos-base + UNFREEZE, 全 15 path, 10 epoch (~1-3h on 5090)
 
-3060 跑只是「驗證 pipeline + 大概看效果」，5090 到貨切過去跑真版本。
+判定（同 V36/V40）：
+  CPCV n_break ≥ 12/15 AND mean ≥ 5% AND p25 ≥ 0
+  AND backfill totΔ > -10% (V40 教訓加第三關)
 
-流程：
-  1. 讀 89.90 trades 當 positive samples
-  2. 從 89.90 候選但沒買的（low score）取 negative samples（同期、同 universe）
-  3. 對每筆抽 60 K 線 input → Kronos 編碼 → 自訂 binary head
-  4. CPCV-aware split：14 path train / 1 path test，輪 15 次
-  5. 看 mean wr improvement, p25, totΔ
-  6. 真突破門檻同 V36/V40：n_break ≥ 12/15, mean ≥ 5%, p25 ≥ 0, AND backfill totΔ > -10%
-
-判定：
-  🟢🟢🟢 strict CPCV + backfill totΔ > -10% → 真突破！上線整合 daily_scan
-  🟢🟢 real CPCV + totΔ > -30% → 邊際值得，paper trading
-  🟡 sanity 過 CPCV 但 totΔ < -30% → 跟 WQ101/Kronos-zeroshot/V39 同下場
-  🔴 CPCV 沒過 → 真 fine-tune 也救不了，89.90 終局
+對比 baseline：
+  V38 Kronos zero-shot: 11/14 mean +14.28% backfill totΔ -87% (撤回)
+  V40 WQ101 top5 combo: 15/15 mean +10.89% backfill totΔ -31% (拒)
 """
 import os, sys, pickle, json, time, argparse
 import numpy as np
@@ -50,7 +43,7 @@ if USER_SE not in sys.path: sys.path.insert(0, USER_SE)
 import gpu_cupy_evolve as base
 
 CACHE_PATH = os.path.join(USER_SE, "stock_data_cache.pkl")
-LOOKBACK = 60         # 60 K 線 input
+LOOKBACK = 60
 N_GROUPS = 6
 K_TEST = 2
 WARMUP = 60
@@ -66,24 +59,26 @@ def fetch_gist_strategy():
 
 
 def get_config(mode):
-    """3060 vs 5090 config"""
     if mode == "5090":
         return {
             "model_name": "NeoQuasar/Kronos-base",
-            "batch_size": 16,
-            "epochs": 10,
-            "lr": 1e-5,
-            "freeze_backbone": False,    # 5090 真 fine-tune
-            "label": "5090 真 fine-tune (Kronos-base 102M)",
+            "batch_size": 16, "epochs": 10, "lr": 1e-5,
+            "freeze_backbone": False, "n_paths": 15,
+            "label": "5090 真 fine-tune (Kronos-base 102M, unfreeze)",
+        }
+    elif mode == "3060real":
+        return {
+            "model_name": "NeoQuasar/Kronos-small",
+            "batch_size": 4, "epochs": 5, "lr": 2e-5,
+            "freeze_backbone": False, "n_paths": 15,
+            "label": "3060 真版 (Kronos-small 24.7M, UNFREEZE, 全 15 path 過夜跑)",
         }
     elif mode == "3060":
         return {
             "model_name": "NeoQuasar/Kronos-small",
-            "batch_size": 4,
-            "epochs": 3,
-            "lr": 5e-5,
-            "freeze_backbone": True,     # 3060 frozen + train head only（驗證 pipeline）
-            "label": "3060 驗證 pipeline (Kronos-small 24.7M, freeze backbone)",
+            "batch_size": 4, "epochs": 3, "lr": 5e-5,
+            "freeze_backbone": True, "n_paths": 3,
+            "label": "3060 dry-run (Kronos-small, freeze, 3 path 驗證 pipeline)",
         }
     else:
         raise ValueError(f"unknown mode: {mode}")
@@ -96,13 +91,11 @@ def split_into_groups(n_days, warmup, n_groups):
 
 
 def collect_samples(pre, params):
-    """收集 positive (89.90 winners) + negative (89.90 losers) samples"""
-    print("  跑 89.90 cpu_replay 拿 positive samples...")
+    print("  跑 89.90 cpu_replay 拿 samples...")
     all_trades = base.cpu_replay(pre, params)
     completed = [t for t in all_trades if t.get("sell_date") and t.get("reason") != "持有中"]
 
-    positives = []
-    negatives = []
+    samples = []
     tickers = pre["tickers"]
     dates = pre["dates"]
     date_to_day = {str(d.date() if hasattr(d, 'date') else d)[:10]: i for i, d in enumerate(dates)}
@@ -116,54 +109,62 @@ def collect_samples(pre, params):
         ret = float(t.get("return", 0))
         si = ticker_to_idx[ticker]
         bd_idx = date_to_day[bd_str]
-        if bd_idx < LOOKBACK + 1:
-            continue
-        # input 是 D-1 收盤前 60 K 線
         signal_idx = bd_idx - 1
         if signal_idx < LOOKBACK:
             continue
+        samples.append({
+            "stock_idx": si, "ticker": ticker, "signal_idx": signal_idx,
+            "buy_date": bd_str, "actual_return": ret,
+            "label": 1 if ret > 0 else 0,
+        })
 
-        sample = {
-            "stock_idx": si,
-            "ticker": ticker,
-            "signal_idx": signal_idx,
-            "buy_date": bd_str,
-            "actual_return": ret,
-            "label": 1 if ret > 0 else 0,  # binary: win or lose
-        }
-        positives.append(sample)
-
-    print(f"  Positive samples (89.90 winners + losers): {len(positives)} 筆")
-    print(f"    win rate: {sum(s['label'] for s in positives) / len(positives) * 100:.1f}%")
-
-    # 注意：89.90 的「losers」是已知 35% 失敗筆，這就是 fine-tune 要學的
-    # 對 ML 角度：positives 已含 67% win + 33% lose，本身就是 imbalanced binary classification
-    # 不需要再加 "89.90 沒買的 negatives" — 那會混淆訊號（沒買 ≠ 一定會輸）
-
-    return positives
+    print(f"  Samples: {len(samples)} 筆 (win rate {sum(s['label'] for s in samples) / len(samples) * 100:.1f}%)")
+    return samples
 
 
 def extract_kline_input(stock_idx, signal_idx, pre, lookback=60):
-    """抽 stock_idx 在 signal_idx 前 lookback 天的 K 線"""
-    # 直接從 pre 拿 close, high, low, open, volume
     s = stock_idx
     e = signal_idx + 1
     b = e - lookback
     if b < 0:
-        return None
-    o = pre["open"][s, b:e] if "open" in pre else pre["close"][s, b:e]
-    h = pre["high"][s, b:e] if "high" in pre else pre["close"][s, b:e]
-    l = pre["low"][s, b:e] if "low" in pre else pre["close"][s, b:e]
+        return None, None
+    o = pre["open"][s, b:e]
+    h = pre["high"][s, b:e]
+    l = pre["low"][s, b:e]
     c = pre["close"][s, b:e]
-    v = pre["volume"][s, b:e] if "volume" in pre else np.ones(lookback)
-    df = pd.DataFrame({"open": o, "high": h, "low": l, "close": c, "volume": v, "amount": c * v})
-    return df
+    v = pre["volume"][s, b:e]
+    amt = c * v
+    df = pd.DataFrame({"open": o, "high": h, "low": l, "close": c,
+                       "volume": v, "amount": amt})
+    # 取對應 date range 用於 stamp
+    dates = pre["dates"][b:e]
+    return df, dates
+
+
+def build_stamp(dates):
+    """從 pandas DatetimeIndex 構建 (T, 5) stamp tensor: [minute, hour, weekday, day, month]"""
+    s = pd.DataFrame()
+    s["minute"] = dates.minute
+    s["hour"] = dates.hour
+    s["weekday"] = dates.weekday
+    s["day"] = dates.day
+    s["month"] = dates.month
+    return s.values.astype(np.float32)
+
+
+def normalize_kline(arr):
+    """Per-sample normalize: each (T, d_in) divide by its own mean/std"""
+    # arr shape (T, d_in)
+    mu = arr.mean(axis=0, keepdims=True)
+    sd = arr.std(axis=0, keepdims=True) + 1e-8
+    return (arr - mu) / sd, mu, sd
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", default="3060", choices=["3060", "5090"], help="3060 first-run / 5090 production")
-    parser.add_argument("--skip-train", action="store_true", help="只 load + 評估 (debug)")
+    parser.add_argument("--mode", default="3060real",
+                        choices=["3060", "3060real", "5090"],
+                        help="3060 dry-run / 3060real overnight / 5090 production")
     args = parser.parse_args()
 
     cfg = get_config(args.mode)
@@ -171,34 +172,24 @@ def main():
     print(f"V41 Kronos Fine-tune — {cfg['label']}")
     print("=" * 80)
 
-    # === 1. import 檢查 ===
+    # === 1. 環境 ===
     print(f"\n[1/5] 環境檢查...")
-    try:
-        import torch
-        import torch.nn as nn
-        from torch.utils.data import Dataset, DataLoader
-    except ImportError:
-        print(f"❌ pytorch 沒裝，跑 pip install torch torchvision")
-        return
+    import torch
+    import torch.nn as nn
 
     try:
         from model import Kronos, KronosTokenizer
     except ImportError:
-        print(f"❌ Kronos module 找不到，先跑 setup_kronos.py clone Kronos repo")
+        print(f"❌ Kronos module 找不到，先跑 setup_kronos.py")
         return
 
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     print(f"  Device: {device}")
-    if device == "cpu":
-        print(f"  ⚠️ 沒 GPU，fine-tune 會超慢，建議只在 Mac 驗證 syntax")
-    else:
-        gpu_name = torch.cuda.get_device_name(0)
-        gpu_mem = torch.cuda.get_device_properties(0).total_memory / 1e9
-        print(f"  GPU: {gpu_name} ({gpu_mem:.1f} GB)")
-
+    if device == "cuda:0":
+        print(f"  GPU: {torch.cuda.get_device_name(0)} ({torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB)")
     print(f"  Config: {cfg}")
 
-    # === 2. 載 89.90 + cache ===
+    # === 2. 89.90 + cache ===
     print(f"\n[2/5] 載 89.90 + cache...")
     params = fetch_gist_strategy()
     raw = pickle.load(open(CACHE_PATH, "rb"))
@@ -209,7 +200,6 @@ def main():
     data_dict = {k: v.tail(TARGET) for k, v in raw.items() if len(v) >= TARGET}
     pre = base.precompute(data_dict)
 
-    # 確保 pre 有 open/high/low/volume（V40 已驗 sanity_test_wq101 也是這樣抽）
     n_stocks = len(pre["tickers"])
     n_days = pre["n_days"]
     o_arr = np.zeros((n_stocks, n_days), dtype=np.float32)
@@ -222,38 +212,107 @@ def main():
         h_arr[si] = df["High"].values[-n_days:]
         l_arr[si] = df["Low"].values[-n_days:]
         v_arr[si] = df["Volume"].values[-n_days:]
-    pre["open"] = o_arr
-    pre["high"] = h_arr
-    pre["low"] = l_arr
-    pre["volume"] = v_arr
+    pre["open"] = o_arr; pre["high"] = h_arr; pre["low"] = l_arr; pre["volume"] = v_arr
 
-    # === 3. 收集 samples ===
-    print(f"\n[3/5] 收集 89.90 trades 當訓練樣本...")
+    # === 3. samples ===
+    print(f"\n[3/5] 收集樣本...")
     samples = collect_samples(pre, params)
     if len(samples) < 50:
-        print(f"❌ 樣本太少 ({len(samples)})")
+        print(f"❌ 樣本太少")
         return
 
-    # === 4. 載 Kronos ===
+    # === 4. 載 Kronos + 搬 GPU（這是 v1 bug 修復重點）===
     print(f"\n[4/5] 載 Kronos model...")
-    print(f"  Loading {cfg['model_name']}...")
     tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
+    tokenizer = tokenizer.to(device)        # 🔥 關鍵 bug fix #1
+    tokenizer.eval()
     kronos = Kronos.from_pretrained(cfg["model_name"]).to(device)
-    print(f"  ✅ Kronos loaded")
+    print(f"  ✅ Kronos + tokenizer loaded on {device}")
 
     if cfg["freeze_backbone"]:
         for p in kronos.parameters():
             p.requires_grad = False
-        print(f"  Backbone frozen (3060 mode: 只 train binary head)")
+        kronos.eval()
+        print(f"  Backbone frozen")
+    else:
+        print(f"  Backbone UNFROZEN — 真 fine-tune")
 
-    # 取 hidden dim（Kronos-small d_model 預設 256）
     try:
         d_model = kronos.config.d_model
     except AttributeError:
         d_model = 256
-    print(f"  Hidden dim: {d_model}")
+    print(f"  d_model = {d_model}")
 
-    # 自訂 binary classifier head
+    # === 抽 K 線 + normalize + 建 stamp ===
+    print(f"\n  抽 K 線 + 建 stamp（lookback={LOOKBACK}）...")
+    valid_samples = []
+    klines = []     # list of (T, 6) normalized
+    stamps = []     # list of (T, 5)
+    for s in samples:
+        df, dates = extract_kline_input(s["stock_idx"], s["signal_idx"], pre, LOOKBACK)
+        if df is None or len(df) < LOOKBACK:
+            continue
+        if df["close"].isna().any() or (df["close"] <= 0).any():
+            continue
+        arr = df[["open", "high", "low", "close", "volume", "amount"]].values.astype(np.float32)
+        arr_norm, _, _ = normalize_kline(arr)
+        if not np.all(np.isfinite(arr_norm)):
+            continue
+        stamp = build_stamp(dates)
+        valid_samples.append(s)
+        klines.append(arr_norm)
+        stamps.append(stamp)
+    print(f"  Valid samples: {len(valid_samples)}")
+
+    if len(valid_samples) < 30:
+        print(f"❌ 有效樣本太少")
+        return
+
+    klines_t = torch.tensor(np.stack(klines), dtype=torch.float32)   # (N, T, 6)
+    stamps_t = torch.tensor(np.stack(stamps), dtype=torch.float32)   # (N, T, 5)
+    labels_t = torch.tensor([s["label"] for s in valid_samples], dtype=torch.float32)
+    rets_arr = np.array([s["actual_return"] for s in valid_samples])
+    day_idx_arr = np.array([s["signal_idx"] for s in valid_samples])
+
+    # === 預先 tokenize（不會變，省時間）===
+    print(f"\n  Tokenize {len(valid_samples)} 個 K-line input...")
+    bs = cfg["batch_size"]
+    s1_all = []
+    s2_all = []
+    with torch.no_grad():
+        for bi in range(0, len(klines_t), bs):
+            kx = klines_t[bi:bi + bs].to(device)
+            try:
+                s1, s2 = tokenizer.encode(kx, half=True)
+                s1_all.append(s1.cpu())
+                s2_all.append(s2.cpu())
+            except Exception as e:
+                print(f"  ❌ Tokenizer.encode 失敗: {e}")
+                print(f"     嘗試備用 API: tokenizer.encode(kx) 不帶 half")
+                try:
+                    out = tokenizer.encode(kx)
+                    if isinstance(out, tuple):
+                        s1_all.append(out[0].cpu())
+                        s2_all.append(out[1].cpu())
+                    else:
+                        # 單一 tensor 假設是 s1，s2 用 zeros
+                        s1_all.append(out.cpu())
+                        s2_all.append(torch.zeros_like(out).cpu())
+                except Exception as e2:
+                    print(f"  ❌❌ 完全失敗: {e2}")
+                    return
+    s1_all = torch.cat(s1_all, dim=0)  # (N, T)
+    s2_all = torch.cat(s2_all, dim=0)
+    print(f"  Tokens shape: s1 {s1_all.shape}, s2 {s2_all.shape}")
+
+    # === 5. CPCV LOO fine-tune ===
+    print(f"\n[5/5] CPCV LOO {N_GROUPS} groups, k={K_TEST}...")
+    groups = split_into_groups(n_days, WARMUP, N_GROUPS)
+    test_combos = list(combinations(range(N_GROUPS), K_TEST))
+    test_combos = test_combos[:cfg["n_paths"]]
+    print(f"  跑 {len(test_combos)} paths")
+
+    # Binary head
     class BinaryHead(nn.Module):
         def __init__(self, d_model, hidden=64):
             super().__init__()
@@ -264,79 +323,12 @@ def main():
                 nn.Linear(hidden, 1),
             )
 
-        def forward(self, x):
-            # x: (B, T, d_model)，取最後 token
-            last = x[:, -1, :]
-            return self.fc(last).squeeze(-1)
+        def forward(self, ctx):
+            return self.fc(ctx[:, -1, :]).squeeze(-1)  # 取最後 token
 
-    head = BinaryHead(d_model).to(device)
-    print(f"  Binary head created (d_model={d_model})")
-
-    # === 5. CPCV-aware fine-tune + evaluate ===
-    print(f"\n[5/5] CPCV LOO fine-tune × 15 path...")
-    groups = split_into_groups(n_days, WARMUP, N_GROUPS)
-    test_combos = list(combinations(range(N_GROUPS), K_TEST))
-    print(f"  CPCV {N_GROUPS} groups, k={K_TEST}, total {len(test_combos)} paths")
-
-    # ⚠️ 3060 模式只跑 1 path 驗證 pipeline，5090 跑全 15 path
-    if args.mode == "3060":
-        test_combos = test_combos[:3]  # 只跑前 3 個 path 看 pipeline 通了
-        print(f"  ⚠️ 3060 模式：只跑前 3 path 驗證 pipeline (5090 模式跑全 15)")
-
-    # Prepare K-line inputs
-    print(f"  抽 K 線輸入 (lookback={LOOKBACK})...")
-    inputs_list = []  # list of DataFrames
-    valid_samples = []
-    for s in samples:
-        df = extract_kline_input(s["stock_idx"], s["signal_idx"], pre, LOOKBACK)
-        if df is None or len(df) < LOOKBACK:
-            continue
-        if df["close"].isna().any() or (df["close"] <= 0).any():
-            continue
-        inputs_list.append(df)
-        valid_samples.append(s)
-    print(f"  Valid samples: {len(valid_samples)}")
-
-    if len(valid_samples) < 30:
-        print(f"❌ 有效樣本太少")
-        return
-
-    # === Tokenize 一次（不需要每 path 重做） ===
-    print(f"  Tokenize K-lines through Kronos tokenizer...")
-    # Kronos tokenizer 接 (B, T, 6) tensor (OHLCV + amount)
-    # 用 batch 處理避免 OOM
-    bs = cfg["batch_size"]
-    all_tokens = []  # list of (T, d_model) embeddings
-    kronos.eval()
-    with torch.no_grad():
-        for bi in range(0, len(inputs_list), bs):
-            batch_dfs = inputs_list[bi:bi + bs]
-            # 構建 (B, T, 6) tensor
-            arr = np.stack([df[["open", "high", "low", "close", "volume", "amount"]].values
-                            for df in batch_dfs], axis=0)
-            arr_t = torch.tensor(arr, dtype=torch.float32, device=device)
-            # 簡化：直接過 Kronos forward，取 last hidden state
-            # (Kronos API: tokenizer 先量化再過 transformer，但 fine-tune 要用 hidden states)
-            # 這裡用 placeholder 邏輯，實際 5090 跑時要對齊 Kronos forward signature
-            try:
-                # 嘗試用 tokenizer.encode 拿 token ids，再過 kronos forward
-                token_ids = tokenizer.encode(arr_t)  # (B, T)
-                # kronos forward 需要 token ids
-                hidden = kronos.transformer(token_ids).last_hidden_state  # (B, T, d_model)
-            except Exception as e:
-                # Fallback：用 tokenizer 內部 encoder
-                print(f"  ⚠️ Kronos forward API 不確定（{e}），用 placeholder embedding")
-                hidden = torch.randn(arr_t.shape[0], LOOKBACK, d_model, device=device)
-            all_tokens.append(hidden.cpu())
-    all_tokens = torch.cat(all_tokens, dim=0)  # (N, T, d_model)
-    print(f"  All tokens shape: {all_tokens.shape}")
-
-    labels = torch.tensor([s["label"] for s in valid_samples], dtype=torch.float32)
-    rets = np.array([s["actual_return"] for s in valid_samples])
-    day_idx_arr = np.array([s["signal_idx"] for s in valid_samples])
-
-    # === Per-path fine-tune + evaluate ===
     per_path_results = []
+    t_start = time.time()
+
     for pi, gi in enumerate(test_combos):
         print(f"\n  Path {pi + 1}/{len(test_combos)}: test groups {gi}")
         ranges = [groups[g] for g in gi]
@@ -346,107 +338,157 @@ def main():
         in_train = ~in_test
 
         if in_test.sum() < 5 or in_train.sum() < 20:
-            print(f"    skip: train {in_train.sum()} test {in_test.sum()} 樣本不足")
+            print(f"    skip: train {in_train.sum()} test {in_test.sum()}")
             continue
 
-        # train head
+        # 重新 init head 每 path
         head = BinaryHead(d_model).to(device)
-        opt = torch.optim.Adam(head.parameters(), lr=cfg["lr"])
+
+        # Optimizer：unfreeze 時要包含 kronos params
+        if cfg["freeze_backbone"]:
+            opt = torch.optim.Adam(head.parameters(), lr=cfg["lr"])
+        else:
+            opt = torch.optim.AdamW(
+                list(head.parameters()) + list(kronos.parameters()),
+                lr=cfg["lr"], weight_decay=0.01
+            )
+
         bce = nn.BCEWithLogitsLoss()
 
-        train_x = all_tokens[in_train].to(device)
-        train_y = labels[in_train].to(device)
-        test_x = all_tokens[in_test].to(device)
-        test_y = labels[in_test].numpy()
-        test_rets = rets[in_test]
+        train_idx_np = np.where(in_train)[0]
+        test_idx_np = np.where(in_test)[0]
 
         for epoch in range(cfg["epochs"]):
+            kronos.train() if not cfg["freeze_backbone"] else kronos.eval()
             head.train()
-            # mini-batch
-            idx = torch.randperm(len(train_x))
+            np.random.shuffle(train_idx_np)
             losses = []
-            for bi in range(0, len(idx), bs):
-                bidx = idx[bi:bi + bs]
-                logits = head(train_x[bidx])
-                loss = bce(logits, train_y[bidx])
+            for bi in range(0, len(train_idx_np), bs):
+                bidx = train_idx_np[bi:bi + bs]
+                bs1 = s1_all[bidx].to(device)
+                bs2 = s2_all[bidx].to(device)
+                bstamp = stamps_t[bidx].to(device)
+                blabel = labels_t[bidx].to(device)
+
+                # forward through Kronos.decode_s1 → context
+                if cfg["freeze_backbone"]:
+                    with torch.no_grad():
+                        _, ctx = kronos.decode_s1(bs1, bs2, stamp=bstamp)
+                else:
+                    _, ctx = kronos.decode_s1(bs1, bs2, stamp=bstamp)
+
+                logits = head(ctx)
+                loss = bce(logits, blabel)
                 opt.zero_grad()
                 loss.backward()
+                # gradient clip 防爆炸
+                if not cfg["freeze_backbone"]:
+                    torch.nn.utils.clip_grad_norm_(kronos.parameters(), 1.0)
                 opt.step()
                 losses.append(loss.item())
             print(f"    Epoch {epoch + 1}/{cfg['epochs']}: loss {np.mean(losses):.4f}")
 
-        # evaluate
-        head.eval()
+        # Eval
+        kronos.eval(); head.eval()
+        proba_list = []
         with torch.no_grad():
-            test_logits = head(test_x).cpu().numpy()
-            test_proba = 1 / (1 + np.exp(-test_logits))
+            for bi in range(0, len(test_idx_np), bs):
+                bidx = test_idx_np[bi:bi + bs]
+                bs1 = s1_all[bidx].to(device)
+                bs2 = s2_all[bidx].to(device)
+                bstamp = stamps_t[bidx].to(device)
+                _, ctx = kronos.decode_s1(bs1, bs2, stamp=bstamp)
+                logits = head(ctx)
+                proba_list.append(torch.sigmoid(logits).cpu().numpy())
+        test_proba = np.concatenate(proba_list)
+        test_rets = rets_arr[test_idx_np]
 
-        # filter by threshold 0.5
         keep = test_proba > 0.5
         if keep.sum() < 3:
-            print(f"    test 過濾後 < 3，skip")
+            print(f"    test 過 0.5 < 3 筆，try 0.4")
+            keep = test_proba > 0.4
+        if keep.sum() < 3:
+            print(f"    skip: 過濾後仍不足")
             continue
 
         raw_wr = (test_rets > 0).mean() * 100
         filt_wr = (test_rets[keep] > 0).mean() * 100
         wr_imp = filt_wr - raw_wr
         kept_pct = keep.sum() / len(test_rets) * 100
-        raw_total = test_rets.sum()
-        filt_total = test_rets[keep].sum()
+        raw_total = float(test_rets.sum())
+        filt_total = float(test_rets[keep].sum())
+        total_imp = filt_total - raw_total
 
-        print(f"    raw wr {raw_wr:.1f}% → filt wr {filt_wr:.1f}% (Δ {wr_imp:+.1f}%, kept {kept_pct:.0f}%)")
-        print(f"    raw total {raw_total:+.1f}% → filt total {filt_total:+.1f}%")
+        print(f"    raw wr {raw_wr:.1f}% → filt {filt_wr:.1f}% (Δ {wr_imp:+.1f}%, kept {kept_pct:.0f}%)")
+        print(f"    raw total {raw_total:+.1f}% → filt {filt_total:+.1f}% (Δ {total_imp:+.1f}%)")
 
         per_path_results.append({
-            "path": list(gi), "wr_imp": wr_imp, "kept_pct": kept_pct,
-            "raw_wr": raw_wr, "filt_wr": filt_wr,
-            "raw_total": raw_total, "filt_total": filt_total,
+            "path": list(gi), "wr_imp": float(wr_imp), "kept_pct": float(kept_pct),
+            "raw_wr": float(raw_wr), "filt_wr": float(filt_wr),
+            "raw_total": raw_total, "filt_total": filt_total, "total_imp": float(total_imp),
         })
+
+        # 顯示估計剩餘時間
+        elapsed = time.time() - t_start
+        avg_per_path = elapsed / (pi + 1)
+        remaining = avg_per_path * (len(test_combos) - pi - 1)
+        print(f"    [計時] 已 {elapsed/60:.1f}min, 平均 {avg_per_path/60:.1f}min/path, 預估剩餘 {remaining/60:.1f}min")
 
     # === Summary ===
     print()
     print("=" * 80)
-    print("📊 V41 Kronos Fine-tune 結果")
+    print(f"📊 V41 Kronos Fine-tune ({args.mode}) 結果")
     print("=" * 80)
 
     if not per_path_results:
-        print(f"\n  ❌ 0 path 完成 — pipeline 有問題")
+        print(f"\n  ❌ 0 path 完成")
         return
 
     wr_imps = np.array([r["wr_imp"] for r in per_path_results])
+    total_imps = np.array([r["total_imp"] for r in per_path_results])
     n_break = int((wr_imps >= 5).sum())
     n_pos = int((wr_imps > 0).sum())
+
     print(f"\n  Path 完成: {len(per_path_results)}")
-    print(f"  n_break (wr↑≥5%): {n_break}")
-    print(f"  n_pos (wr↑>0): {n_pos}")
+    print(f"  n_break (wr↑≥5%): {n_break}/{len(per_path_results)}")
+    print(f"  n_pos (wr↑>0): {n_pos}/{len(per_path_results)}")
     print(f"  mean wr↑: {wr_imps.mean():+.2f}%")
     if len(wr_imps) >= 4:
         print(f"  p25 wr↑: {np.percentile(wr_imps, 25):+.2f}%")
-    print(f"  min/max: {wr_imps.min():+.2f}% / {wr_imps.max():+.2f}%")
+    print(f"  min/max wr↑: {wr_imps.min():+.2f}% / {wr_imps.max():+.2f}%")
+    print(f"  mean total↑: {total_imps.mean():+.1f}%")
+    print(f"  min/max total↑: {total_imps.min():+.1f}% / {total_imps.max():+.1f}%")
 
-    print(f"\n  Baseline (前 31 種失敗):")
+    print(f"\n  Baseline:")
     print(f"    V38 Kronos zero-shot: 11/14 mean +14.28% backfill totΔ -87% (撤回)")
-    print(f"    V40 WQ101 top5 combo median: 15/15 mean +10.89% backfill totΔ -31% (拒)")
+    print(f"    V40 WQ101 top5 combo: 15/15 mean +10.89% backfill totΔ -31% (拒)")
 
-    if args.mode == "3060":
-        print(f"\n  ⚠️ 3060 模式只跑 {len(per_path_results)} path 驗證 pipeline")
-        print(f"     5090 到貨後改 --mode 5090 跑全 15 path + Kronos-base + unfreeze backbone")
+    print(f"\n  最終判定：")
+    if cfg["n_paths"] < 15:
+        print(f"    ⚠️ {args.mode} 模式只跑 {len(per_path_results)} path")
+        if not cfg["freeze_backbone"] and n_break >= 1:
+            print(f"    pipeline OK + 有 path 過 +5%，等 5090 跑全 15 path 看是否泛化")
+        elif cfg["freeze_backbone"]:
+            print(f"    pipeline 通了（frozen 不會強），改 --mode 3060real 跑真版本")
     else:
-        print(f"\n  最終判定：")
-        if n_break >= 12 and wr_imps.mean() >= 5:
-            print(f"    🟢🟢🟢 strict CPCV → 跑 backfill 看 totΔ 是否 > -10%")
-        elif n_break >= 10:
+        if n_break >= 12 and wr_imps.mean() >= 5 and np.percentile(wr_imps, 25) >= 0:
+            print(f"    🟢🟢🟢 strict CPCV！跑 backfill 看 totΔ")
+        elif n_break >= 10 and wr_imps.mean() >= 4:
             print(f"    🟢🟢 real → backfill 驗證")
         elif n_break >= 7:
             print(f"    🟢 marginal → 跟 V39 同級")
         else:
-            print(f"    🔴 連真 fine-tune 都救不了，89.90 終局")
+            print(f"    🔴 連真 fine-tune 也救不了，89.90 終局，5090 轉 NSGA-II")
 
     out = os.path.join(USER_SE, f"finetune_kronos_{args.mode}_results.json")
     with open(out, "w") as f:
         json.dump({"mode": args.mode, "config": cfg, "per_path": per_path_results,
-                   "n_break": n_break, "mean_wr_imp": float(wr_imps.mean())}, f, indent=2)
+                   "n_break": n_break, "n_pos": n_pos,
+                   "mean_wr_imp": float(wr_imps.mean()),
+                   "mean_total_imp": float(total_imps.mean()),
+                   "elapsed_min": (time.time() - t_start) / 60}, f, indent=2)
     print(f"\n結果存到 {out}")
+    print(f"總耗時: {(time.time() - t_start)/60:.1f} 分鐘")
 
 
 if __name__ == "__main__":
