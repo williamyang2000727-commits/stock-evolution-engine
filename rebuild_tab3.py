@@ -157,3 +157,159 @@ try:
 except Exception as e:
     print(f"  ❌ Push fail: {e}")
     sys.exit(1)
+sys.exit(0)
+
+
+# ─────── 以下廢棄（保留參考）— Step 6: 同時寫 scan_results 的 pending ───────
+print(f"\n[6/6] 用 cpu_replay 結果算明天 pending 寫進 scan_results.json ...")
+
+
+def should_sell_full(bp, cur, peak, days_held, params):
+    """89.905 啟用的 5 條賣出規則（mirror sell_rules.py 但只含不靠 indicator 的部分）"""
+    if bp <= 0 or cur <= 0 or days_held < 1:
+        return None
+    ret = (cur / bp - 1) * 100
+    peak_gain = (peak / bp - 1) * 100 if bp > 0 else 0
+    # 1. 停損 / 保本
+    eff_stop = params.get("stop_loss", -20)
+    if params.get("use_breakeven", 0) and peak_gain >= params.get("breakeven_trigger", 20):
+        eff_stop = 0
+    if ret <= eff_stop:
+        return f"保本出場 {ret:+.1f}%（曾漲 +{peak_gain:.1f}%）" if eff_stop == 0 else f"停損 {ret:+.1f}%"
+    # 2. 停利
+    if params.get("use_take_profit", 1) and ret >= params.get("take_profit", 80):
+        return f"停利 +{ret:.1f}%"
+    # 3. 移動停利
+    trailing = params.get("trailing_stop", 0)
+    if trailing > 0 and peak > bp * 1.01:
+        dd = (cur / peak - 1) * 100
+        if dd <= -trailing:
+            return f"移動停利 {dd:.1f}%"
+    # 4. 鎖利
+    if params.get("use_profit_lock", 0):
+        if peak_gain >= params.get("lock_trigger", 30) and ret < params.get("lock_floor", 10):
+            return f"鎖利出場（曾 +{peak_gain:.1f}% 跌回 {ret:+.1f}%）"
+    # 5. 到期
+    if days_held >= int(params.get("hold_days", 30)):
+        return f"到期 {days_held} 天 {ret:+.1f}%"
+    return None
+
+
+# 取得最新「持有中」+ 算每檔賣出條件
+from datetime import datetime as _dt, timezone as _tz, timedelta as _td
+TW = _tz(_td(hours=8))
+
+new_pending_sells = []
+new_pending_buy = None
+for h in holding:
+    bp = h["buy_price"]
+    cur = h["sell_price"]  # rebuild_tab3 寫的 sell_price = 末日 close
+    peak = h.get("peak_price", bp)
+    days_held = h.get("hold_days", 0)
+    reason = should_sell_full(bp, cur, peak, days_held, p)
+    if reason:
+        new_pending_sells.append({
+            "ticker": h["ticker"],
+            "name": h["name"],
+            "reason": reason,
+        })
+        print(f"  📤 PENDING SELL: {h['name']} ({h['ticker']}) — {reason}")
+
+# 算 pending_buy：如果有空位（賣完或本來就空），找 universe top-1 score
+max_pos = int(p.get("max_positions", 2))
+holdings_after_sell = len(holding) - len(new_pending_sells)
+if holdings_after_sell < max_pos:
+    # 用 cpu_replay 末日的 universe + score 找 top-1（mirror cpu_replay buy 邏輯）
+    last_day = pre["n_days"] - 1
+    top100_mask = pre.get("top100_mask")
+    if top100_mask is not None:
+        in_uni_si = np.where(top100_mask[:, last_day] >= 0.5)[0]
+        # 已持有的不能再買
+        held_tks = {h["ticker"] for h in holding} - {ps["ticker"] for ps in new_pending_sells}
+
+        # 算每檔 score（mirror cpu_replay _score_stock + line 1601-1609 inline 加分）
+        rsi = pre["rsi"]; bb_pos = pre["bb_pos"]; vol_ratio = pre["vol_ratio"]
+        close = pre["close"]; macd_line = pre["macd_line"]; macd_hist = pre["macd_hist"]
+        k_val = pre["k_val"]; d_val = pre["d_val"]
+        williams_r = pre["williams_r"]; near_high = pre["near_high"]
+        is_green = pre.get("is_green"); gap = pre.get("gap"); ma60 = pre.get("ma60")
+        vol_prev = pre.get("vol_prev")
+        squeeze_fire = pre.get("squeeze_fire"); new_high_60 = pre.get("new_high_60")
+        adx_arr = pre.get("adx"); bias_arr = pre.get("bias")
+        obv_rising_arr = pre.get("obv_rising"); atr_pct_arr = pre.get("atr_pct")
+        sector_hot = pre.get("sector_hot")
+        up_days_arr = pre.get("up_days"); week52_arr = pre.get("week52_pos")
+        vol_up_days_arr = pre.get("vol_up_days"); mom_accel_arr = pre.get("mom_accel")
+        ma_fw = int(p.get("ma_fast_w", 5))
+        mom_days = int(p.get("momentum_days", 5))
+        maf = pre["ma_d"].get(ma_fw, pre["ma_d"][5])
+        mom = pre["mom_d"].get(mom_days, pre["mom_d"][5])
+
+        def score(si, d):
+            sc = 0.0
+            if int(p.get("w_rsi",0))>0 and rsi[si,d]>=p.get("rsi_th",55): sc+=int(p["w_rsi"])
+            if int(p.get("w_bb",0))>0 and bb_pos[si,d]>=p.get("bb_th",0.7): sc+=int(p["w_bb"])
+            if int(p.get("w_vol",0))>0 and vol_ratio[si,d]>=p.get("vol_th",3): sc+=int(p["w_vol"])
+            if int(p.get("w_ma",0))>0 and close[si,d]>maf[si,d]: sc+=int(p["w_ma"])
+            if int(p.get("w_macd",0))>0:
+                mm=int(p.get("macd_mode",2)); ok=False
+                if mm==0 and d>=1 and macd_hist[si,d]>0 and macd_hist[si,d-1]<=0: ok=True
+                elif mm==1 and macd_line[si,d]>0: ok=True
+                elif mm==2 and macd_hist[si,d]>0: ok=True
+                if ok: sc+=int(p["w_macd"])
+            if int(p.get("w_kd",0))>0:
+                ok=k_val[si,d]>=p.get("kd_th",50)
+                if ok and p.get("kd_cross",0) and d>=1: ok=k_val[si,d]>d_val[si,d] and k_val[si,d-1]<=d_val[si,d-1]
+                if ok: sc+=int(p["w_kd"])
+            if int(p.get("w_wr",0))>0 and williams_r[si,d]>=p.get("wr_th",-30): sc+=int(p["w_wr"])
+            if int(p.get("w_mom",0))>0 and mom[si,d]>=p.get("mom_th",3): sc+=int(p["w_mom"])
+            if int(p.get("w_near_high",0))>0 and abs(near_high[si,d])<=p.get("near_high_pct",10): sc+=int(p["w_near_high"])
+            if int(p.get("w_squeeze",0))>0 and squeeze_fire is not None and squeeze_fire[si,d]>0.5: sc+=int(p["w_squeeze"])
+            if int(p.get("w_new_high",0))>0 and new_high_60 is not None and new_high_60[si,d]>0.5: sc+=int(p["w_new_high"])
+            if int(p.get("w_adx",0))>0 and adx_arr is not None and adx_arr[si,d]>=p.get("adx_th",25): sc+=int(p["w_adx"])
+            if int(p.get("w_bias",0))>0 and bias_arr is not None and bias_arr[si,d]>=0 and bias_arr[si,d]<=p.get("bias_max",15): sc+=int(p["w_bias"])
+            if int(p.get("w_obv",0))>0 and obv_rising_arr is not None and obv_rising_arr[si,d]>0.5: sc+=int(p["w_obv"])
+            if int(p.get("w_atr",0))>0 and atr_pct_arr is not None and atr_pct_arr[si,d]>=p.get("atr_min",2): sc+=int(p["w_atr"])
+            if int(p.get("w_up_days",0))>0 and up_days_arr is not None and up_days_arr[si,d]>=p.get("up_days_min",3): sc+=int(p["w_up_days"])
+            if int(p.get("w_week52",0))>0 and week52_arr is not None and week52_arr[si,d]>=p.get("week52_min",0.7): sc+=int(p["w_week52"])
+            if int(p.get("w_vol_up_days",0))>0 and vol_up_days_arr is not None and vol_up_days_arr[si,d]>=p.get("vol_up_days_min",3): sc+=int(p["w_vol_up_days"])
+            if int(p.get("w_mom_accel",0))>0 and mom_accel_arr is not None and mom_accel_arr[si,d]>=p.get("mom_accel_min",2): sc+=int(p["w_mom_accel"])
+            # inline (line 1601-1609)
+            cg = int(p.get("consecutive_green", 0))
+            if cg >= 1 and is_green is not None:
+                ok = True
+                for g in range(cg):
+                    if d - g < 0 or is_green[si, d-g] != 1: ok = False; break
+                if ok: sc += 1
+            if p.get("gap_up", 0) and gap is not None and gap[si, d] >= 1.0: sc += 1
+            if p.get("above_ma60", 0) and ma60 is not None and close[si, d] >= ma60[si, d]: sc += 1
+            if p.get("vol_gt_yesterday", 0) and d >= 1 and vol_prev is not None and vol_ratio[si, d] > vol_prev[si, d]: sc += 1
+            return sc
+
+        buy_th = int(p.get("buy_threshold", 8))
+        candidates = sorted(
+            [(score(si, last_day), si) for si in in_uni_si if pre["tickers"][si] not in held_tks],
+            reverse=True,
+        )
+        for sc, si in candidates:
+            if sc < buy_th:
+                break
+            new_pending_buy = {
+                "ticker": pre["tickers"][si],
+                "name": "",  # 名字晚點補（cpu_replay 不存名稱對應）
+                "score": float(sc),
+                "close": float(pre["close"][si, last_day]),
+            }
+            print(f"  🎯 PENDING BUY: {pre['tickers'][si]} score={sc} close={float(pre['close'][si, last_day]):.2f}")
+            break
+
+# 讀現有 scan_results 維持其他欄位（buy_signals top10 等）
+try:
+    cur_scan = fetch_gist(DATA_GIST, "scan_results.json")
+    cur_scan["pending_sells"] = new_pending_sells
+    cur_scan["pending_buy"] = new_pending_buy
+    cur_scan["pending_source"] = f"rebuild_tab3 cpu_replay 1500d @ {_dt.now(TW).isoformat()}"
+    write_gist(DATA_GIST, "scan_results.json", cur_scan)
+    print(f"  ✅ scan_results.json pending 已更新（cpu_replay 算的真公式）")
+except Exception as e:
+    print(f"  ⚠️ 寫 pending 失敗: {e}")
