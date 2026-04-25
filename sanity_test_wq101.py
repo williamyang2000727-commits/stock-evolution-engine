@@ -434,7 +434,10 @@ def main():
 
     # === Step 4: per-alpha Spearman ===
     print(f"\n[4/4] Per-alpha Spearman correlation...\n")
-    alpha_names = [c for c in df.columns if c.startswith("a")]
+    # 只抓 a + 3 位數字（a001-a999），避免吃到 actual_return
+    import re
+    alpha_pattern = re.compile(r"^a\d{3}$")
+    alpha_names = [c for c in df.columns if alpha_pattern.match(c)]
     rets = df["actual_return"].values
 
     results = []
