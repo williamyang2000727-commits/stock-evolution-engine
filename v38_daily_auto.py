@@ -21,7 +21,9 @@ import urllib.request
 import urllib.parse
 
 USER_SE = os.path.join(os.path.expanduser("~"), "stock-evolution")
-LOG_PATH = os.path.join(USER_SE, "v38_daily_auto.log")
+# Script 路徑：Windows 用 C:\stock-evolution（V34 教訓：不是 $HOME/stock-evolution）
+SCRIPT_DIR = "C:\\stock-evolution" if os.name == "nt" and os.path.isdir("C:\\stock-evolution") else USER_SE
+LOG_PATH = os.path.join(SCRIPT_DIR, "v38_daily_auto.log")
 PAPER_LOG = os.path.join(USER_SE, "paper_trade_log.json")
 
 # Telegram (V34 sec)
@@ -62,10 +64,10 @@ def send_telegram(text: str):
 
 def run_command(cmd: list, label: str, timeout: int = 600) -> tuple:
     """跑 subprocess command，回傳 (success, output)"""
-    log(f">> {label}: {' '.join(cmd)}")
+    log(f">> {label}: {' '.join(cmd)} (cwd={SCRIPT_DIR})")
     try:
         result = subprocess.run(
-            cmd, cwd=USER_SE, capture_output=True, text=True,
+            cmd, cwd=SCRIPT_DIR, capture_output=True, text=True,
             timeout=timeout, encoding="utf-8", errors="replace"
         )
         if result.returncode == 0:
