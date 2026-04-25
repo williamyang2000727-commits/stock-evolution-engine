@@ -66,9 +66,13 @@ def run_command(cmd: list, label: str, timeout: int = 600) -> tuple:
     """跑 subprocess command，回傳 (success, output)"""
     log(f">> {label}: {' '.join(cmd)} (cwd={SCRIPT_DIR})")
     try:
+        # Windows cp950 → UTF-8 強制（避免 emoji 炸）
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["KMP_DUPLICATE_LIB_OK"] = "TRUE"  # OpenMP 衝突 workaround
         result = subprocess.run(
             cmd, cwd=SCRIPT_DIR, capture_output=True, text=True,
-            timeout=timeout, encoding="utf-8", errors="replace"
+            timeout=timeout, encoding="utf-8", errors="replace", env=env,
         )
         if result.returncode == 0:
             log(f"   ✅ {label} ok")
