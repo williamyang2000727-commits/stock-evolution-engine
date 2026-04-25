@@ -1,5 +1,12 @@
 """
-動態股票池回測 v3 — 直接用 precompute() 指標，跟 GPU 完全一致
+動態股票池回測 v4 — 對齊 Web Tab 3（自動全 cache，不再寫死 900）
+
+v3 → v4 改動（2026-04-25 William 指出 1500 cache 都有了，不該寫死 900）：
+  - TARGET_DAYS 自動偵測 1500/1200/900（跟 daily_scan 一致）
+  - 全 cache 跑 → 對齊 Tab 3 的 backtest_results.json
+
+注意：cpu_replay 內部固定 day 60 warmup，所以前 60 天不交易（不是 reverse WF）
+     precompute 印「反向 WF」是評估 gate 用的標籤，不影響 cpu_replay 全期模擬
 """
 import numpy as np
 import json, os, sys, types
@@ -14,7 +21,15 @@ with open("best_strategy.json", encoding="utf-8") as f:
 p = strategy["params"]
 print(f"v{strategy.get('version','?')} | {strategy.get('score',0):.2f}分")
 
-TARGET_DAYS = 900
+# v4: 自動偵測 TARGET_DAYS，全 cache 跑，對齊 Tab 3 的 daily_scan
+_lens = [len(v) for v in data.values()]
+if sum(1 for l in _lens if l >= 1500) >= 500:
+    TARGET_DAYS = 1500
+elif sum(1 for l in _lens if l >= 1200) >= 800:
+    TARGET_DAYS = 1200
+else:
+    TARGET_DAYS = 900
+print(f"自動選 TARGET_DAYS = {TARGET_DAYS}（跟 daily_scan / Tab 3 一致）")
 data = {k: v.tail(TARGET_DAYS) for k, v in data.items() if len(v) >= TARGET_DAYS}
 pre = precompute(data)
 ns, nd = pre["n_stocks"], pre["n_days"]
@@ -65,5 +80,18 @@ if holding:
         print(f"  {t['name']}({tk}) | {t['buy_date'][5:]} 買 {t['buy_price']} | 現 {t['sell_price']} | {t['return']:+.2f}%")
 else:
     print(f"\n⚠️ 沒有持有中！推 Web 前要手動補。")
+
+# === 對比 Tab 3 ===
+print(f"\n{'='*60}")
+print(f" 對比 Web Tab 3（backtest_results.json）")
+print(f"{'='*60}")
+print(f" Tab 3 (4/24)  ：136 筆 / +2217.5% / 勝率 69.9% / 持倉 達邁+聯茂")
+print(f" 本次 realistic：{n} 筆 / {total:+.1f}% / 勝率 {wins/n*100:.1f}% / 持倉 {len(holding)} 檔")
+print(f"")
+print(f" 偏差說明：")
+print(f"   - Tab 3 是 daily_scan 每天累積的「真實上線軌跡」（凍結）")
+print(f"   - realistic 是用「今天 cache」從頭重模擬的「假設情境」")
+print(f"   - 兩者數字可能差 5-15%，越接近今天偏差越大（cache drift）")
+print(f"   - Tab 3 才是實盤戰況真相")
 
 input("\n按 Enter 結束...")
