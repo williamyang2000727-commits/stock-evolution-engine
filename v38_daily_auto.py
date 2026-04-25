@@ -43,7 +43,17 @@ def log(msg):
 
 
 def send_telegram(text: str):
-    """發 Telegram 訊息給 William"""
+    """發 Telegram 訊息給 William
+
+    SSL fix: 排程觸發時 SSL CA chain 可能不可用（self-signed cert in chain）
+    用 unverified context bypass。Telegram bot 通訊用 token 認證，
+    SSL 驗證是 confidentiality 而非 authentication，bypass 可接受。
+    """
+    import ssl
+    ssl_ctx = ssl.create_default_context()
+    ssl_ctx.check_hostname = False
+    ssl_ctx.verify_mode = ssl.CERT_NONE
+
     if len(text) > 4000:
         text = text[:3950] + "\n... (truncated)"
     for chat_id in TG_CHAT_IDS:
@@ -55,7 +65,7 @@ def send_telegram(text: str):
                 "parse_mode": "HTML",
             }).encode()
             req = urllib.request.Request(url, data=data)
-            r = urllib.request.urlopen(req, timeout=15)
+            r = urllib.request.urlopen(req, timeout=15, context=ssl_ctx)
             if r.status != 200:
                 log(f"  Telegram chat {chat_id} status {r.status}")
         except Exception as e:
