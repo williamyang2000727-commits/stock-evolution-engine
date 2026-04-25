@@ -17,7 +17,7 @@ sys.modules["cupy"] = mock_cp
 import numpy as np
 import pandas as pd
 from datetime import datetime, timezone, timedelta
-from gpu_cupy_evolve import precompute, cpu_replay, download_data
+from gpu_cupy_evolve import precompute, cpu_replay, download_data, get_name as _gpu_get_name
 
 GH_TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GIST_TOKEN")
 if not GH_TOKEN:
@@ -254,12 +254,9 @@ if pending_buy:
     print(f"  🎯 PENDING BUY (top 1): {pending_buy['ticker']} score={pending_buy['score']}")
 print(f"  buy_signals top 20 寫入 ({len(buy_signals)} 達標)")
 
-# 補 ticker name（用 cache 自帶的 column 或 default）
+# 補 ticker name（用 gpu_cupy_evolve.get_name → CN_NAMES dict）
 def get_name(tk):
-    df = data_t.get(tk)
-    if df is not None and "Name" in df.columns and len(df) > 0:
-        return str(df["Name"].iloc[-1])
-    return tk
+    return _gpu_get_name(tk)
 
 for c in buy_signals:
     c["name"] = get_name(c["ticker"])
