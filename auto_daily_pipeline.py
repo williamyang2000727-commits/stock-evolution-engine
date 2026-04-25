@@ -99,6 +99,70 @@ def _run_subprocess(py, script, timeout):
     return r.returncode, out, err
 
 
+# ─────── Step 0: 自動拉新版檔案（從 GitHub）───────
+def step_self_update():
+    """從 GitHub 拉最新 4 個關鍵檔案，避免本地 stale"""
+    import base64
+    repo = "williamyang2000727-commits/stock-evolution-engine"
+    files_to_sync = [
+        "auto_daily_pipeline.py",  # 自己（特殊處理：寫 .new 下次生效）
+        "init_state_gist.py",
+        "rebuild_tab3.py",
+        "update_cache.py",
+    ]
+    n_updated = 0
+    for fn in files_to_sync:
+        url = f"https://api.github.com/repos/{repo}/contents/{fn}"
+        try:
+            req = urllib.request.Request(url)
+            r = urllib.request.urlopen(req, timeout=30)
+            d = json.loads(r.read())
+            new_content = base64.b64decode(d["content"])
+            local_path = os.path.join(USER_SE, fn)
+            old_content = b""
+            if os.path.exists(local_path):
+                with open(local_path, "rb") as f:
+                    old_content = f.read()
+            if new_content != old_content:
+                if fn == "auto_daily_pipeline.py":
+                    # 自己有更新 → 寫 .new 檔，下次啟動時換
+                    with open(local_path + ".new", "wb") as f:
+                        f.write(new_content)
+                    log(f"  ⚠️ {fn} 有新版，下次啟動時自動換（不 overwrite 自己避免崩潰）")
+                    continue
+                with open(local_path, "wb") as f:
+                    f.write(new_content)
+                log(f"  ⬇️ 更新 {fn}")
+                n_updated += 1
+        except Exception as e:
+            log(f"  ⚠️ 拉 {fn} 失敗（不擋繼續）: {e}")
+    if n_updated == 0:
+        log("  所有檔案都是最新版")
+    return n_updated
+
+
+def _swap_self_if_pending():
+    """如果有 auto_daily_pipeline.py.new，啟動時換上去再重啟"""
+    here = os.path.abspath(__file__)
+    new_file = here + ".new"
+    if os.path.exists(new_file):
+        try:
+            with open(new_file, "rb") as f:
+                new_content = f.read()
+            backup = here + ".backup"
+            if os.path.exists(here):
+                with open(here, "rb") as old_f:
+                    with open(backup, "wb") as bf:
+                        bf.write(old_f.read())
+            with open(here, "wb") as f:
+                f.write(new_content)
+            os.remove(new_file)
+            print(f"  ⬇️ 已換新版 {os.path.basename(here)}（舊版備份 .backup），重啟 ...")
+            os.execv(sys.executable, [sys.executable] + sys.argv)
+        except Exception as e:
+            print(f"  ❌ swap self failed: {e}")
+
+
 def step_update_cache():
     """抓 TWSE/TPEX/yfinance 今日 K 線 append 到 cache"""
     py = sys.executable
@@ -181,6 +245,9 @@ def health_check():
 
 # ─────── Main ───────
 def main():
+    # 啟動時：如果有 .new 待換，先換再重啟
+    _swap_self_if_pending()
+
     log("\n" + "=" * 70)
     log("🚀 Auto daily pipeline 啟動")
     log("=" * 70)
@@ -195,6 +262,7 @@ def main():
         log("  ⚡ --force mode：強制執行（即使週末/假日）")
 
     try:
+        run_step("Step 0: self-update from GitHub", step_self_update)
         run_step("Step 1: update_cache", step_update_cache)
         run_step("Step 2: init_state_gist", step_init_state)
         run_step("Step 3: rebuild_tab3", step_rebuild_tab3)
