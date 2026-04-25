@@ -420,30 +420,57 @@ def main():
         test_proba = np.concatenate(proba_list)
         test_rets = rets_arr[test_idx_np]
 
-        keep = test_proba > 0.5
-        if keep.sum() < 3:
-            print(f"    test 過 0.5 < 3 筆，try 0.4")
-            keep = test_proba > 0.4
-        if keep.sum() < 3:
-            print(f"    skip: 過濾後仍不足")
-            continue
-
+        # === Multi-threshold sweep（V40 教訓：median split 過寬，要試 top30/top20）===
         raw_wr = (test_rets > 0).mean() * 100
-        filt_wr = (test_rets[keep] > 0).mean() * 100
-        wr_imp = filt_wr - raw_wr
-        kept_pct = keep.sum() / len(test_rets) * 100
         raw_total = float(test_rets.sum())
-        filt_total = float(test_rets[keep].sum())
-        total_imp = filt_total - raw_total
 
-        print(f"    raw wr {raw_wr:.1f}% → filt {filt_wr:.1f}% (Δ {wr_imp:+.1f}%, kept {kept_pct:.0f}%)")
-        print(f"    raw total {raw_total:+.1f}% → filt {filt_total:+.1f}% (Δ {total_imp:+.1f}%)")
+        # 找該 path proba 分位數，跑多 threshold
+        thresholds = [
+            ("median", np.median(test_proba)),
+            ("top50", np.percentile(test_proba, 50)),
+            ("top30", np.percentile(test_proba, 70)),
+            ("top20", np.percentile(test_proba, 80)),
+            ("th0.5", 0.5),
+            ("th0.55", 0.55),
+        ]
 
-        per_path_results.append({
-            "path": list(gi), "wr_imp": float(wr_imp), "kept_pct": float(kept_pct),
-            "raw_wr": float(raw_wr), "filt_wr": float(filt_wr),
-            "raw_total": raw_total, "filt_total": filt_total, "total_imp": float(total_imp),
-        })
+        path_thresh_results = []
+        for tname, tval in thresholds:
+            keep = test_proba > tval
+            if keep.sum() < 3:
+                continue
+            filt_wr = (test_rets[keep] > 0).mean() * 100
+            filt_total = float(test_rets[keep].sum())
+            wr_imp = filt_wr - raw_wr
+            total_imp = filt_total - raw_total
+            kept_pct = keep.sum() / len(test_rets) * 100
+            path_thresh_results.append({
+                "thresh": tname, "thresh_val": float(tval),
+                "wr_imp": float(wr_imp), "total_imp": float(total_imp),
+                "kept_pct": float(kept_pct), "filt_wr": float(filt_wr),
+                "filt_total": float(filt_total),
+            })
+
+        # 印每個 threshold
+        for r in path_thresh_results:
+            print(f"    {r['thresh']:<8} (>{r['thresh_val']:.3f}): "
+                  f"wr {r['filt_wr']:.1f}% (Δ {r['wr_imp']:+.1f}%), "
+                  f"total {r['filt_total']:+.1f}% (Δ {r['total_imp']:+.1f}%), kept {r['kept_pct']:.0f}%")
+
+        # 取 wr_imp 最高的當該 path 代表（如果有 > 0 的）
+        if path_thresh_results:
+            best = max(path_thresh_results, key=lambda r: r["wr_imp"])
+            per_path_results.append({
+                "path": list(gi), "best_thresh": best["thresh"],
+                "wr_imp": best["wr_imp"], "kept_pct": best["kept_pct"],
+                "raw_wr": float(raw_wr), "filt_wr": best["filt_wr"],
+                "raw_total": raw_total, "filt_total": best["filt_total"],
+                "total_imp": best["total_imp"],
+                "all_thresh": path_thresh_results,
+            })
+            print(f"    ⭐ best: {best['thresh']} wr {best['wr_imp']:+.1f}% total {best['total_imp']:+.1f}%")
+        else:
+            print(f"    ❌ 所有 threshold 都 < 3 筆，skip")
 
         # 顯示估計剩餘時間
         elapsed = time.time() - t_start
