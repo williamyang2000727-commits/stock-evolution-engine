@@ -42,12 +42,24 @@ print(f"Day indices: {target_days}")
 print(f"  Note: 4/18 is Saturday, not in cache")
 print()
 
-# 自己算 universe（top100 by vol_ratio at day-1，匹配 cpu_replay 邏輯）
-# cpu_replay 用 vol_prev (前一天 volume) 排前 100
-vol_prev = pre.get("vol_prev")
-if vol_prev is None:
-    print("❌ pre['vol_prev'] missing")
-    sys.exit(1)
+# Universe: cpu_replay 真實邏輯 (gpu_cupy_evolve.py line 1071-1072)
+# ranks = np.argsort(np.argsort(-volume, axis=0), axis=0)
+# top100_mask = (ranks < 100)
+# → 每天當天 volume 前 100 名
+volume = pre.get("volume")
+if volume is None:
+    print("❌ pre['volume'] missing — try alternate keys")
+    print(f"  pre keys: {list(pre.keys())[:30]}")
+    # 試其他名稱
+    for alt in ["vol", "Volume", "volume_arr"]:
+        if alt in pre:
+            volume = pre[alt]
+            print(f"  fallback: pre['{alt}']")
+            break
+    if volume is None:
+        sys.exit(1)
+# 真實 universe 排序
+ranks_2d = np.argsort(np.argsort(-volume, axis=0), axis=0)
 
 
 def cpu_score(pre, p, si, day):
@@ -119,8 +131,8 @@ print()
 for d_str in sorted(target_days.keys()):
     day = target_days[d_str]
     print(f"━━━ Day {d_str} (index {day}) ━━━")
-    # universe = top100 vol
-    vol_at = vol_prev[:, day] if day > 0 else vol_prev[:, day]
+    # universe = top100 by 當天 volume (對齊 cpu_replay line 1071-1072)
+    vol_at = volume[:, day]
     order = np.argsort(-vol_at)
     top100_idx = order[:100]
     top100_set = set(top100_idx.tolist())
