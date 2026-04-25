@@ -41,16 +41,18 @@ subprocess.run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"],
 # 18:00 第一重試（萬一 17:00 沒跑）
 # 19:00 第二重試
 # 開機後 5 分鐘（停電恢復後立刻補跑）
+# 用 DAILY 而非 WEEKLY 避開 schtasks bug
+# auto_daily_pipeline 內部已 weekday 檢查跳過週末（idempotent marker 也會擋第二次）
+# 三個時段對抗停電
 schedules = [
-    (TASK_NAME, "WEEKLY", "17:00", ["/D", "MON,TUE,WED,THU,FRI"]),
-    (f"{TASK_NAME}_Retry1800", "WEEKLY", "18:00", ["/D", "MON,TUE,WED,THU,FRI"]),
-    (f"{TASK_NAME}_Retry1900", "WEEKLY", "19:00", ["/D", "MON,TUE,WED,THU,FRI"]),
-    (f"{TASK_NAME}_OnBoot", "ONSTART", None, []),  # 開機後 5 分鐘
+    (TASK_NAME, "DAILY", "17:00"),
+    (f"{TASK_NAME}_Retry1800", "DAILY", "18:00"),
+    (f"{TASK_NAME}_Retry1900", "DAILY", "19:00"),
+    (f"{TASK_NAME}_OnBoot", "ONSTART", None),  # 開機後 5 分
 ]
 
 print(f"\n建立 4 個排程（防停電多重防線）...")
-for task_name, sc_type, st_time, extra_args in schedules:
-    # 先刪舊的
+for task_name, sc_type, st_time in schedules:
     subprocess.run(["schtasks", "/Delete", "/TN", task_name, "/F"],
                    capture_output=True, text=True)
     cmd = [
@@ -61,12 +63,9 @@ for task_name, sc_type, st_time, extra_args in schedules:
     ]
     if st_time:
         cmd += ["/ST", st_time]
-    cmd += extra_args
     cmd += ["/RL", "HIGHEST", "/F"]
-
     if sc_type == "ONSTART":
-        # 開機後排程要加 delay（等網路 + 環境變數 ready）
-        cmd += ["/DELAY", "0005:00"]  # 5 分鐘
+        cmd += ["/DELAY", "0005:00"]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode == 0:
@@ -74,13 +73,20 @@ for task_name, sc_type, st_time, extra_args in schedules:
     else:
         print(f"  ❌ {task_name} fail: {result.stderr[:200]}")
 
-# 主排程驗證
-result = subprocess.run(["schtasks", "/Query", "/TN", TASK_NAME, "/V", "/FO", "LIST"],
-                        capture_output=True, text=True, encoding="cp950", errors="ignore")
-if result.returncode != 0:
-    print(f"\n❌ 主排程建立失敗")
-    print(f"可能原因：需要管理員權限。請用 admin PowerShell 重跑")
-    sys.exit(1)
+# 驗證 4 個排程的真實下次執行時間
+print(f"\n=== 驗證 4 個排程 ===")
+all_tasks = [TASK_NAME, f"{TASK_NAME}_Retry1800",
+             f"{TASK_NAME}_Retry1900", f"{TASK_NAME}_OnBoot"]
+for tn in all_tasks:
+    r = subprocess.run(["schtasks", "/Query", "/TN", tn, "/FO", "LIST"],
+                       capture_output=True, encoding="cp950", errors="ignore")
+    next_run = "?"
+    for line in (r.stdout or "").splitlines():
+        ll = line.lower()
+        if "next run time" in ll or "下次執行時間" in line:
+            next_run = line.split(":", 1)[1].strip()
+            break
+    print(f"  {tn}: 下次 = {next_run}")
 
 # 驗證
 print(f"\n驗證排程已建立...")
