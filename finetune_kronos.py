@@ -237,11 +237,13 @@ def main():
     else:
         print(f"  Backbone UNFROZEN — 真 fine-tune")
 
+    # 動態偵測 d_model：先做一次 forward 拿 ctx.shape
     try:
         d_model = kronos.config.d_model
+        print(f"  d_model from config: {d_model}")
     except AttributeError:
-        d_model = 256
-    print(f"  d_model = {d_model}")
+        d_model = None
+        print(f"  d_model 從 config 拿不到，等首次 forward 後動態偵測")
 
     # === 抽 K 線 + normalize + 建 stamp ===
     print(f"\n  抽 K 線 + 建 stamp（lookback={LOOKBACK}）...")
@@ -304,6 +306,21 @@ def main():
     s1_all = torch.cat(s1_all, dim=0)  # (N, T)
     s2_all = torch.cat(s2_all, dim=0)
     print(f"  Tokens shape: s1 {s1_all.shape}, s2 {s2_all.shape}")
+
+    # === 探測 d_model（一次小 forward 拿真實 ctx shape）===
+    if d_model is None:
+        with torch.no_grad():
+            probe_s1 = s1_all[:1].to(device)
+            probe_s2 = s2_all[:1].to(device)
+            probe_stamp = stamps_t[:1].to(device)
+            try:
+                _, probe_ctx = kronos.decode_s1(probe_s1, probe_s2, stamp=probe_stamp)
+                d_model = probe_ctx.shape[-1]
+                print(f"  ✅ 探測到 d_model = {d_model}（從 decode_s1 ctx.shape[-1]）")
+            except Exception as e:
+                print(f"  ❌ 探測失敗: {e}")
+                d_model = 512  # Kronos-small fallback (從 trace error 推得)
+                print(f"  使用 fallback d_model = {d_model}")
 
     # === 5. CPCV LOO fine-tune ===
     print(f"\n[5/5] CPCV LOO {N_GROUPS} groups, k={K_TEST}...")
