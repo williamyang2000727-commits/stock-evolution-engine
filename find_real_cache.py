@@ -1,4 +1,4 @@
-"""
+r"""
 找出 Windows 上所有 stock_data_cache.pkl 並印端點
 
 問題：check_cache_endpoints (用 C:\stock-evolution) 看到 4/02
