@@ -39,8 +39,10 @@ def fetch_twse_close_today():
         try:
             tk = row[0].strip()
             close_str = row[7].replace(",", "")
-            if close_str in ("--", "", "0"): continue
-            out[tk] = {"close": float(close_str), "date": date}
+            if close_str in ("--", ""): continue
+            close_v = float(close_str)
+            if close_v <= 0: continue  # 擋 "0" / "0.00" / 負數
+            out[tk] = {"close": close_v, "date": date}
         except Exception:
             continue
     return out, date
@@ -64,8 +66,10 @@ def fetch_tpex_close_today():
         try:
             tk = row.get("SecuritiesCompanyCode", "").strip()
             close = row.get("Close", "").strip()
-            if not tk or not close or close in ("--", "0"): continue
-            out[tk] = {"close": float(close), "date": date}
+            if not tk or not close or close == "--": continue
+            close_v = float(close)
+            if close_v <= 0: continue  # 擋 "0" / "0.00" / 負數
+            out[tk] = {"close": close_v, "date": date}
         except Exception:
             continue
     return out, date
@@ -129,8 +133,9 @@ def cross_validate_cache(cache, threshold_pct=1.0):
             continue
         if yf_close <= 0: continue
 
-        n_checked += 1
         official_close = official["close"]
+        if official_close <= 0: continue  # 官方回 0 = 停牌/異常，跳過
+        n_checked += 1
         diff_pct = abs(yf_close - official_close) / official_close * 100
 
         if diff_pct > threshold_pct:
