@@ -51,7 +51,16 @@ def main():
         print("❌ Gist 沒 manifest.json，可能是舊版備份格式")
         sys.exit(1)
 
-    manifest = json.loads(files["manifest.json"]["content"])
+    # Manifest 也可能 truncated（Gist API 對 > 1 MB 截斷）→ 從 raw_url 拉
+    mf_meta = files["manifest.json"]
+    if mf_meta.get("truncated"):
+        req = urllib.request.Request(mf_meta["raw_url"])
+        if GH_TOKEN:
+            req.add_header("Authorization", f"token {GH_TOKEN}")
+        manifest_str = urllib.request.urlopen(req, timeout=60).read().decode()
+    else:
+        manifest_str = mf_meta["content"]
+    manifest = json.loads(manifest_str)
     n_chunks = manifest["n_chunks"]
     print(f"  format: {manifest['format']}")
     print(f"  n_chunks: {n_chunks}")
