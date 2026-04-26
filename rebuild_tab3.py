@@ -12,7 +12,7 @@ r"""
 
 讓 Tab 3 顯示真實正確軌跡（之後 daily_scan 再從這基礎累積）
 """
-import os, sys, json, types, urllib.request, base64, time
+import os, sys, json, types, urllib.request, base64, time, ssl
 sys.path.insert(0, os.path.join(os.path.expanduser("~"), "stock-evolution"))
 mock_cp = types.ModuleType("cupy")
 mock_cp.RawKernel = lambda *a, **k: None
@@ -20,6 +20,70 @@ sys.modules["cupy"] = mock_cp
 import numpy as np
 import pandas as pd
 from gpu_cupy_evolve import precompute, cpu_replay, download_data
+
+
+# ───────────────────────────────────────────────────────────────────
+# 雙價系統：抓 TWSE/TPEx 官方 unadjusted close（給 Tab 3 顯示用）
+# 89.905 cpu_replay 仍用 cache adjusted close（不動）
+# ───────────────────────────────────────────────────────────────────
+def fetch_official_close():
+    """抓 TWSE STOCK_DAY_ALL + TPEx daily close
+
+    回 ({ticker_no_suffix: {'close': float, 'open': float, 'high': float, 'low': float}}, date_str)
+    """
+    ctx = ssl._create_unverified_context()
+    out = {}
+
+    # TWSE 上市
+    try:
+        r = urllib.request.urlopen(
+            "https://www.twse.com.tw/exchangeReport/STOCK_DAY_ALL?response=json",
+            context=ctx, timeout=15)
+        d = json.loads(r.read())
+        twse_date = d.get("date")
+        for row in d.get("data", []):
+            try:
+                tk = row[0].strip()
+                close_str = row[7].replace(",", "")
+                if close_str in ("--", "", "---"): continue
+                close_v = float(close_str)
+                if close_v <= 0: continue
+                out[tk] = {
+                    "close": close_v,
+                    "open": float(row[4].replace(",", "")) if row[4] not in ("--","","---") else close_v,
+                    "high": float(row[5].replace(",", "")) if row[5] not in ("--","","---") else close_v,
+                    "low": float(row[6].replace(",", "")) if row[6] not in ("--","","---") else close_v,
+                }
+            except: continue
+    except Exception as e:
+        print(f"  ⚠️ TWSE fetch fail: {e}")
+        twse_date = None
+
+    # TPEx 上櫃
+    try:
+        r = urllib.request.urlopen(
+            "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes",
+            context=ctx, timeout=15)
+        d = json.loads(r.read())
+        for row in d:
+            try:
+                tk = row.get("SecuritiesCompanyCode", "").strip()
+                close_str = row.get("Close", "").strip()
+                if not tk or close_str in ("--", "", "---"): continue
+                close_v = float(close_str)
+                if close_v <= 0: continue
+                if tk in out: continue  # 不覆蓋 TWSE
+                out[tk] = {
+                    "close": close_v,
+                    "open": float(row.get("Open", close_str)) if row.get("Open","--") not in ("--","","---") else close_v,
+                    "high": float(row.get("High", close_str)) if row.get("High","--") not in ("--","","---") else close_v,
+                    "low": float(row.get("Low", close_str)) if row.get("Low","--") not in ("--","","---") else close_v,
+                }
+            except: continue
+    except Exception as e:
+        print(f"  ⚠️ TPEx fetch fail: {e}")
+
+    return out, twse_date
 
 GH_TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GIST_TOKEN")
 if not GH_TOKEN:
@@ -111,10 +175,18 @@ print(f"  共 {len(trades)} trades")
 # 3. 轉成 Tab 3 期望的格式
 # Tab 3 用：return_pct (不是 return), hold_days (不是 days)
 print(f"\n[3/5] 轉換為 Tab 3 格式 ...")
+
+# 雙價系統：抓官方 unadjusted close 給「持有中」trade 顯示用
+print(f"  抓 TWSE/TPEx 官方 unadjusted close ...")
+official_quotes, official_date = fetch_official_close()
+print(f"  官方資料: {len(official_quotes)} 檔, date={official_date}")
+
 tab3_trades = []
+n_display = 0
 for t in trades:
+    ticker = t.get("ticker", "")
     item = {
-        "ticker": t.get("ticker", ""),
+        "ticker": ticker,
         "name": t.get("name", ""),
         "buy_date": t.get("buy_date", ""),
         "sell_date": t.get("sell_date", ""),
@@ -126,7 +198,24 @@ for t in trades:
     }
     if "peak_price" in t:
         item["peak_price"] = float(t["peak_price"])
+
+    # 雙價：對「持有中」trade 用官方 unadjusted close 顯示
+    # （歷史完成 trade 保留 adjusted sell_price，太多筆無法逐日對 TWSE）
+    if t.get("reason") == "持有中" and ticker:
+        tk_no_suffix = ticker.split(".", 1)[0] if "." in ticker else ticker
+        official = official_quotes.get(tk_no_suffix)
+        if official and official.get("close", 0) > 0:
+            buy_p = item["buy_price"]
+            unadj_close = official["close"]
+            # display_return_pct = unadjusted 算的（看盤直觀）
+            disp_ret = round((unadj_close / buy_p - 1) * 100 - 0.585, 2) if buy_p > 0 else 0
+            item["display_price"] = unadj_close
+            item["display_return_pct"] = disp_ret
+            n_display += 1
+
     tab3_trades.append(item)
+
+print(f"  {n_display} 檔「持有中」加入官方 unadjusted display_price")
 
 # 4. 算 stats（mirror daily_scan line 469-477）
 completed = [t for t in tab3_trades if t.get("reason") != "持有中"]
