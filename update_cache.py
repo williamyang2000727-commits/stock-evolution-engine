@@ -251,17 +251,24 @@ def main():
         print(f"  {t}: 舊 {len(old_df)} 天 {'✅ 完全一致' if match else '❌ 被動到了!'}, 新增 {added} 天")
 
     # ───────────────────────────────────────────────────────────────────
-    # 雙源驗證（V2 新增，2026-04-26）
+    # 雙源驗證已 disable（2026-04-26 發現設計缺陷）
     # ───────────────────────────────────────────────────────────────────
-    n_checked, n_drift, drift_list, cache = cross_validate_cache(cache, threshold_pct=1.0)
-
-    # 如果有飄就重寫 cache
-    if n_drift > 0:
-        tmp = CACHE_PATH + ".tmp"
-        with open(tmp, "wb") as f:
-            pickle.dump(cache, f)
-        os.replace(tmp, CACHE_PATH)
-        print(f"  ✅ 雙源驗證後重寫 cache（修正 {n_drift} 檔最後一天 close）")
+    # 原本設計：抓 TWSE/TPEx 官方 close 比 cache，差 > 1% 用官方覆蓋
+    # 問題：yfinance auto_adjust=True 用「調整後 close」（反推除權息）
+    #       TWSE/TPEx 用「未調整 close」（真實成交價）
+    #       兩者本質不同，永遠對不起來（有除權息的股票）
+    #       強制覆蓋會讓 cache 變成 mixed（舊 adjusted + 新 unadjusted）
+    #       整套 evolution 結果都基於 adjusted 價訓練 → 切換會讓 89.905 失效
+    # 正解：cache 維持 adjusted（不動），改在 rebuild_tab3 那層用官方價
+    #       覆蓋「持有中」trade 的 sell_price（不影響 cpu_replay 訓練資料）
+    # 待 5090 + Shioaji 後改用券商歷史 K（unadjusted + 一致）
+    print()
+    print("=== 雙源驗證已 disable ===")
+    print("  原因：yfinance auto_adjust=True ≠ TWSE/TPEx unadjusted")
+    print("  整套 89.905 基於 adjusted 訓練，強制覆蓋會破壞一致性")
+    print("  正解在 rebuild_tab3 改 sell_price（不動 cache）")
+    print()
+    # n_checked, n_drift, drift_list, cache = cross_validate_cache(cache, threshold_pct=1.0)
 
 
 if __name__ == "__main__":
