@@ -34,8 +34,8 @@ print(f"USER_SE = {USER_SE}")
 
 LOG_FILE = os.path.join(USER_SE, "daily_pipeline.log")
 TW_TZ = timezone(timedelta(hours=8))
-TELEGRAM_BOT = os.environ.get("TELEGRAM_BOT_TOKEN", "8551169875:AAF48gHaISTcKgAAZ_CXCOFoG0ZT21aN0RI")
-TELEGRAM_CHAT = "5785839733"
+TELEGRAM_BOT = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "5785839733")
 
 
 def log(msg):

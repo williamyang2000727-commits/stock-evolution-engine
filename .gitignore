@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.env
+.env.sh
+.bot_token_local
+.DS_Store
+*.pkl
+*.log
+.last_health_state.json
+pending_push.json

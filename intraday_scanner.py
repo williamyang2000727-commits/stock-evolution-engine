@@ -48,9 +48,8 @@ CACHE_PATH = os.path.join(USER_SE, "stock_data_cache.pkl")
 TW_TZ = timezone(timedelta(hours=8))
 
 # Telegram (從 stock_secrets.md / gpu_cupy_evolve.py)
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN",
-    "8551169875:AAF48gHaISTcKgAAZ_CXCOFoG0ZT21aN0RI")
-TELEGRAM_CHAT_IDS = ["5785839733"]
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_IDS = [os.environ.get("TELEGRAM_CHAT_ID", "5785839733")]
 
 
 def fetch_gist_strategy():

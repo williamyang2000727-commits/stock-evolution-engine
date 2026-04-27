@@ -27,8 +27,9 @@ LOG_PATH = os.path.join(SCRIPT_DIR, "v38_daily_auto.log")
 PAPER_LOG = os.path.join(USER_SE, "paper_trade_log.json")
 
 # Telegram (V34 sec)
-TG_BOT_TOKEN = "8551169875:AAF48gHaISTcKgAAZ_CXCOFoG0ZT21aN0RI"
-TG_CHAT_IDS = ["5785839733"]
+import os as _os_tg
+TG_BOT_TOKEN = _os_tg.environ.get("TELEGRAM_BOT_TOKEN", "")
+TG_CHAT_IDS = [_os_tg.environ.get("TELEGRAM_CHAT_ID", "5785839733")]
 
 
 def log(msg):

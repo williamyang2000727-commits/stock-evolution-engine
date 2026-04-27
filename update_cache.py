@@ -77,8 +77,10 @@ def fetch_tpex_close_today():
 
 def send_telegram_warning(msg):
     """推 Telegram 警報（同 GPU bot）"""
-    BOT = os.environ.get("TELEGRAM_BOT_TOKEN", "8551169875:AAF48gHaISTcKgAAZ_CXCOFoG0ZT21aN0RI")
+    BOT = os.environ.get("TELEGRAM_BOT_TOKEN", "")
     CHAT = os.environ.get("TELEGRAM_CHAT_ID", "5785839733")
+    if not BOT:
+        return
     try:
         ctx = ssl._create_unverified_context()
         url = f"https://api.telegram.org/bot{BOT}/sendMessage"

@@ -8,7 +8,7 @@ import cupy as cp
 import json, os, sys, time, requests, pickle, base64
 
 # === Telegram / Gist ===
-BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8551169875:AAF48gHaISTcKgAAZ_CXCOFoG0ZT21aN0RI")
+BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT_IDS = ["5785839733"]  # William only (v2 experimental)
 GIST_ID = os.environ.get("GIST_ID", "")
 GH_TOKEN = os.environ.get("GH_TOKEN", "")

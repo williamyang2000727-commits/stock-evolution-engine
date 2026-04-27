@@ -14,8 +14,10 @@ import os, sys, json, urllib.request, urllib.parse, ssl
 from datetime import datetime, timezone, timedelta
 
 GH_TOKEN = os.environ.get("GH_TOKEN") or os.environ.get("GIST_TOKEN")
-TELEGRAM_BOT = os.environ.get("TELEGRAM_BOT_TOKEN", "8551169875:AAF48gHaISTcKgAAZ_CXCOFoG0ZT21aN0RI")
-TELEGRAM_CHAT = "5785839733"
+TELEGRAM_BOT = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT = os.environ.get("TELEGRAM_CHAT_ID", "5785839733")
+if not TELEGRAM_BOT:
+    print("⚠️ TELEGRAM_BOT_TOKEN 未設，跳過 Telegram 推播")
 TW_TZ = timezone(timedelta(hours=8))
 
 DATA_GIST = "e1159b02a87d3c6ee9f33fb9ef61bb80"
@@ -32,6 +34,8 @@ def fetch(gist_id, fname):
 
 
 def telegram(msg, chat_id=None):
+    if not TELEGRAM_BOT:
+        return
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
