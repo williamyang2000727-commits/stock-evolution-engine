@@ -31,13 +31,13 @@ def fetch(gist_id, fname):
     return json.loads(json.loads(urllib.request.urlopen(req, timeout=30).read())["files"][fname]["content"])
 
 
-def telegram(msg):
+def telegram(msg, chat_id=None):
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT}/sendMessage"
     data = urllib.parse.urlencode({
-        "chat_id": TELEGRAM_CHAT,
+        "chat_id": chat_id or TELEGRAM_CHAT,
         "text": msg[:4000],
         "parse_mode": "Markdown",
     }).encode()
@@ -191,6 +191,46 @@ else:
 print(msg)
 try:
     telegram(msg)
-    print("\n📱 已推 Telegram")
+    print("\n📱 已推 Telegram (William)")
 except Exception as e:
     print(f"\n❌ Telegram fail: {e}")
+
+# ─── 訂閱者真實持倉警報（多用戶）───
+# scan_results.user_pending_sells 由 daily_scan step 7b 寫入
+# 每個 user 真實持倉觸發 5 條 sell_rules 任一 → 推給該 user（有 chat_id）或併入 William 總機訊息
+try:
+    user_pending = (scan or {}).get("user_pending_sells", {}) or {}
+    portfolios = fetch(DATA_GIST, "portfolios.json") if user_pending else {}
+    william_summary_lines = []
+    for uname, signals in user_pending.items():
+        if not signals:
+            continue
+        u_chat = (portfolios.get(uname, {}) or {}).get("telegram_chat_id", "")
+        u_lines = [f"🚨 *持倉警報 {today}* — {uname}"]
+        for s in signals:
+            u_lines.append(
+                f"📤 *{s.get('name','')}* ({s.get('ticker','')})\n"
+                f"   買入 ${s.get('buy_price',0)} → 現 ${s.get('current_price',0)} ({s.get('return_pct',0):+.2f}%)\n"
+                f"   持有 {s.get('days_held',0)} 天 ｜ {s.get('reason','')}"
+            )
+        u_lines.append("\n*🎯 D+1 09:00 開盤賣出*")
+        u_msg = "\n\n".join(u_lines)
+        if u_chat:
+            try:
+                telegram(u_msg, chat_id=u_chat)
+                print(f"📱 已推 Telegram ({uname} → {u_chat})")
+            except Exception as e:
+                print(f"❌ Telegram fail ({uname}): {e}")
+                william_summary_lines.append(f"⚠️ {uname} 推送失敗（chat_id={u_chat}）：{e}")
+                william_summary_lines.append(u_msg)
+        else:
+            william_summary_lines.append(f"📋 {uname}（無 chat_id，請手動轉達）：\n{u_msg}")
+    if william_summary_lines:
+        wm = f"📊 *訂閱者警報摘要 {today}*\n\n" + "\n\n---\n\n".join(william_summary_lines)
+        try:
+            telegram(wm)
+            print(f"📱 已推 William 訂閱者摘要（{len(william_summary_lines)} 個）")
+        except Exception as e:
+            print(f"❌ William 摘要推送失敗: {e}")
+except Exception as e:
+    print(f"❌ 訂閱者警報處理失敗: {e}")
