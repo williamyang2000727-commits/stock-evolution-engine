@@ -199,6 +199,29 @@ try:
 except Exception as e:
     print(f"\n❌ Telegram fail: {e}")
 
+# ─── 系統換股訊號推所有訂閱者（pending_sells / pending_buy = 89.905 系統建議）───
+# William 已收到完整健康報告，這裡只推「換股訊號」給其他訂閱者
+if todo_list:
+    try:
+        portfolios_for_swap = fetch(DATA_GIST, "portfolios.json")
+        swap_msg_lines = [f"🔔 *系統換股訊號 {today}*\n", "*89.905 策略建議：*"]
+        swap_msg_lines.extend(todo_list)
+        swap_msg_lines.append("\n_僅供參考，是否跟單由你自己決定。如已跟單，下單後記得到 Tab 2 更新持倉。_")
+        swap_msg = "\n".join(swap_msg_lines)
+        for sub_uname, sub_data in portfolios_for_swap.items():
+            if sub_uname == "william":
+                continue  # William 已收主訊息
+            sub_chat = (sub_data or {}).get("telegram_chat_id", "")
+            if not sub_chat:
+                continue
+            try:
+                telegram(swap_msg, chat_id=sub_chat)
+                print(f"📱 換股訊號已推 {sub_uname} ({sub_chat})")
+            except Exception as e:
+                print(f"❌ 換股訊號推 {sub_uname} 失敗: {e}")
+    except Exception as e:
+        print(f"❌ 訂閱者換股訊號處理失敗: {e}")
+
 # ─── 訂閱者真實持倉警報（多用戶）───
 # scan_results.user_pending_sells 由 daily_scan step 7b 寫入
 # 每個 user 真實持倉觸發 5 條 sell_rules 任一 → 推給該 user（有 chat_id）或併入 William 總機訊息
