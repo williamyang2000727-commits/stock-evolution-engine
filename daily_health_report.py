@@ -33,6 +33,17 @@ def fetch(gist_id, fname):
     return json.loads(json.loads(urllib.request.urlopen(req, timeout=30).read())["files"][fname]["content"])
 
 
+def md_escape(s):
+    """Escape Markdown V1 特殊字元（用在 user-controlled 內容如 name/ticker/reason）。
+    我們自己寫的 *粗體* / _斜體_ 不要過這個 — 只 escape 從 Gist 讀進來的字串。"""
+    if s is None:
+        return ""
+    s = str(s)
+    for c in ("_", "*", "`", "["):
+        s = s.replace(c, "\\" + c)
+    return s
+
+
 def telegram(msg, chat_id=None):
     if not TELEGRAM_BOT:
         return
@@ -55,6 +66,12 @@ errors = []
 warnings = []
 info = []
 
+# C3 fix: 變數先初始化，避免 fetch 拋例外時下游 NameError
+scan = None
+pending_sells = []
+pending_buy = None
+buy_signals = []
+
 # 1. backtest
 try:
     bt = fetch(DATA_GIST, "backtest_results.json")
@@ -67,7 +84,7 @@ try:
         info.append(f"✅ Tab 3: {stats.get('total_trades')} 筆 / {stats.get('total_return_pct')}% / wr {stats.get('win_rate')}%")
         for h in holdings:
             ret = (h.get("sell_price", 0) / h.get("buy_price", 1) - 1) * 100 if h.get("buy_price", 0) > 0 else 0
-            info.append(f"   • {h.get('name','')} ({h.get('ticker','')}) buy {h.get('buy_date','')} @{h.get('buy_price',0)} → 現{h.get('sell_price',0)} ({ret:+.1f}%)")
+            info.append(f"   • {md_escape(h.get('name',''))} ({md_escape(h.get('ticker',''))}) buy {h.get('buy_date','')} @{h.get('buy_price',0)} → 現{h.get('sell_price',0)} ({ret:+.1f}%)")
 except Exception as e:
     errors.append(f"❌ 讀 backtest 失敗: {e}")
     holdings = []
@@ -84,14 +101,14 @@ try:
     if pending_sells:
         info.append(f"📤 Pending sells:")
         for ps in pending_sells:
-            info.append(f"   • {ps.get('name','')} ({ps.get('ticker','')}) — {ps.get('reason','')}")
+            info.append(f"   • {md_escape(ps.get('name',''))} ({md_escape(ps.get('ticker',''))}) — {md_escape(ps.get('reason',''))}")
     if pending_buy:
-        info.append(f"🎯 Pending buy: {pending_buy.get('name','')} ({pending_buy.get('ticker','')}) score={pending_buy.get('score',0):.0f}")
+        info.append(f"🎯 Pending buy: {md_escape(pending_buy.get('name',''))} ({md_escape(pending_buy.get('ticker',''))}) score={pending_buy.get('score',0):.0f}")
     if not pending_sells and not pending_buy:
         info.append("✋ 明日無動作（無賣出、滿倉無新買入）")
     info.append(f"📊 Top 3 達標股:")
     for s in buy_signals[:3]:
-        info.append(f"   #{s.get('rank',0)} {s.get('name','')} ({s.get('ticker','')}) score={s.get('score',0):.0f}")
+        info.append(f"   #{s.get('rank',0)} {md_escape(s.get('name',''))} ({md_escape(s.get('ticker',''))}) score={s.get('score',0):.0f}")
 except Exception as e:
     errors.append(f"❌ 讀 scan_results 失敗: {e}")
 
@@ -165,9 +182,9 @@ except Exception:
 todo_list = []
 if pending_sells:
     for ps in pending_sells:
-        todo_list.append(f"📤 D+1 09:00 賣 {ps.get('name','')} ({ps.get('ticker','')})")
+        todo_list.append(f"📤 D+1 09:00 賣 {md_escape(ps.get('name',''))} ({md_escape(ps.get('ticker',''))})")
 if pending_buy:
-    todo_list.append(f"🎯 D+1 13:25 前買 {pending_buy.get('name','')} ({pending_buy.get('ticker','')})")
+    todo_list.append(f"🎯 D+1 13:25 前買 {md_escape(pending_buy.get('name',''))} ({md_escape(pending_buy.get('ticker',''))})")
 
 # ─── 組訊息 ───
 if errors:
@@ -233,12 +250,12 @@ try:
         if not signals:
             continue
         u_chat = (portfolios.get(uname, {}) or {}).get("telegram_chat_id", "")
-        u_lines = [f"🚨 *持倉警報 {today}* — {uname}"]
+        u_lines = [f"🚨 *持倉警報 {today}* — {md_escape(uname)}"]
         for s in signals:
             u_lines.append(
-                f"📤 *{s.get('name','')}* ({s.get('ticker','')})\n"
+                f"📤 *{md_escape(s.get('name',''))}* ({md_escape(s.get('ticker',''))})\n"
                 f"   買入 ${s.get('buy_price',0)} → 現 ${s.get('current_price',0)} ({s.get('return_pct',0):+.2f}%)\n"
-                f"   持有 {s.get('days_held',0)} 天 ｜ {s.get('reason','')}"
+                f"   持有 {s.get('days_held',0)} 天 ｜ {md_escape(s.get('reason',''))}"
             )
         u_lines.append("\n*🎯 D+1 09:00 開盤賣出*")
         u_msg = "\n\n".join(u_lines)
@@ -251,7 +268,7 @@ try:
                 william_summary_lines.append(f"⚠️ {uname} 推送失敗（chat_id={u_chat}）：{e}")
                 william_summary_lines.append(u_msg)
         else:
-            william_summary_lines.append(f"📋 {uname}（無 chat_id，請手動轉達）：\n{u_msg}")
+            william_summary_lines.append(f"📋 {md_escape(uname)}（無 chat_id，請手動轉達）：\n{u_msg}")
     if william_summary_lines:
         wm = f"📊 *訂閱者警報摘要 {today}*\n\n" + "\n\n---\n\n".join(william_summary_lines)
         try:
