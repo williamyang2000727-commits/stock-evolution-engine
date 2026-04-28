@@ -1673,9 +1673,11 @@ def main():
 
     if os.environ.get("GPU_SHORT_HOLD") == "1":
         PARAMS_SPACE["hold_days"] = [7, 10]
-        print(f"  [Mode] ⏱️ 短波段模式：hold_days ∈ {{7,10}}")
+        PARAMS_SPACE["buy_threshold"] = [4, 6, 8, 10, 12]   # 拿掉 14+ 太嚴閾值（防 GPU 鑽少筆漏洞）
+        print(f"  [Mode] ⏱️ 短波段模式：hold_days ∈ {{7,10}} | buy_th ≤ 12")
         print(f"  [Mode]    （kernel 強制 avg_hold ≥ 5，hold=3 注定被擋，hold=5 因停損會讓平均 <5 也大概率被擋）")
         print(f"  [Mode] ⚠️  vs_seed gate 自動關閉（短波段 total 注定輸 89.905，純研究第二策略）")
+        print(f"  [Mode] 📊 Python gate 強制 n_trades ≥ 80（防 GPU 鑽 23 筆漏洞，2026-04-28 教訓）")
 
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     print(f"[GPU-CuPy] 🎯 勝率優先 + 波段獎勵 + 反向 Walk-Forward（融合 189+88.60 優點）")
@@ -2253,7 +2255,9 @@ def main():
             _tds = [t for t in _tds if not _mc.isnan(t.get("return",0))]
             _cmp = [t for t in _tds if t.get("reason") != "持有中"]
             _cnt = len(_cmp)
-            if _cnt < 15 or _cnt > 200: _gate_fail["cnt"] += 1; continue  # mcap70 筆數少
+            # 短波段模式：強制 n_trades >= 80（防 GPU 鑽 15 筆漏洞策略，2026-04-28 23 筆教訓）
+            _min_cnt = 80 if os.environ.get("GPU_SHORT_HOLD") == "1" else 15
+            if _cnt < _min_cnt or _cnt > 200: _gate_fail["cnt"] += 1; continue  # mcap70 筆數少
             _cavg = sum(t.get("return",0) for t in _cmp) / _cnt
             if _cavg < 3: _gate_fail["avg"] += 1; continue  # mcap 大型股 avg 天生低
             _cah = sum(t.get("days",0) for t in _cmp) / _cnt
