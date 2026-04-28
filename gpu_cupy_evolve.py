@@ -1671,6 +1671,12 @@ def main():
         print(f"  [Mode] 🔥 嚴格訊號模式：52週頂 + 連漲 7+ + 動量 15+ + ADX 35+")
         print(f"         = 強迫買「過去持續強勢的股」，當日爆發不夠格")
 
+    if os.environ.get("GPU_SHORT_HOLD") == "1":
+        PARAMS_SPACE["hold_days"] = [7, 10]
+        print(f"  [Mode] ⏱️ 短波段模式：hold_days ∈ {{7,10}}")
+        print(f"  [Mode]    （kernel 強制 avg_hold ≥ 5，hold=3 注定被擋，hold=5 因停損會讓平均 <5 也大概率被擋）")
+        print(f"  [Mode] ⚠️  vs_seed gate 自動關閉（短波段 total 注定輸 89.905，純研究第二策略）")
+
     print("[GPU-CuPy] 🚀 RTX 3060 進化引擎啟動！")
     print(f"[GPU-CuPy] 🎯 勝率優先 + 波段獎勵 + 反向 Walk-Forward（融合 189+88.60 優點）")
     print(f"")
@@ -1707,13 +1713,14 @@ def main():
     print(f"  ═══ 新框架 ═══ hold_days 加入 45/60 天 | SEED=Gist 當前策略（動態地板）| 診斷每 5 輪印")
     print(f"")
 
-    # 啟動時歸檔舊 pending_push.json（避免上次 session 的未推 pending 跟新 session 混淆）
-    _pending_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_push.json")
+    # 啟動時歸檔舊 pending（避免上次 session 殘留混淆）；短波段模式只動 short 檔
+    _startup_pending_name = "pending_push_short.json" if os.environ.get("GPU_SHORT_HOLD") == "1" else "pending_push.json"
+    _pending_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), _startup_pending_name)
     if os.path.exists(_pending_path):
         import shutil
         _archive = _pending_path + f".reset_{int(time.time())}"
         shutil.move(_pending_path, _archive)
-        print(f"[GPU-CuPy] 🗑️ 舊 pending_push.json 歸檔 → {os.path.basename(_archive)}（新 session 從空 pending 開始）")
+        print(f"[GPU-CuPy] 🗑️ 舊 {_startup_pending_name} 歸檔 → {os.path.basename(_archive)}（新 session 從空 pending 開始）")
     raw = download_data()
     # 動態選擇天數：優先 1500（6 年含 2020 covid），但至少要 500 檔才用；否則 fallback 900
     _lens = [len(v) for v in raw.values()]
@@ -2297,7 +2304,8 @@ def main():
             # 動態 gate：新策略 全期總報酬 >= SEED × 0.95 AND 勝率 >= SEED × 0.95
             # 2026-04-25 教訓：只靠 MIN_* 絕對門檻 + kernel score 放水太嚴重（81.6 分 70 筆 1241% 爛策略過關）
             # 必須強制「至少不輸 SEED 5%」才能當新紀錄
-            if gist_best_params and _baseline_trades:
+            # GPU_SHORT_HOLD 模式跳過：短波段 total 注定輸 89.905（hold 期短，單筆漲幅小）
+            if gist_best_params and _baseline_trades and os.environ.get("GPU_SHORT_HOLD") != "1":
                 _seed_total = sum(t.get("return",0) for t in _baseline_trades)
                 _seed_wr_pct = sum(1 for t in _baseline_trades if t.get("return",0)>0) / len(_baseline_trades) * 100
                 _cand_total = _ctr_tot + _cts_tot
@@ -2441,26 +2449,31 @@ def main():
                         "win_rate":round(wr_r,2),"total_trades":n_all},
                     "trade_details":trade_details},
                     ensure_ascii=False, indent=2)
-                _pending_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pending_push.json")
+                _is_short_hold = os.environ.get("GPU_SHORT_HOLD") == "1"
+                _pending_filename = "pending_push_short.json" if _is_short_hold else "pending_push.json"
+                _pending_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), _pending_filename)
                 with open(_pending_path, "w", encoding="utf-8") as _f:
                     _f.write(content)
                 year_lines = "\n".join([
                     f"  {y}: {d['n']}筆 avg{d['ret']/d['n']:.1f}% 總{d['ret']:.0f}% 勝率{d['win']/d['n']*100:.0f}%"
                     for y, d in sorted(yearly.items())
                 ])
+                _hold_d = best_params.get('hold_days', 0)
+                _tag = f"⏱️ 短波段第二策略候選（hold {_hold_d}天）" if _is_short_hold else "🎯 勝率優先 GPU 找到新策略（待審核）"
+                _footer = "⚠️ 短波段獨立檔，主策略 89.905 不受影響" if _is_short_hold else "✅ 審核 OK → python push_pending.py"
                 telegram_push(
-                    f"🎯 勝率優先 GPU 找到新策略（待審核）\n"
+                    f"{_tag}\n"
                     f"━━━━━━━━━━━━\n"
                     f"分數：{best_score:.2f}\n"
                     f"全期：{n_all}筆 avg{avg_r:.1f}% 總{total_r:.0f}% 勝率{wr_r:.0f}%\n"
                     f"WF：train 年化{_train_ann:.0f}% vs test 年化{_test_ann:.0f}% ({_ratio:.0f}%)\n"
-                    f"停損{best_params.get('stop_loss',0):.0f}% | 持倉{best_params.get('max_positions',2):.0f}檔\n"
+                    f"停損{best_params.get('stop_loss',0):.0f}% | 持倉{best_params.get('max_positions',2):.0f}檔 | 持有{_hold_d}天\n"
                     f"⚡ {total_tested:,}組/{elapsed:.0f}秒\n\n"
                     f"📊 分年績效：\n{year_lines}\n\n"
-                    f"💾 已存 pending_push.json\n"
-                    f"✅ 審核 OK → python push_pending.py"
+                    f"💾 已存 {_pending_filename}\n"
+                    f"{_footer}"
                 )
-                print(f"  [GPU] 💾 pending_push.json 已更新，Telegram 通知已發")
+                print(f"  [GPU] 💾 {_pending_filename} 已更新，Telegram 通知已發")
                 last_synced_improved = total_improved
             except Exception as e:
                 print(f"  [GPU] pending 寫入錯誤: {e}")
