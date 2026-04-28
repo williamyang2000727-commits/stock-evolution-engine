@@ -2196,7 +2196,13 @@ def main():
                     if _run < _max_dd: _max_dd = _run
                 _s_dd = abs(_max_dd) * 0.05
                 _seed_manual = _s_wr + _s_return + _s_avg + _s_sharpe + _s_pl + _s_consistency + _s_wf - _s_dd
-                best_score = max(20.0, _seed_manual)  # 至少 20 分絕對底線
+                # GPU_SHORT_HOLD 模式：baseline 降到 20（短波段 kernel score 結構性低於 89.905，
+                # 用 89.905 baseline 等於 0 突破，跟 vs_seed gate 同型錯誤）
+                if os.environ.get("GPU_SHORT_HOLD") == "1":
+                    best_score = 20.0
+                    print(f"  [GPU] ⏱️ 短波段模式：baseline 強制 = 20（不用 89.905 = {_seed_manual:.1f}）")
+                else:
+                    best_score = max(20.0, _seed_manual)  # 至少 20 分絕對底線
                 best_nt = _n_all
                 best_avg = sum(t.get("return",0) for t in _bt) / _n_all
                 best_total = sum(t.get("return",0) for t in _bt)
